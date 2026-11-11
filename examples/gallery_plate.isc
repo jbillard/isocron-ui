@@ -1,8 +1,11 @@
 // The plate of the gallery: everything the library draws, with variants of
-// each effect, for an image of 1280 by 1040. The rows, from the top: the radii of the corners; the borders; colours with
-// alpha over each other; the shadows; widgets made of them; a card of an
-// interface; places and sizes that are not whole pixels.
+// each effect, for an image of 1280 by 1040. The rows, from the top: the
+// radii of the corners; the borders; colours with alpha over each other;
+// the shadows; widgets made of them; a card of an interface; places and
+// sizes that are not whole pixels; their texts last, over them.
 import { Primitive, Box, Blur, Color, Quad, quad, rounded, bordered, rgb, rgba, transparent, render } from "../src/paint";
+import { Font } from "../src/font";
+import { line, lineWidth } from "../src/text";
 
 // a quad with a radius for each corner
 function corners(q: Quad, tl: f32, tr: f32, br: f32, bl: f32): Quad {
@@ -155,9 +158,8 @@ function panel(): Primitive[] {
     const rows = map(iota(4), (i) => box(quad(x, y + 44.0f32 + f32(i + 1) * 40.0f32, w, 1.0f32, rgb(0xE5E7EBu32))));
     const selected = [box(quad(x, y + 85.0f32, w, 39.0f32, rgb(0xEFF6FFu32))), box(quad(x, y + 85.0f32, 4.0f32, 39.0f32, blue()))];
     const dots = map(iota(4), (i) => box(rounded(quad(x + 20.0f32, y + 58.0f32 + f32(i) * 40.0f32, 14.0f32, 14.0f32, rgb([0x10B981u32, 0x3B82F6u32, 0xF59E0Bu32, 0xEF4444u32][i])), 7.0f32)));
-    const bars = map(iota(4), (i) => box(rounded(quad(x + 50.0f32, y + 60.0f32 + f32(i) * 40.0f32, 180.0f32 + f32(i * 37 % 100), 10.0f32, rgb(0xD1D5DBu32)), 5.0f32)));
     const footer = [box(corners(quad(x, y + 210.0f32, w, 40.0f32, rgb(0xF9FAFBu32)), 0.0f32, 0.0f32, 14.0f32, 14.0f32)), box(rounded(quad(x + w - 110.0f32, y + 218.0f32, 96.0f32, 26.0f32, blue()), 13.0f32))];
-    return concat(concat(concat(concat(concat(concat(shell, header), selected), rows), dots), bars), footer);
+    return concat(concat(concat(concat(concat(shell, header), selected), rows), dots), footer);
 }
 
 // row 6, right: places and sizes that are not whole pixels: lines of 0.25,
@@ -177,7 +179,84 @@ function fractions(): Primitive[] {
     return concat(concat(concat(concat(lines, squares), circles), thin), stairs);
 }
 
-// every primitive of the plate, in their order
-export function plate(): Primitive[] {
-    return concat(concat(concat(concat(concat(concat(radii(), borders()), alphas()), shadows()), widgets()), panel()), fractions());
+// `s` in `em` pixels, centred in the rectangle (x, y, w, h)
+function centred(f: Font, s: string, x: f32, y: f32, w: f32, h: f32, em: f32, c: Color): Primitive[] {
+    return line(f, em, s, x + (w - lineWidth(f, em, s)) * 0.5f32, y + h * 0.5f32 + em * 0.36f32, c);
+}
+
+// `s` ending at `x` on the baseline `y`
+function rightAligned(f: Font, s: string, x: f32, y: f32, em: f32, c: Color): Primitive[] {
+    return line(f, em, s, x - lineWidth(f, em, s), y, c);
+}
+
+// `names[k]` centred in the rectangles from `xs[k]` (a row of them), from
+// the `k`-th, after `acc` (an array of arrays of a sum type is not yet in
+// Isocron: noted)
+function centredRow(f: Font, names: string[n], xs: f32[n], y: f32, w: f32, h: f32, em: f32, c: Color, k: i64, acc: Primitive[]): Primitive[] {
+    return k >= names.length ? acc : centredRow(f, names, xs, y, w, h, em, c, k + 1, concat(acc, centred(f, names[k], xs[k], y, w, h, em, c)));
+}
+
+// `names[k]` at `xs[k]` on the baselines `ys[k]`, from the `k`-th
+function linesFrom(f: Font, names: string[n], xs: f32[n], ys: f32[n], em: f32, c: Color, k: i64, acc: Primitive[]): Primitive[] {
+    return k >= names.length ? acc : linesFrom(f, names, xs, ys, em, c, k + 1, concat(acc, line(f, em, names[k], xs[k], ys[k], c)));
+}
+
+// `names[k]` ending at `x` on the baselines `ys[k]`, from the `k`-th
+function rightFrom(f: Font, names: string[n], x: f32, ys: f32[n], em: f32, c: Color, k: i64, acc: Primitive[]): Primitive[] {
+    return k >= names.length ? acc : rightFrom(f, names, x, ys, em, c, k + 1, concat(acc, rightAligned(f, names[k], x, ys[k], em, c)));
+}
+
+// the texts of the plate, over its shapes
+function labels(f: Font): Primitive[] {
+    const white = rgb(0xFFFFFFu32);
+    const ink = rgb(0x111827u32);
+    const gray = rgb(0x6B7280u32);
+    const xs = [40.0f32, 190.0f32, 340.0f32, 490.0f32, 640.0f32, 790.0f32, 940.0f32];
+    const radiiNames = ["droits", "4 px", "12 px", "24 px", "pilule", "un coin", "deux coins"];
+    const borderNames = ["1 px", "2 px", "4 px", "10 px", "haut", "côtés", "contour"];
+    const shadowNames = ["net", "flou 2", "flou 4", "flou 8", "flou 12", "flou 18"];
+    const rows = ["Compiler le module unix", "Tester win32 sous Windows", "Dessiner le texte", "Publier la planche"];
+    const states = ["fait", "en cours", "fait", "à faire"];
+    const all: Primitive[] = [];
+    const t0 = concat(all, centredRow(f, radiiNames, xs, 30.0f32, 110.0f32, 80.0f32, 14.0f32, white, 0, []));
+    const t1 = concat(t0, centred(f, "disque", 1110.0f32, 30.0f32, 80.0f32, 80.0f32, 14.0f32, white));
+    const t2 = concat(t1, centredRow(f, borderNames, xs, 150.0f32, 110.0f32, 80.0f32, 14.0f32, ink, 0, []));
+    const t3 = concat(t2, centred(f, "35 %", 1110.0f32, 150.0f32, 80.0f32, 80.0f32, 13.0f32, ink));
+    const t4 = concat(t3, line(f, 12.0f32, "voiles de 25 à 100 %", 40.0f32, 382.0f32, gray));
+    const t5 = concat(t4, line(f, 12.0f32, "rouge, vert, bleu à 50 %", 318.0f32, 382.0f32, gray));
+    const t6 = concat(t5, line(f, 12.0f32, "éventail à 80 %", 520.0f32, 382.0f32, gray));
+    const t7 = concat(t6, line(f, 12.0f32, "verre à 55 % sur des rayures", 800.0f32, 382.0f32, gray));
+    const t8 = concat(t7, centredRow(f, shadowNames, map(iota(6), (i) => 40.0f32 + f32(i) * 150.0f32), 410.0f32, 110.0f32, 80.0f32, 14.0f32, ink, 0, []));
+    const t9 = concat(t8, centred(f, "halo", 940.0f32, 410.0f32, 110.0f32, 80.0f32, 14.0f32, ink));
+    const t10 = concat(t9, centred(f, "deux ombres", 1100.0f32, 410.0f32, 110.0f32, 80.0f32, 14.0f32, ink));
+    const t11 = concat(t10, centred(f, "étiquette", 40.0f32, 520.0f32, 160.0f32, 34.0f32, 14.0f32, ink));
+    const t12 = concat(t11, centred(f, "coins alternés", 260.0f32, 520.0f32, 160.0f32, 34.0f32, 14.0f32, ink));
+    const t13 = concat(t12, centred(f, "Valider", 40.0f32, 600.0f32, 120.0f32, 40.0f32, 15.0f32, white));
+    const t14 = concat(t13, centred(f, "Appuyé", 180.0f32, 600.0f32, 120.0f32, 40.0f32, 15.0f32, white));
+    const t15 = concat(t14, centred(f, "Annuler", 320.0f32, 600.0f32, 120.0f32, 40.0f32, 15.0f32, blue()));
+    const t16 = concat(t15, line(f, 12.0f32, "36 %", 1210.0f32, 597.0f32, gray));
+    const t17 = concat(t16, centred(f, "3", 266.0f32, 654.0f32, 20.0f32, 20.0f32, 11.0f32, white));
+    const t18 = concat(t17, line(f, 14.0f32, "Votre nom", 334.0f32, 689.0f32, rgb(0x9CA3AFu32)));
+    const t19 = concat(t18, line(f, 14.0f32, "Isocron", 564.0f32, 689.0f32, ink));
+    const t20 = concat(t19, [Box(quad(565.0f32 + lineWidth(f, 14.0f32, "Isocron"), 675.0f32, 1.5f32, 18.0f32, blue()))]);
+    const t21 = concat(t20, centred(f, "Jour", 790.0f32, 662.0f32, 82.0f32, 44.0f32, 13.0f32, gray));
+    const t22 = concat(t21, centred(f, "Semaine", 872.0f32, 666.0f32, 76.0f32, 36.0f32, 13.0f32, ink));
+    const t23 = concat(t22, centred(f, "Mois", 948.0f32, 662.0f32, 82.0f32, 44.0f32, 13.0f32, gray));
+    const t24 = concat(t23, centred(f, "Une infobulle", 1060.0f32, 660.0f32, 140.0f32, 36.0f32, 13.0f32, white));
+    const t25 = concat(t24, line(f, 16.0f32, "Tâches de la semaine", 60.0f32, 778.0f32, white));
+    const t26 = concat(t25, linesFrom(f, rows, fill(4, 90.0f32), map(iota(4), (i) => 820.0f32 + f32(i) * 40.0f32), 14.0f32, ink, 0, []));
+    const t27 = concat(t26, rightFrom(f, states, 580.0f32, map(iota(4), (i) => 820.0f32 + f32(i) * 40.0f32), 12.0f32, gray, 0, []));
+    const t28 = concat(t27, line(f, 12.0f32, "4 tâches", 60.0f32, 985.0f32, gray));
+    const t29 = concat(t28, centred(f, "Ajouter", 490.0f32, 968.0f32, 96.0f32, 26.0f32, 13.0f32, white));
+    const t30 = concat(t29, line(f, 12.0f32, "traits de 0,25 à 3 px", 660.0f32, 872.0f32, gray));
+    const t31 = concat(t30, line(f, 12.0f32, "quarts de pixel, disques", 800.0f32, 835.0f32, gray));
+    const t32 = concat(t31, line(f, 12.0f32, "contours de 0,5 à 2,5 px, pente", 960.0f32, 862.0f32, gray));
+    const t33 = concat(t32, line(f, 22.0f32, "isocron-ui", 660.0f32, 960.0f32, ink));
+    const t34 = concat(t33, line(f, 13.0f32, "Tout est dessiné par la bibliothèque, texte compris.", 660.0f32, 985.0f32, gray));
+    return t34;
+}
+
+// every primitive of the plate, in their order, the texts last
+export function plate(f: Font): Primitive[] {
+    return concat(concat(concat(concat(concat(concat(concat(radii(), borders()), alphas()), shadows()), widgets()), panel()), fractions()), labels(f));
 }

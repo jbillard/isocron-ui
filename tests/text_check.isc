@@ -1,0 +1,40 @@
+// The text: characters read from UTF-8 (one to four bytes), the advance of
+// a line with its kerning, and the coverage of glyphs exact: the sum of the
+// coverage of their pixels is the area inside their outline (its straight
+// parts), for glyphs whose contours do not cross (`l`, `o`, `e`, `A`, `8`)
+// at several sizes and pens.
+import { parse, glyphOf, advance, kerning, Segment } from "../src/font";
+import { codePoints, rasterize, lineWidth, scaledOutline } from "../src/text";
+
+// the area inside the parts `ss` (the formula of the shoelace), positive
+// for the turn of TrueType
+function area(ss: Segment[n]): f64 {
+    return abs(fold(ss, 0.0, (a, s) => a + (f64(s.x0) * f64(s.y1) - f64(s.x1) * f64(s.y0)) * 0.5));
+}
+
+action main(args: string[k]): i32 {
+    print(codePoints("aé€😀"));
+    return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => {
+            const a = glyphOf(f, 65);
+            const v = glyphOf(f, 86);
+            print([advance(f, a), advance(f, v), kerning(f, a, v)] as const);
+            print(lineWidth(f, 20.48f32, "AV"));
+            const cases = map(iota(15), (i) => {
+                const g = glyphOf(f, [108, 111, 101, 65, 56][i % 5]);
+                const em = [11.0f32, 14.0f32, 31.5f32][i / 5];
+                const fx = f32(i % 4) * 0.25f32;
+                const [x, y, w, h, m] = rasterize(f, g, em, fx);
+                const covered = sum(map(m, (c) => f64(c)));
+                const exact = area(scaledOutline(f, g, em, fx));
+                return abs(covered - exact) < 1e-3 * exact;
+            });
+            print(cases);
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

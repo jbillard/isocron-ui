@@ -8,6 +8,7 @@ import * as sys from "sys";
 import { Primitive, rgb, render } from "../src/paint";
 import { encode } from "../src/png";
 import { plate } from "./gallery_plate";
+import { parse } from "../src/font";
 
 // the window kept on the screen until `until` (nanoseconds of `clock`), its
 // image shown again when Windows asks for it
@@ -34,7 +35,11 @@ action main(args: string[k]): i32 {
         Ok(w) => {
             const [width, height] = win.clientSize(w);
             const t0 = clock();
-            const px = render(width, height, rgb(0xF3F4F6u32), plate());
+            const font = readBytes(args.length > 2 ? args[2] : "DejaVuSans.ttf");
+            const px = render(width, height, rgb(0xF3F4F6u32), match (parse(font)) {
+                Ok(f) => plate(f),
+                Err(e) => [],
+            });
             const t1 = clock();
             print(`${width}x${height} drawn in ${f64(t1 - t0) / 1e6} ms`);
             print(win.show(w, px, width, height));

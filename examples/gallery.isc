@@ -4,11 +4,15 @@
 import { rgb, render } from "../src/paint";
 import { encode } from "../src/png";
 import { plate } from "./gallery_plate";
+import { parse } from "../src/font";
 
 action main(args: string[k]): i32 {
     const w = 1280;
     const h = 1040;
-    const ps = plate();
+    const ps = match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => plate(f),
+        Err(e) => [],
+    };
     const t0 = clock();
     const px = render(w, h, rgb(0xF3F4F6u32), ps);
     const t1 = clock();

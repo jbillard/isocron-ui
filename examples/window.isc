@@ -10,6 +10,7 @@ import * as sys from "sys";
 import * as wl from "../src/wayland";
 import { Primitive, Box, Blur, quad, rounded, bordered, rgb, rgba, render } from "../src/paint";
 import { plate } from "./gallery_plate";
+import { parse } from "../src/font";
 
 // the scene of the window, `w` by `h` pixels
 function scene(w: i64, h: i64): Primitive[] {
@@ -46,7 +47,11 @@ action globals(c: net.Conn, pending: u8[], g: wl.Globals): wl.Globals {
 action show(c: net.Conn, w: i64, h: i64, full: boolean): boolean {
     return match (unix.shared(w * h * 4)) {
         Ok(m) => {
-            const px = full ? render(w, h, rgb(0xF3F4F6u32), plate()) : render(w, h, rgb(0xE5E7EBu32), scene(w, h));
+            const font = readBytes("tests/fonts/DejaVuSans.ttf");
+            const px = full ? render(w, h, rgb(0xF3F4F6u32), match (parse(font)) {
+                Ok(f) => plate(f),
+                Err(e) => [],
+            }) : render(w, h, rgb(0xE5E7EBu32), scene(w, h));
             const written = unix.writeSharedU32(m, 0, px);
             const sent = unix.sendWithFds(c, wl.bufferRequests(w * h * 4, w, h), [unix.sharedFd(m)]);
             const shown = net.write(c, wl.showRequests(w, h));

@@ -1,0 +1,32 @@
+// A few lines of text of DejaVu Sans at several sizes, over a card, into
+// the PNG file of the first argument.
+import { Primitive, Box, quad, rounded, bordered, rgb, rgba, render } from "../src/paint";
+import { encode } from "../src/png";
+import { parse } from "../src/font";
+import { line } from "../src/text";
+
+action main(args: string[k]): i32 {
+    return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => {
+            const ink = rgb(0x111827u32);
+            const card: Primitive[] = [Box(bordered(rounded(quad(20.0f32, 20.0f32, 600.0f32, 220.0f32, rgb(0xFFFFFFu32)), 12.0f32), 1.0f32, rgb(0xD1D5DBu32)))];
+            const t0 = clock();
+            const texts = concat(concat(concat(concat(
+                line(f, 32.0f32, "Bonjour, Isocron !", 40.0f32, 72.0f32, ink),
+                line(f, 18.0f32, "Texte dessiné sur le processeur : AVA, Wa, é è ç €.", 40.0f32, 110.0f32, rgb(0x374151u32))),
+                line(f, 13.0f32, "Une ligne de 13 pixels, comme dans une interface dense.", 40.0f32, 140.0f32, rgb(0x6B7280u32))),
+                line(f, 11.0f32, "0123456789 — les chiffres de 11 pixels.", 40.0f32, 165.0f32, rgb(0x6B7280u32))),
+                line(f, 24.0f32, "Bleu sur blanc", 40.0f32, 210.0f32, rgb(0x2563EBu32)));
+            const t1 = clock();
+            const px = render(640, 260, rgb(0xF3F4F6u32), concat(card, texts));
+            const t2 = clock();
+            print(`${texts.length} glyphs laid out and drawn in ${f64(t1 - t0) / 1e6} ms, the image in ${f64(t2 - t1) / 1e6} ms`);
+            writeBytes(args[0], encode(640, 260, px));
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

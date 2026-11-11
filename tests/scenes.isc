@@ -3,6 +3,8 @@
 // CRC-32 printed.
 import { Primitive, Box, Blur, Color, quad, rounded, bordered, rgb, rgba, render } from "../src/paint";
 import { encode, crc32 } from "../src/png";
+import { parse } from "../src/font";
+import { line } from "../src/text";
 
 function corners(x: f32, y: f32, w: f32, h: f32, blur: f32, c: Color, r: f32): Primitive {
     return Blur({ x: x, y: y, w: w, h: h, blur: blur, color: c, topLeft: r, topRight: r, bottomRight: r, bottomLeft: r });
@@ -38,5 +40,10 @@ action main(args: string[k]): i32 {
         Box(rounded(quad(8.0f32, 7.0f32, 40.0f32, 24.0f32, white), 6.0f32)),
         corners(14.0f32, 38.0f32, 30.0f32, 6.0f32, 0.0f32, rgba(0.2f32, 0.2f32, 0.6f32, 0.7f32), 3.0f32),
     ]);
+    // text: two sizes, accents, kerning (AV), a fraction of a pixel
+    match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => scene(args[0], "text", 96, 40, white, concat(line(f, 16.0f32, "AVé€", 4.25f32, 17.0f32, rgb(0x111827u32)), line(f, 11.0f32, "Isocron 0,5", 4.0f32, 33.0f32, rgb(0x2563EBu32)))),
+        Err(e) => print(e),
+    };
     return 0;
 }

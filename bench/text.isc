@@ -1,0 +1,34 @@
+// The cost of text: the glyphs of a line of 50 characters of DejaVu Sans at
+// 14 pixels, their outlines read and cut in straight parts alone, then
+// rasterized (outline and coverage), then the whole line laid out. Each
+// line: the step, the nanoseconds of one glyph (of one line for the last),
+// a checksum.
+// usage: text <rounds>
+import { parse, glyphOf, outline } from "../src/font";
+import { codePoints, rasterize, line } from "../src/text";
+import { rgb } from "../src/paint";
+
+action main(args: string[k]): i32 {
+    const rounds = parseI64(args[0]);
+    const s = "Une ligne de texte, comme dans une interface dense";
+    return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => {
+            const gs = map(codePoints(s), (c) => glyphOf(f, c));
+            const n = gs.length;
+            const [o, ons] = bench(rounds, () => sum(map(gs, (g) => outline(f, g, 4).length)));
+            print(`outline ${f64(ons) / f64(rounds * n)} ${o}`);
+            const [r, rns] = bench(rounds, () => sum(map(gs, (g) => {
+                const [x, y, w, h, m] = rasterize(f, g, 14.0f32, 0.25f32);
+                return w * h;
+            })));
+            print(`rasterize ${f64(rns) / f64(rounds * n)} ${r}`);
+            const [l, lns] = bench(rounds, () => line(f, 14.0f32, s, 10.0f32, 20.0f32, rgb(0x111827u32)).length);
+            print(`line ${f64(lns) / f64(rounds)} ${l}`);
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

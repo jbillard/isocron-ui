@@ -1,6 +1,6 @@
 // The primitives of a scene drawn on the processor: rectangles with rounded
-// corners and borders (the quads of GPUI) and their shadows, each pixel the
-// composition of the primitives that cover it, in their order. The formulas are those of the
+// corners and borders (the quads of GPUI), their shadows and glyphs, each
+// pixel the composition of the primitives that cover it, in their order. The formulas are those of the
 // fragment shader of the quads of GPUI (the signed distance to a rounded
 // rectangle, the antialiasing of half a pixel), in `f32`: the same bits on
 // every target and for any number of threads.
@@ -28,8 +28,13 @@ export type Shadow = {
     topLeft: f32, topRight: f32, bottomRight: f32, bottomLeft: f32,
 };
 
+// a glyph, or any small image of coverage: the place of its top left
+// pixel (whole pixels), its size, its colour, the coverage of each of its
+// pixels in [0, 1] (rows from the top; at least one pixel)
+export type Sprite = { x: i64, y: i64, w: i64, h: i64, color: Color, mask: f32[] };
+
 // what a scene holds, drawn in its order
-export type Primitive = Box(Quad) | Blur(Shadow);
+export type Primitive = Box(Quad) | Blur(Shadow) | Glyph(Sprite);
 
 export function rgba(r: f32, g: f32, b: f32, a: f32): Color {
     return { r: r, g: g, b: b, a: a };
@@ -196,6 +201,7 @@ function reach(p: Primitive): [f32, f32, f32, f32] {
             const m = 3.0f32 * s.blur + 1.0f32;
             return [s.x - m, s.y - m, s.x + s.w + m, s.y + s.h + m] as const;
         },
+        Glyph(g) => [f32(g.x), f32(g.y), f32(g.x + g.w), f32(g.y + g.h)] as const,
     };
 }
 
@@ -304,6 +310,20 @@ function tile(t: i64, tx: i64, base: Color, ps: Primitive[n], boxes: [f32, f32, 
                 });
                 const over = (d: f32[256], cc: f32) => map(iota(256), (j) => cc * sa[j] + d[j] * (1.0f32 - sa[j]));
                 return [over(r, sh.color.r), over(g, sh.color.g), over(b, sh.color.b), map(iota(256), (j) => sa[j] + a[j] * (1.0f32 - sa[j]))] as const;
+            },
+            Glyph(gl) => {
+                const m = gl.mask;
+                const sa = map(iota(256), (j) => {
+                    const col = (t % tx) * TILE + j % TILE - gl.x;
+                    const row = (t / tx) * TILE + j / TILE - gl.y;
+                    const inside = col >= 0 && col < gl.w && row >= 0 && row < gl.h;
+                    // (the place read whatever the pixel, then kept or not: a
+                    // branch that cannot fail, for every pixel at once)
+                    const v = m[inside ? row * gl.w + col : 0];
+                    return inside ? gl.color.a * v : 0.0f32;
+                });
+                const over = (d: f32[256], cc: f32) => map(iota(256), (j) => cc * sa[j] + d[j] * (1.0f32 - sa[j]));
+                return [over(r, gl.color.r), over(g, gl.color.g), over(b, gl.color.b), map(iota(256), (j) => sa[j] + a[j] * (1.0f32 - sa[j]))] as const;
             },
         };
     });

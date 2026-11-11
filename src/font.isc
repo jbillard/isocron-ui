@@ -194,27 +194,32 @@ function glyphRange(f: Font, g: i64): [i64, i64] {
 
 // the flags of the `n` points of a simple glyph from `at`, a flag repeated
 // as the next byte says (bit 3), and the place after them
-function flagsFrom(b: u8[m], at: i64, n: i64, acc: u8[]): [u8[], i64] {
-    if (acc.length >= n) {
-        return [acc.slice(0, n), at] as const;
-    }
-    const fl = b[at];
-    const times = (fl & 8u8) != 0u8 ? 1 + i64(b[at + 1]) : 1;
-    return flagsFrom(b, at + ((fl & 8u8) != 0u8 ? 2 : 1), n, concat(acc, fill(times, fl)));
+function flagsFrom(b: u8[m], at: i64, n: i64): [u8[n], i64] {
+    const [fl, after, left, cur] = fold(iota(n), [fill(n, 0u8), at, 0, 0u8] as const, (acc, i) => {
+        const [a, p, left, cur] = acc;
+        if (left > 0) {
+            return [requireUnique(a.with(i, cur)), p, left - 1, cur] as const;
+        }
+        const f = b[p];
+        const again = (f & 8u8) != 0u8;
+        return [requireUnique(a.with(i, f)), again ? p + 2 : p + 1, again ? i64(b[p + 1]) : 0, f] as const;
+    });
+    return [fl, after] as const;
 }
 
 // the coordinates of the points of their flags `fl` from `at`: `short` the
 // bit of a coordinate of one byte, `same` the bit of a repeated one (or of
 // a positive one of one byte); and the place after them
-function coordsFrom(b: u8[m], at: i64, fl: u8[n], short: u8, same: u8): [i64[n], i64] {
-    const sizes = map(fl, (f) => (f & short) != 0u8 ? 1 : ((f & same) != 0u8 ? 0 : 2));
-    const ends = scan(sizes, (x, y) => x + y, 0);
-    const deltas = map(iota(n), (i) => {
-        const p = at + ends[i] - sizes[i];
+function coordsFrom(b: u8[m], at: i64, fl: u8[n], short: u8, same: u8): [f32[n], i64] {
+    const [vs, after, last] = fold(iota(n), [fill(n, 0.0f32), at, 0] as const, (acc, i) => {
+        const [a, p, v] = acc;
         const f = fl[i];
-        return (f & short) != 0u8 ? ((f & same) != 0u8 ? i64(b[p]) : -i64(b[p])) : ((f & same) != 0u8 ? 0 : s16(b, p));
+        const one = (f & short) != 0u8;
+        const keep = (f & same) != 0u8;
+        const d = one ? (keep ? i64(b[p]) : -i64(b[p])) : (keep ? 0 : s16(b, p));
+        return [requireUnique(a.with(i, f32(v + d))), one ? p + 1 : (keep ? p : p + 2), v + d] as const;
     });
-    return [scan(deltas, (x, y) => x + y, 0), at + (n == 0 ? 0 : ends[n - 1])] as const;
+    return [vs, after] as const;
 }
 
 // a point of an outline: its place, whether it is on the curve, the last
@@ -226,10 +231,11 @@ function simplePoints(b: u8[m], at: i64, contours: i64): Point[] {
     const ends = map(iota(contours), (k) => u16(b, at + 10 + 2 * k));
     const n = contours == 0 ? 0 : ends[contours - 1] + 1;
     const code = at + 10 + 2 * contours;
-    const [fl, afterFlags] = flagsFrom(b, code + 2 + u16(b, code), n, []);
+    const [fl, afterFlags] = flagsFrom(b, code + 2 + u16(b, code), n);
     const [xs, afterX] = coordsFrom(b, afterFlags, fl, 2u8, 16u8);
     const [ys, afterY] = coordsFrom(b, afterX, fl, 4u8, 32u8);
-    return map(iota(n), (i) => ({ x: f32(xs[i]), y: f32(ys[i]), on: (fl[i] & 1u8) != 0u8, last: count(ends, (e) => e == i) > 0 }));
+    const lasts = scatter(fill(n, false), ends, fill(contours, true), (a, z) => z);
+    return map(iota(n), (i) => ({ x: xs[i], y: ys[i], on: (fl[i] & 1u8) != 0u8, last: lasts[i] }));
 }
 
 // the points of the glyph `g`, its components placed for a composite one
@@ -269,39 +275,30 @@ function componentsFrom(f: Font, at: i64, depth: i64, acc: Point[]): Point[] {
     return (flags & 32) != 0 ? componentsFrom(f, next, depth, all) : all;
 }
 
-// the outline of the glyph `g`: its contours cut in straight parts, each
-// quadratic curve in `steps` parts
+// the outline of the glyph `g`: its contours cut in straight parts, a
+// line one part, each quadratic curve `steps` parts. Each point starts one
+// piece: a line to the next point when both are on the curve, a curve
+// whose control is an off point (from the point before it, or the middle
+// of the two, to the next, or the middle). The points are read once, the
+// parts written in place.
 export function outline(f: Font, g: i64, steps: i64): Segment[] {
     const ps = points(f, g, 0);
     const n = ps.length;
-    if (n == 0) {
-        return [];
-    }
-    // the first and last point of the contour of each point
-    const lasts = map(iota(n), (i) => ps[i].last ? 1 : 0);
-    const contour = scan(lasts, (x, y) => x + y, 0);
-    const firstOf = map(iota(n), (i) => {
-        const k = contour[i] - lasts[i];
-        return findIndex(iota(n), (j) => contour[j] - lasts[j] == k);
-    });
-    const lastOf = map(iota(n), (i) => ps[i].last ? i : findIndex(iota(n - i), (j) => ps[i + j].last) + i);
-    const nextOf = (i: i64) => ps[i].last ? firstOf[i] : i + 1;
-    const prevOf = (i: i64) => i == firstOf[i] ? lastOf[i] : i - 1;
-    // each point starts one piece: a line to the next point when both are
-    // on the curve, a curve whose control is an off point (from the point
-    // before it, or the middle of the two, to the next, or the middle)
-    const pieces = filter(iota(n), (i) => !ps[i].on || ps[nextOf(i)].on);
-    return map(iota(pieces.length * steps), (k) => {
-        const i = pieces[k / steps];
-        const s = k % steps;
+    // the last point of each contour
+    const lastAt = filter(iota(n), (i) => ps[i].last);
+    const none = { x0: 0.0f32, y0: 0.0f32, x1: 0.0f32, y1: 0.0f32 };
+    const [segs, count, first, c] = fold(iota(n), [fill(n * steps, none), 0, 0, 0] as const, (acc, i) => {
+        const [out, k, first, c] = acc;
+        const last = lastAt[c];
         const p = ps[i];
-        const nx = ps[nextOf(i)];
-        const pv = ps[prevOf(i)];
-        // a line: its piece `s` of `steps`
+        const nx = ps[i == last ? first : i + 1];
+        const pv = ps[i == first ? last : i - 1];
+        const nextFirst = i == last ? i + 1 : first;
+        const nextC = i == last ? c + 1 : c;
         if (p.on) {
-            const t0 = f32(s) / f32(steps);
-            const t1 = f32(s + 1) / f32(steps);
-            return { x0: p.x + (nx.x - p.x) * t0, y0: p.y + (nx.y - p.y) * t0, x1: p.x + (nx.x - p.x) * t1, y1: p.y + (nx.y - p.y) * t1 };
+            return nx.on
+                ? [requireUnique(out.with(k, { x0: p.x, y0: p.y, x1: nx.x, y1: nx.y })), k + 1, nextFirst, nextC] as const
+                : [out, k, nextFirst, nextC] as const;
         }
         const ax = pv.on ? pv.x : (pv.x + p.x) * 0.5f32;
         const ay = pv.on ? pv.y : (pv.y + p.y) * 0.5f32;
@@ -311,8 +308,12 @@ export function outline(f: Font, g: i64, steps: i64): Segment[] {
             const u = 1.0f32 - t;
             return [u * u * ax + 2.0f32 * u * t * p.x + t * t * bx, u * u * ay + 2.0f32 * u * t * p.y + t * t * by] as const;
         };
-        const [x0, y0] = at(f32(s) / f32(steps));
-        const [x1, y1] = at(f32(s + 1) / f32(steps));
-        return { x0: x0, y0: y0, x1: x1, y1: y1 };
+        const curve = fold(iota(steps), out, (o, s) => {
+            const [x0, y0] = at(f32(s) / f32(steps));
+            const [x1, y1] = at(f32(s + 1) / f32(steps));
+            return requireUnique(o.with(k + s, { x0: x0, y0: y0, x1: x1, y1: y1 }));
+        });
+        return [curve, k + steps, nextFirst, nextC] as const;
     });
+    return segs.slice(0, count);
 }
