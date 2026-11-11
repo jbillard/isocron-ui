@@ -27,38 +27,41 @@ action draw(w: win.Window, f: Font, m: Model, width: i64, height: i64): Hit[] {
 
 // the events of the window until `until` (nanoseconds of `clock`) or its
 // closing: the pointer followed, a press of the left button on a place
-// gives its message; the model drawn again when it changes or Windows asks
+// gives its message; the window resized, its view laid out again at its
+// size; the model drawn again when it changes, when the size changes or
+// when Windows asks (a window reduced to nothing is not drawn)
 action run(w: win.Window, f: Font, m: Model, hits: Hit[], x: i64, y: i64, width: i64, height: i64, until: u64): Model {
     if (clock() >= until) {
         return m;
     }
     return match (win.events(w, 50)) {
         Ok(evs) => {
-            const [next, nx, ny, again, closed] = fold(evs, [m, x, y, false, false] as const, (acc, e) => {
-                const [mm, px, py, redraw, cl] = acc;
+            const [next, nx, ny, again, closed, nw, nh] = fold(evs, [m, x, y, false, false, width, height] as const, (acc, e) => {
+                const [mm, px, py, redraw, cl, ww, hh] = acc;
                 return match (e) {
-                    win.Pointer(a, b) => [mm, a, b, redraw, cl] as const,
+                    win.Resize(a, b) => [mm, px, py, true, cl, a, b] as const,
+                    win.Pointer(a, b) => [mm, a, b, redraw, cl, ww, hh] as const,
                     // the arrows up and down (virtual keys 0x26, 0x28)
                     win.Key(k, down, s) => {
                         const msg = !down ? -1 : (k == 38 ? INCREMENT : (k == 40 ? DECREMENT : -1));
-                        return [msg >= 0 ? update(mm, msg) : mm, px, py, redraw || msg >= 0, cl] as const;
+                        return [msg >= 0 ? update(mm, msg) : mm, px, py, redraw || msg >= 0, cl, ww, hh] as const;
                     },
                     win.Button(b, down) => {
                         const msg = b == 0 && down ? hitTest(hits, f32(px) + 0.5f32, f32(py) + 0.5f32) : -1;
-                        return [msg >= 0 ? update(mm, msg) : mm, px, py, redraw || msg >= 0, cl] as const;
+                        return [msg >= 0 ? update(mm, msg) : mm, px, py, redraw || msg >= 0, cl, ww, hh] as const;
                     },
-                    win.Paint => [mm, px, py, true, cl] as const,
-                    win.Close => [mm, px, py, redraw, true] as const,
+                    win.Paint => [mm, px, py, true, cl, ww, hh] as const,
+                    win.Close => [mm, px, py, redraw, true, ww, hh] as const,
                     _ => acc,
                 };
             });
             if (closed) {
                 return next;
             }
-            if (again) {
-                return run(w, f, next, draw(w, f, next, width, height), nx, ny, width, height, until);
+            if (again && nw > 0 && nh > 0) {
+                return run(w, f, next, draw(w, f, next, nw, nh), nx, ny, nw, nh, until);
             }
-            return run(w, f, next, hits, nx, ny, width, height, until);
+            return run(w, f, next, hits, nx, ny, nw, nh, until);
         },
         Err(e) => m,
     };
@@ -107,8 +110,10 @@ action main(args: string[k]): i32 {
                 const m = run(w, f, m0, hits, 0, 0, width, height, until);
                 print([m.count, m.step] as const);
                 if (capture >= 0) {
+                    // (at the size the window has now)
+                    const [cw, ch] = win.clientSize(w);
                     match (win.capture(w)) {
-                        Ok(shot) => writeBytes(args[capture], encode(width, height, shot)),
+                        Ok(shot) => writeBytes(args[capture], encode(cw, ch, shot)),
                         Err(e) => print(sys.message(e)),
                     };
                 }

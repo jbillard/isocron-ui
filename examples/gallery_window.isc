@@ -53,8 +53,10 @@ action main(args: string[k]): i32 {
             keep(w, px, width, height, timed >= 0 ? clock() + u64(parseI64(args[timed])) * 1000000000u64 : 18446744073709551615u64);
             const capture = findIndex(args, (a) => a.endsWith(".png"));
             if (capture >= 0) {
+                // (at the size the window has now)
+                const [cw, ch] = win.clientSize(w);
                 match (win.capture(w)) {
-                    Ok(shot) => writeBytes(args[capture], encode(width, height, shot)),
+                    Ok(shot) => writeBytes(args[capture], encode(cw, ch, shot)),
                     Err(e) => print(sys.message(e)),
                 };
             }
