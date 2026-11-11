@@ -1,0 +1,26 @@
+// The wire of Wayland: requests encoded, events decoded (a part of an event
+// kept for the next read), their meanings.
+import * as wl from "../src/wayland";
+
+action main(args: string[k]): i32 {
+    print(wl.request(1u32, 1u32, wl.le32(2u32)));
+    print(wl.str("wl_shm"));
+    print(wl.str("abc"));
+    print(wl.bind(7u32, "wl_seat", 5u32, 7u32));
+    // a global, then the done of a callback, then half of an event
+    const global = wl.request(wl.REGISTRY, 0u32, concat(concat(wl.le32(3u32), wl.str("xdg_wm_base")), wl.le32(4u32)));
+    const done = wl.request(wl.SYNC, 0u32, wl.le32(99u32));
+    const [evs, rest] = wl.events(concat(concat(global, done), [6u8, 0u8, 0u8, 0u8, 0u8, 0u8, 12u8]));
+    print(evs.length);
+    print(rest);
+    const g = wl.globalsOf(evs, { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32 });
+    print(g.wmBase);
+    print(map(evs, (e) => wl.input(e)));
+    // a configuration of the toplevel, a ping, a motion of the pointer
+    print(wl.input({ obj: wl.TOPLEVEL, op: 0u32, args: concat(concat(wl.i32le(800i32), wl.i32le(600i32)), wl.le32(0u32)) }));
+    print(wl.input({ obj: wl.WM_BASE, op: 0u32, args: wl.le32(41u32) }));
+    print(wl.input({ obj: wl.POINTER, op: 2u32, args: concat(concat(wl.le32(1000u32), wl.i32le(2560i32)), wl.i32le(-128i32)) }));
+    print(wl.socketPath("", "/run/user/1001"));
+    print(wl.socketPath("/tmp/w", "/run/user/1001"));
+    return 0;
+}

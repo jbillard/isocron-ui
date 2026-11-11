@@ -1,0 +1,151 @@
+// A window of Wayland showing a scene of the library: the globals bound, a
+// toplevel made, its configuration acknowledged, the scene drawn into memory
+// shared with the compositor, shown, the frames counted. Ends after
+// `frames` frames (the first argument, 1 by default) or when the window is
+// closed; prints what happened.
+import * as unix from "unix";
+import * as net from "net";
+import * as sys from "sys";
+import * as wl from "../src/wayland";
+import { Primitive, Box, Blur, quad, rounded, bordered, rgb, rgba, render } from "../src/paint";
+
+// the scene of the window, `w` by `h` pixels
+function scene(w: i64, h: i64): Primitive[] {
+    const fw = f32(w);
+    const fh = f32(h);
+    const shadow = rgba(0.0f32, 0.0f32, 0.0f32, 0.3f32);
+    return [
+        Blur({ x: 34.0f32, y: 38.0f32, w: fw - 60.0f32, h: fh - 60.0f32, blur: 8.0f32, color: shadow, topLeft: 16.0f32, topRight: 16.0f32, bottomRight: 16.0f32, bottomLeft: 16.0f32 }),
+        Box(bordered(rounded(quad(30.0f32, 30.0f32, fw - 60.0f32, fh - 60.0f32, rgb(0xFFFFFFu32)), 16.0f32), 2.0f32, rgb(0x3B82F6u32))),
+        Box(rounded(quad(60.0f32, 60.0f32, 160.0f32, 44.0f32, rgb(0x3B82F6u32)), 22.0f32)),
+        Box(rounded(quad(60.0f32, 124.0f32, fw - 120.0f32, 12.0f32, rgb(0xE5E7EBu32)), 6.0f32)),
+        Box(rounded(quad(60.0f32, 148.0f32, (fw - 120.0f32) * 0.6f32, 12.0f32, rgb(0xE5E7EBu32)), 6.0f32)),
+    ];
+}
+
+// what the loop keeps from one read to the next
+type State = { pending: u8[], shown: boolean, frames: i64, w: i64, h: i64, done: boolean, failed: string };
+
+// the bytes received, until the reply of `wl_display.sync` (all the
+// globals have come before it): the globals
+action globals(c: net.Conn, pending: u8[], g: wl.Globals): wl.Globals {
+    return match (unix.receiveWithFds(c, 65536, 8)) {
+        Ok(r) => {
+            const [evs, rest] = wl.events(concat(pending, r.bytes));
+            const g2 = wl.globalsOf(evs, g);
+            const synced = count(evs, (e) => e.obj == wl.SYNC) > 0;
+            return synced || r.bytes.length == 0 ? g2 : globals(c, rest, g2);
+        },
+        Err(e) => g,
+    };
+}
+
+// the scene drawn into a new memory shared, given to the compositor, shown
+action show(c: net.Conn, w: i64, h: i64, frame: u32): boolean {
+    return match (unix.shared(w * h * 4)) {
+        Ok(m) => {
+            const px = render(w, h, rgb(0xE5E7EBu32), scene(w, h));
+            const written = unix.writeSharedU32(m, 0, px);
+            const sent = unix.sendWithFds(c, wl.bufferRequests(w * h * 4, w, h), [unix.sharedFd(m)]);
+            const shown = net.write(c, wl.showRequests(w, h, frame));
+            // the compositor holds its own copy of the descriptor and of the
+            // memory: this program's are given back
+            unix.closeShared(m);
+            return written == Ok(()) && sent == Ok(()) && shown == Ok(());
+        },
+        Err(e) => false,
+    };
+}
+
+// one read of the events, and the answers to them
+action step(c: net.Conn, s: State, frames: i64): State {
+    const r = match (unix.receiveWithFds(c, 65536, 8)) {
+        Ok(got) => got,
+        Err(e) => ({ bytes: [], fds: [] }),
+    };
+    if (r.bytes.length == 0) {
+        return { ...s, done: true, failed: "the compositor closed the connection" };
+    }
+    // a descriptor received (the table of the keyboard) is not used yet
+    const closed = map(r.fds, (fd) => unix.closeFd(fd) == Ok(()) ? 1 : 0);
+    const [evs, rest] = wl.events(concat(s.pending, r.bytes));
+    return handle(c, evs, 0, { ...s, pending: rest }, frames);
+}
+
+// the events `evs` from the `i`-th, answered in their order
+action handle(c: net.Conn, evs: wl.Event[n], i: i64, st: State, frames: i64): State {
+    if (i >= evs.length) {
+        return st;
+    }
+    const next = match (wl.input(evs[i])) {
+        wl.Size(w, h) => w > 0 && h > 0 ? { ...st, w: w, h: h } : st,
+        wl.Configure(serial) => configured(c, serial, st),
+        wl.Ping(serial) => {
+            const pong = net.write(c, wl.request(wl.WM_BASE, 3u32, wl.le32(serial)));
+            return st;
+        },
+        wl.FrameDone(id) => frameDone(c, st, frames),
+        wl.Close => ({ ...st, done: true }),
+        wl.Failure(m) => ({ ...st, done: true, failed: m }),
+        _ => st,
+    };
+    return handle(c, evs, i + 1, next, frames);
+}
+
+// `xdg_surface.configure`: acknowledged; the first one, the scene shown
+action configured(c: net.Conn, serial: u32, st: State): State {
+    const acked = net.write(c, wl.request(wl.XDG_SURFACE, 4u32, wl.le32(serial)));
+    if (st.shown) {
+        return st;
+    }
+    print(`configured ${st.w}x${st.h}`);
+    return { ...st, shown: show(c, st.w, st.h, wl.FRAMES) };
+}
+
+// a frame shown: counted; the next one asked until `frames` of them
+action frameDone(c: net.Conn, st: State, frames: i64): State {
+    const n = st.frames + 1;
+    print(`frame ${n}`);
+    if (n >= frames) {
+        return { ...st, frames: n, done: true };
+    }
+    const again = net.write(c, wl.showRequests(st.w, st.h, wl.FRAMES + u32(n)));
+    return { ...st, frames: n };
+}
+
+action loop(c: net.Conn, s: State, frames: i64): State {
+    if (s.done) {
+        return s;
+    }
+    return loop(c, step(c, s, frames), frames);
+}
+
+action main(args: string[k]): i32 {
+    const frames = args.length > 0 ? parseI64(args[0]) : 1;
+    const path = wl.socketPath(sys.env("WAYLAND_DISPLAY") ?? "", sys.env("XDG_RUNTIME_DIR") ?? "/tmp");
+    return match (unix.connect(path)) {
+        Ok(c) => {
+            // the registry, and a sync whose reply ends its globals
+            const asked = net.write(c, concat(wl.request(wl.DISPLAY, 1u32, wl.le32(wl.REGISTRY)), wl.request(wl.DISPLAY, 0u32, wl.le32(wl.SYNC))));
+            const g = globals(c, [], { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32 });
+            if (g.compositor == 0u32 || g.shm == 0u32 || g.wmBase == 0u32) {
+                print("the compositor lacks wl_compositor, wl_shm or xdg_wm_base");
+                net.close(c);
+                return 1;
+            }
+            const made = net.write(c, wl.windowRequests(g, "isocron-ui"));
+            const s = loop(c, { pending: [], shown: false, frames: 0, w: 480, h: 320, done: false, failed: "" }, frames);
+            net.close(c);
+            if (s.failed != "") {
+                print(`failed: ${s.failed}`);
+                return 1;
+            }
+            print(`shown: ${s.shown}, frames: ${s.frames}`);
+            return 0;
+        },
+        Err(e) => {
+            print(`no compositor at ${path}: ${sys.message(e)}`);
+            return 1;
+        },
+    };
+}

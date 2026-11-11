@@ -1,0 +1,220 @@
+// A client of Wayland written in Isocron over the module `unix` (D632 of
+// Isocron): the wire protocol (messages of 32-bit words, little-endian,
+// descriptors passed beside the bytes), the objects a window needs
+// (`wl_compositor`, `wl_shm`, `xdg_wm_base`, `wl_seat`), an image shown from
+// memory shared with the compositor, the events of the pointer and of the
+// keyboard. No C library: the socket of the compositor is spoken directly.
+import * as unix from "unix";
+import * as net from "net";
+import { IoError, ioError } from "sys";
+
+// ----- the wire --------------------------------------------------------
+
+// the 4 bytes of `v`, the least significant first
+export function le32(v: u32): u8[4] {
+    return [u8(v & 255u32), u8((v >> 8u32) & 255u32), u8((v >> 16u32) & 255u32), u8(v >> 24u32)];
+}
+
+export function i32le(v: i32): u8[4] {
+    return le32(u32(v));
+}
+
+// the word at `at` of `b`
+export function word(b: u8[n], at: i64): u32 {
+    return u32(b[at]) | (u32(b[at + 1]) << 8u32) | (u32(b[at + 2]) << 16u32) | (u32(b[at + 3]) << 24u32);
+}
+
+// a string argument: its length with its zero byte, its bytes, the zero
+// byte, padded to 4 bytes
+export function str(s: string): u8[] {
+    const b = bytes(s);
+    const padded = (b.length + 1 + 3) / 4 * 4;
+    return concat(le32(u32(b.length + 1)), map(iota(padded), (i) => i < b.length ? b[i] : 0u8));
+}
+
+// the string argument at `at` of `b`, and the place after it
+export function strAt(b: u8[n], at: i64): [string, i64] {
+    const len = i64(word(b, at));
+    const text = len == 0 ? "" : stringOf(b.slice(at + 4, at + 4 + len - 1));
+    return [text, at + 4 + (len + 3) / 4 * 4] as const;
+}
+
+// a request of the object `id`: its header (the object, then its size in
+// the high half of a word and its opcode in the low half) and its arguments
+export function request(id: u32, opcode: u32, args: u8[n]): u8[] {
+    return concat(concat(le32(id), le32((u32(8 + args.length) << 16u32) | opcode)), args);
+}
+
+// an event read from the compositor: its object, its opcode, its arguments
+export type Event = { obj: u32, op: u32, args: u8[] };
+
+// the whole events at the start of `b`, and the bytes left after them (the
+// start of an event not received whole)
+export function events(b: u8[n]): [Event[], u8[]] {
+    // the place of each event, found one after the other
+    const starts = eventStarts(b, 0, []);
+    const evs = map(starts, (at) => ({ obj: word(b, at), op: word(b, at + 4) & 0xFFFFu32, args: b.slice(at + 8, at + i64(word(b, at + 4) >> 16u32)) }));
+    const used = starts.length == 0 ? 0 : starts[starts.length - 1] + i64(word(b, starts[starts.length - 1] + 4) >> 16u32);
+    return [evs, b.slice(used, b.length)] as const;
+}
+
+function eventStarts(b: u8[n], at: i64, found: i64[]): i64[] {
+    if (at + 8 > b.length) {
+        return found;
+    }
+    const len = i64(word(b, at + 4) >> 16u32);
+    if (len < 8 || at + len > b.length) {
+        return found;
+    }
+    return eventStarts(b, at + len, concat(found, [at]));
+}
+
+// ----- the objects -----------------------------------------------------
+
+// the names of the globals of the compositor that a window needs (0: not
+// offered)
+export type Globals = { compositor: u32, shm: u32, wmBase: u32, seat: u32 };
+
+// the ids the client gives its objects (the display is 1)
+export const DISPLAY: u32 = 1u32;
+export const REGISTRY: u32 = 2u32;
+export const SYNC: u32 = 3u32;
+export const COMPOSITOR: u32 = 4u32;
+export const SHM: u32 = 5u32;
+export const WM_BASE: u32 = 6u32;
+export const SEAT: u32 = 7u32;
+export const SURFACE: u32 = 8u32;
+export const XDG_SURFACE: u32 = 9u32;
+export const TOPLEVEL: u32 = 10u32;
+export const POOL: u32 = 11u32;
+export const BUFFER: u32 = 12u32;
+export const POINTER: u32 = 13u32;
+export const KEYBOARD: u32 = 14u32;
+// the first id of the callbacks of the frames
+export const FRAMES: u32 = 100u32;
+
+// `wl_registry.bind`: the global `name` of `iface` at `version`, as the
+// object `id`
+export function bind(name: u32, iface: string, version: u32, id: u32): u8[] {
+    return request(REGISTRY, 0u32, concat(concat(concat(le32(name), str(iface)), le32(version)), le32(id)));
+}
+
+// the globals of `wl_registry.global` events (opcode 0) among `evs`
+export function globalsOf(evs: Event[n], g: Globals): Globals {
+    return fold(evs, g, (acc, e) => {
+        if (e.obj != REGISTRY || e.op != 0u32) {
+            return acc;
+        }
+        const name = word(e.args, 0);
+        const [iface, after] = strAt(e.args, 4);
+        return iface == "wl_compositor" ? { ...acc, compositor: name }
+            : (iface == "wl_shm" ? { ...acc, shm: name }
+            : (iface == "xdg_wm_base" ? { ...acc, wmBase: name }
+            : (iface == "wl_seat" ? { ...acc, seat: name } : acc)));
+    });
+}
+
+// the requests that bind the globals and make a toplevel window titled
+// `title`: its surface, its role, its title, the first commit (without an
+// image: the compositor answers with `configure`)
+export function windowRequests(g: Globals, title: string): u8[] {
+    const binds = concat(concat(concat(bind(g.compositor, "wl_compositor", 4u32, COMPOSITOR), bind(g.shm, "wl_shm", 1u32, SHM)), bind(g.wmBase, "xdg_wm_base", 1u32, WM_BASE)), g.seat == 0u32 ? [] : bind(g.seat, "wl_seat", 5u32, SEAT));
+    const surface = request(COMPOSITOR, 0u32, le32(SURFACE));
+    const role = request(WM_BASE, 2u32, concat(le32(XDG_SURFACE), le32(SURFACE)));
+    const toplevel = request(XDG_SURFACE, 1u32, le32(TOPLEVEL));
+    const named = request(TOPLEVEL, 2u32, str(title));
+    const commit = request(SURFACE, 6u32, []);
+    return concat(concat(concat(concat(concat(binds, surface), role), toplevel), named), commit);
+}
+
+// `wl_shm.create_pool` of `bytes` bytes (its descriptor sent beside it),
+// then a buffer of `w` by `h` pixels `XRGB8888` (format 1) at its start
+export function bufferRequests(bytes: i64, w: i64, h: i64): u8[] {
+    const pool = request(SHM, 0u32, concat(le32(POOL), i32le(i32(bytes))));
+    const buffer = request(POOL, 0u32, concat(concat(concat(concat(concat(le32(BUFFER), i32le(0i32)), i32le(i32(w))), i32le(i32(h))), i32le(i32(4 * w))), le32(1u32)));
+    return concat(pool, buffer);
+}
+
+// the image of the buffer shown: attached, damaged whole, a callback asked
+// for the next frame (`frame`), committed
+export function showRequests(w: i64, h: i64, frame: u32): u8[] {
+    const attach = request(SURFACE, 1u32, concat(concat(le32(BUFFER), i32le(0i32)), i32le(0i32)));
+    const damage = request(SURFACE, 9u32, concat(concat(concat(i32le(0i32), i32le(0i32)), i32le(i32(w))), i32le(i32(h))));
+    const callback = request(SURFACE, 3u32, le32(frame));
+    const commit = request(SURFACE, 6u32, []);
+    return concat(concat(concat(attach, damage), callback), commit);
+}
+
+// ----- what happened ---------------------------------------------------
+
+// what the program learns from the events of a read
+export type Input =
+    Configure(u32)
+    | Size(i64, i64)
+    | Close
+    | Ping(u32)
+    | FrameDone(u32)
+    | Released
+    | Pointer(f64, f64)
+    | Button(u32, boolean)
+    | Key(u32, boolean)
+    | Keymap(u32)
+    | Capabilities(u32)
+    | Failure(string)
+    | Other(u32, u32);
+
+// a fixed number of Wayland (24.8) as a float
+function fixed(v: u32): f64 {
+    return f64(i32(v)) / 256.0;
+}
+
+// the meaning of an event
+export function input(e: Event): Input {
+    if (e.obj == DISPLAY && e.op == 0u32) {
+        const [m, after] = strAt(e.args, 8);
+        return Failure(`object ${word(e.args, 0)}, code ${word(e.args, 4)}: ${m}`);
+    }
+    if (e.obj == WM_BASE && e.op == 0u32) {
+        return Ping(word(e.args, 0));
+    }
+    if (e.obj == XDG_SURFACE && e.op == 0u32) {
+        return Configure(word(e.args, 0));
+    }
+    if (e.obj == TOPLEVEL && e.op == 0u32) {
+        return Size(i64(i32(word(e.args, 0))), i64(i32(word(e.args, 4))));
+    }
+    if (e.obj == TOPLEVEL && e.op == 1u32) {
+        return Close;
+    }
+    if (e.obj >= FRAMES && e.op == 0u32) {
+        return FrameDone(e.obj);
+    }
+    if (e.obj == BUFFER && e.op == 0u32) {
+        return Released;
+    }
+    if (e.obj == SEAT && e.op == 0u32) {
+        return Capabilities(word(e.args, 0));
+    }
+    if (e.obj == POINTER && (e.op == 0u32 || e.op == 2u32)) {
+        // enter: serial, surface, x, y; motion: time, x, y
+        const at = e.op == 0u32 ? 8 : 4;
+        return Pointer(fixed(word(e.args, at)), fixed(word(e.args, at + 4)));
+    }
+    if (e.obj == POINTER && e.op == 3u32) {
+        return Button(word(e.args, 8), word(e.args, 12) == 1u32);
+    }
+    if (e.obj == KEYBOARD && e.op == 0u32) {
+        return Keymap(word(e.args, 4));
+    }
+    if (e.obj == KEYBOARD && e.op == 3u32) {
+        return Key(word(e.args, 8), word(e.args, 12) == 1u32);
+    }
+    return Other(e.obj, e.op);
+}
+
+// the path of the socket of the compositor: `$WAYLAND_DISPLAY` (absolute,
+// or in `$XDG_RUNTIME_DIR`; `wayland-0` when it is not set)
+export function socketPath(display: string, runtime: string): string {
+    const name = display == "" ? "wayland-0" : display;
+    return name.startsWith("/") ? name : `${runtime}/${name}`;
+}

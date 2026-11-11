@@ -16,6 +16,6 @@ action main(args: string[k]): i32 {
     const px = map(iota(6), (i) => i % 2 == 0 ? 0xFFFF0000u32 : 0x800000FFu32);
     const f = encode(3, 2, px);
     print(f.length);
-    writeBytes(args[0], f);
+    print(hex(crc32(f)));
     return 0;
 }

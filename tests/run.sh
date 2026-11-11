@@ -20,6 +20,19 @@ if [ "${1:-}" = "--update" ]; then
     exit 0
 fi
 fail=0
+# the programs of checks: their outputs, interpreted and compiled, are those
+# of their `.out` files
+for t in "$here"/*_check.isc; do
+    want="${t%.isc}.out"
+    name="$(basename "$t" .isc)"
+    got="$("$iscc" run "$t")"
+    "$iscc" build "$t" -o "$out/$name"
+    built="$("$out/$name")"
+    if [ "$got" != "$(cat "$want")" ] || [ "$built" != "$got" ]; then
+        echo "FAILED: $name (interpreted, compiled, or both, differ from $(basename "$want"))"
+        fail=1
+    fi
+done
 for f in "$out/compiled/"*.png; do
     name="$(basename "$f")"
     if ! cmp -s "$f" "$here/reference/$name"; then
@@ -27,5 +40,5 @@ for f in "$out/compiled/"*.png; do
         fail=1
     fi
 done
-[ "$fail" = 0 ] && echo "ok: $(wc -l < "$out/compiled.txt") scenes, interpreted = compiled = reference"
+[ "$fail" = 0 ] && echo "ok: $(wc -l < "$out/compiled.txt") scenes and $(ls "$here"/*_check.isc | wc -l) checks, interpreted = compiled = reference"
 exit "$fail"
