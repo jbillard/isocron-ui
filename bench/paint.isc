@@ -1,0 +1,48 @@
+// The cost of the renderer: an image of `w` by `h` pixels drawn `rounds`
+// times, for three scenes: 200 rounded quads with borders laid out as the
+// rows of a list (what an interface draws most), the same with a blurred
+// shadow under every tenth, and one large blurred shadow alone. Each line:
+// the scene, the nanoseconds of one image, of one pixel, a checksum.
+// usage: paint <w> <h> <rounds>
+import { Primitive, Box, Blur, quad, rounded, bordered, rgb, rgba, render } from "../src/paint";
+
+// the rows from the `i`-th, after those of `acc`
+function rowsFrom(i: i64, w: i64, h: i64, shadows: boolean, acc: Primitive[]): Primitive[] {
+    const n = 200;
+    if (i >= n) {
+        return acc;
+    }
+    const per = 20;
+    const rw = f32(w) / f32(n / per);
+    const rh = f32(h) / f32(per);
+    const x = f32(i / per) * rw + 4.0f32;
+    const y = f32(i % per) * rh + 3.0f32;
+    const card = Box(bordered(rounded(quad(x, y, rw - 8.0f32, rh - 6.0f32, rgb(0xFFFFFFu32)), 6.0f32), 1.0f32, rgb(0xD1D5DBu32)));
+    const under = Blur({ x: x, y: y + 2.0f32, w: rw - 8.0f32, h: rh - 6.0f32, blur: 4.0f32, color: rgba(0.0f32, 0.0f32, 0.0f32, 0.3f32), topLeft: 6.0f32, topRight: 6.0f32, bottomRight: 6.0f32, bottomLeft: 6.0f32 });
+    // (`flatMap` missing from Isocron: noted, to add)
+    return rowsFrom(i + 1, w, h, shadows, shadows && i % 10 == 0 ? concat(acc, [under, card]) : concat(acc, [card]));
+}
+
+function rows(w: i64, h: i64, shadows: boolean): Primitive[] {
+    return rowsFrom(0, w, h, shadows, []);
+}
+
+function oneShadow(w: i64, h: i64): Primitive[] {
+    return [Blur({ x: f32(w) * 0.2f32, y: f32(h) * 0.2f32, w: f32(w) * 0.6f32, h: f32(h) * 0.6f32, blur: 16.0f32, color: rgba(0.0f32, 0.0f32, 0.0f32, 0.4f32), topLeft: 12.0f32, topRight: 12.0f32, bottomRight: 12.0f32, bottomLeft: 12.0f32 })];
+}
+
+action measure(name: string, w: i64, h: i64, ps: Primitive[n], rounds: i64): void {
+    const [px, ns] = bench(rounds, () => render(w, h, rgb(0xF3F4F6u32), ps));
+    const check = fold(px, 0u64, (a, p) => a * 31u64 + u64(p));
+    print(`${name} ${f64(ns) / f64(rounds)} ${f64(ns) / f64(rounds) / f64(w * h)} ${check}`);
+}
+
+action main(args: string[k]): i32 {
+    const w = parseI64(args[0]);
+    const h = parseI64(args[1]);
+    const r = parseI64(args[2]);
+    measure("list.200", w, h, rows(w, h, false), r);
+    measure("list.200.shadows", w, h, rows(w, h, true), r);
+    measure("shadow.large", w, h, oneShadow(w, h), r);
+    return 0;
+}

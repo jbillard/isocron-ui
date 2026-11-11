@@ -176,26 +176,63 @@ function byte(v: f32): u32 {
     return u32(clamp01(v) * 255.0f32 + 0.5f32);
 }
 
+// the box of a primitive outside of which it colours no pixel whose
+// centre is there: [x0, y0, x1, y1], a centre (px, py) drawn only when
+// x0 < px < x1 and y0 < py < y1 (one pixel more than a quad for its
+// antialiasing; three deviations more than a shadow, as GPUI draws it)
+function reach(p: Primitive): [f32, f32, f32, f32] {
+    return match (p) {
+        Box(q) => [q.x - 1.0f32, q.y - 1.0f32, q.x + q.w + 1.0f32, q.y + q.h + 1.0f32] as const,
+        Blur(s) => {
+            const m = 3.0f32 * s.blur + 1.0f32;
+            return [s.x - m, s.y - m, s.x + s.w + m, s.y + s.h + m] as const;
+        },
+    };
+}
+
+// the side of a tile, in pixels
+const TILE: i64 = 16;
+
+// the primitives that may colour a pixel of a tile, in their order
+type Bin = { ids: i64[] };
+
 // the `width` by `height` pixels (`0xAARRGGBB`) of the primitives `ps`
-// drawn in their order over the colour `base`
+// drawn in their order over the colour `base`. The image is cut in tiles
+// of 16 by 16 pixels, each with the primitives whose box reaches one of
+// its centres of pixels: a pixel is drawn with those alone, the others
+// colouring nothing there (the same test, so the same bits as drawing
+// every primitive at every pixel).
 export function render(width: i64, height: i64, base: Color, ps: Primitive[n]): u32[] {
+    const tx = (width + TILE - 1) / TILE;
+    const ty = (height + TILE - 1) / TILE;
+    const boxes = map(ps, (p) => reach(p));
+    const bins = map(iota(tx * ty), (t) => {
+        // the centres of the first and last pixels of the tile
+        const cx0 = f32((t % tx) * TILE) + 0.5f32;
+        const cy0 = f32((t / tx) * TILE) + 0.5f32;
+        const cx1 = cx0 + f32(TILE - 1);
+        const cy1 = cy0 + f32(TILE - 1);
+        return { ids: filter(iota(ps.length), (k) => {
+            const [x0, y0, x1, y1] = boxes[k];
+            return cx1 > x0 && cx0 < x1 && cy1 > y0 && cy0 < y1;
+        }) };
+    });
     return map(iota(width * height), (i) => {
-        const px = f32(i % width) + 0.5f32;
-        const py = f32(i / width) + 0.5f32;
+        const x = i % width;
+        const y = i / width;
+        const px = f32(x) + 0.5f32;
+        const py = f32(y) + 0.5f32;
         const start = [base.r * base.a, base.g * base.a, base.b * base.a, base.a] as const;
-        const c = fold(ps, start, (d, p) => {
-            const [sr, sg, sb, sa] = match (p) {
-                Box(q) => px > q.x - 1.0f32 && px < q.x + q.w + 1.0f32 && py > q.y - 1.0f32 && py < q.y + q.h + 1.0f32 ? shade(q, px, py) : NONE,
-                Blur(s) => {
-                    // a shadow is drawn in its rectangle grown by three
-                    // deviations, as GPUI draws it (zero beyond, to `f32`)
-                    const m = 3.0f32 * s.blur + 1.0f32;
-                    return px > s.x - m && px < s.x + s.w + m && py > s.y - m && py < s.y + s.h + m ? shadeShadow(s, px, py) : NONE;
-                },
-            };
+        const c = fold(bins[(y / TILE) * tx + x / TILE].ids, start, (d, k) => {
+            const p = ps[k];
+            const [x0, y0, x1, y1] = boxes[k];
+            const [sr, sg, sb, sa] = px > x0 && px < x1 && py > y0 && py < y1 ? match (p) {
+                Box(q) => shade(q, px, py),
+                Blur(s) => shadeShadow(s, px, py),
+            } : NONE;
             const [dr, dg, db, da] = d;
-            const k = 1.0f32 - sa;
-            return [sr + dr * k, sg + dg * k, sb + db * k, sa + da * k] as const;
+            const k1 = 1.0f32 - sa;
+            return [sr + dr * k1, sg + dg * k1, sb + db * k1, sa + da * k1] as const;
         });
         const [r, g, b, a] = c;
         // back to colours not premultiplied
