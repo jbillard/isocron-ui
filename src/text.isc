@@ -2,7 +2,7 @@
 // images of coverage (`Sprite`), a line of text laid out (its characters
 // read from UTF-8, their glyphs, their advances and the kerning of their
 // pairs, each glyph drawn at its place to a fraction of a pixel).
-import { Font, glyphOf, advance, kerning, outline, Segment } from "./font";
+import { Font, glyphOf, advance, kerning, outline, hasOutline, Segment } from "./font";
 import { Primitive, Glyph, Sprite, Color } from "./paint";
 
 // the characters of `s` (its code points), read from its UTF-8
@@ -52,19 +52,20 @@ export function rasterize(f: Font, g: i64, em: f32, fx: f32): [i64, i64, i64, i6
     // (`scaledOutline`'s)
     const ss = outline(f, g, em > 32.0f32 ? 8 : 4);
     const k = em / f32(f.unitsPerEm);
-    // (the box of the parts that have a height: those of none join two of
-    // them)
-    const [l, t, r, b] = fold(ss, [1e30f32, 1e30f32, -1e30f32, -1e30f32] as const, (box, s) => {
-        const [l0, t0, r0, b0] = box;
-        const x0 = fx + s.x0 * k;
-        const x1 = fx + s.x1 * k;
-        const y0 = -s.y0 * k;
-        const y1 = -s.y1 * k;
-        return y0 == y1 ? box : [less(l0, less(x0, x1)), less(t0, less(y0, y1)), more(r0, more(x0, x1)), more(b0, more(y0, y1))] as const;
-    });
-    if (l > r) {
+    if (ss.length == 0) {
         return [0, 0, 1, 1, [0.0f32]] as const;
     }
+    // the box of the parts in units of the font, then placed and scaled
+    // (both monotonic, their roundings too: the box of the parts placed;
+    // y down, so the top is the largest y)
+    const [lo, bo, ro, to] = fold(ss, [1e30f32, 1e30f32, -1e30f32, -1e30f32] as const, (box, s) => {
+        const [l0, b0, r0, t0] = box;
+        return [less(l0, less(s.x0, s.x1)), less(b0, less(s.y0, s.y1)), more(r0, more(s.x0, s.x1)), more(t0, more(s.y0, s.y1))] as const;
+    });
+    const l = fx + lo * k;
+    const r = fx + ro * k;
+    const t = -to * k;
+    const b = -bo * k;
     const left = floor(l);
     const top = floor(t);
     const w = max(1, i64(ceil(r)) - i64(left));
@@ -135,14 +136,18 @@ export function rasterize(f: Font, g: i64, em: f32, fx: f32): [i64, i64, i64, i6
             return requireUnique(last.with(q, last[q] + d * am));
         });
     });
-    const total = scan(areas, (+), 0.0f32);
-    // each row from its left: what the rows before left subtracted (nothing
-    // but the rounding of the sums)
-    return [i64(left), i64(top), w, h, map(iota(w * h), (i) => {
-        const row = i / w;
-        const before = row > 0 ? total[row * width - 1] : 0.0f32;
-        return less(1.0f32, abs(total[row * width + i % w] - before));
-    })] as const;
+    // each row added up from its left into the coverage of its pixels,
+    // written in place (one pass, as C writes it: no division by the width
+    // for each pixel)
+    const mask = fold(iota(h), fill(w * h, 0.0f32), (m, r) => {
+        const [row, sum] = fold(iota(w), [m, 0.0f32] as const, (acc, x) => {
+            const [o, c] = acc;
+            const total = c + areas[r * width + x];
+            return [requireUnique(o.with(r * w + x, less(1.0f32, abs(total)))), total] as const;
+        });
+        return row;
+    });
+    return [i64(left), i64(top), w, h, mask] as const;
 }
 
 // the advance of the line `s` at `em`, in pixels (kerning included)
@@ -161,16 +166,15 @@ export function line(f: Font, em: f32, s: string, x: f32, y: f32, c: Color): Pri
     const steps = map(iota(gs.length), (i) => f32(advance(f, gs[i]) + (i + 1 < gs.length ? kerning(f, gs[i], gs[i + 1]) : 0)) * k);
     const ends = scan(steps, (a, b) => a + b, 0.0f32);
     const base = i64(floor(y + 0.5f32));
-    const glyphs = map(iota(gs.length), (i) => {
+    // the glyphs that draw something (a space has no outline), chosen
+    // before they are drawn: a glyph is not copied to be kept
+    const drawn = filter(iota(gs.length), (i) => hasOutline(f, gs[i]));
+    return map(drawn, (i) => {
         // the pen at a quarter of a pixel, as GPUI places its glyphs (four
         // images of a glyph at most for a size)
         const pen = floor((x + ends[i] - steps[i]) * 4.0f32 + 0.5f32) * 0.25f32;
         const whole = floor(pen);
         const [left, top, w, h, mask] = rasterize(f, gs[i], em, pen - whole);
         return Glyph({ x: i64(whole) + left, y: base + top, w: w, h: h, color: c, mask: mask });
-    });
-    return filter(glyphs, (p) => match (p) {
-        Glyph(g) => g.w > 1 || g.h > 1 || g.mask[0] > 0.0f32,
-        _ => true,
     });
 }

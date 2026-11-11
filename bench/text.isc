@@ -3,7 +3,7 @@
 // rasterized (outline and coverage), then the whole line laid out. Each
 // line: the step, the nanoseconds of one glyph (of one line for the last),
 // a checksum.
-// usage: text <rounds>
+// usage: text <rounds> [outline|rasterize|line]
 import { parse, glyphOf, outline } from "../src/font";
 import { codePoints, rasterize, line } from "../src/text";
 import { rgb } from "../src/paint";
@@ -15,15 +15,24 @@ action main(args: string[k]): i32 {
         Ok(f) => {
             const gs = map(codePoints(s), (c) => glyphOf(f, c));
             const n = gs.length;
-            const [o, ons] = bench(rounds, () => sum(map(gs, (g) => outline(f, g, 4).length)));
-            print(`outline ${f64(ons) / f64(rounds * n)} ${o}`);
-            const [r, rns] = bench(rounds, () => sum(map(gs, (g) => {
-                const [x, y, w, h, m] = rasterize(f, g, 14.0f32, 0.25f32);
-                return w * h;
-            })));
-            print(`rasterize ${f64(rns) / f64(rounds * n)} ${r}`);
-            const [l, lns] = bench(rounds, () => line(f, 14.0f32, s, 10.0f32, 20.0f32, rgb(0x111827u32)).length);
-            print(`line ${f64(lns) / f64(rounds)} ${l}`);
+            // (the second argument: one step alone, for a count of its
+            // instructions)
+            const only = args.length > 1 ? args[1] : "";
+            if (only == "" || only == "outline") {
+                const [o, ons] = bench(rounds, () => sum(map(gs, (g) => outline(f, g, 4).length)));
+                print(`outline ${f64(ons) / f64(rounds * n)} ${o}`);
+            }
+            if (only == "" || only == "rasterize") {
+                const [r, rns] = bench(rounds, () => sum(map(gs, (g) => {
+                    const [x, y, w, h, m] = rasterize(f, g, 14.0f32, 0.25f32);
+                    return w * h;
+                })));
+                print(`rasterize ${f64(rns) / f64(rounds * n)} ${r}`);
+            }
+            if (only == "" || only == "line") {
+                const [l, lns] = bench(rounds, () => line(f, 14.0f32, s, 10.0f32, 20.0f32, rgb(0x111827u32)).length);
+                print(`line ${f64(lns) / f64(rounds)} ${l}`);
+            }
             return 0;
         },
         Err(e) => {

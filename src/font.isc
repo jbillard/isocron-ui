@@ -192,6 +192,12 @@ function glyphRange(f: Font, g: i64): [i64, i64] {
     return [f.glyf + a, z - a] as const;
 }
 
+// the glyph `g` has an outline (a space has none)
+export function hasOutline(f: Font, g: i64): boolean {
+    const [at, len] = glyphRange(f, g);
+    return len > 0;
+}
+
 // the flags of the `n` points of a simple glyph from `at`, a flag repeated
 // as the next byte says (bit 3), and the place after them
 function flagsFrom(b: u8[m], at: i64, n: i64): [u8[n], i64] {
@@ -226,16 +232,26 @@ function coordsFrom(b: u8[m], at: i64, fl: u8[n], short: u8, same: u8): [f32[n],
 // point of its contour
 type Point = { x: f32, y: f32, on: boolean, last: boolean };
 
-// the points of the simple glyph at `at` with `contours` contours
+// the points of the simple glyph at `at` with `contours` contours: the
+// flags, the x, then each point made with its y, its flag and whether it
+// ends its contour, in place
 function simplePoints(b: u8[m], at: i64, contours: i64): Point[] {
-    const ends = map(iota(contours), (k) => u16(b, at + 10 + 2 * k));
-    const n = contours == 0 ? 0 : ends[contours - 1] + 1;
+    const n = contours == 0 ? 0 : u16(b, at + 10 + 2 * (contours - 1)) + 1;
     const code = at + 10 + 2 * contours;
     const [fl, afterFlags] = flagsFrom(b, code + 2 + u16(b, code), n);
     const [xs, afterX] = coordsFrom(b, afterFlags, fl, 2u8, 16u8);
-    const [ys, afterY] = coordsFrom(b, afterX, fl, 4u8, 32u8);
-    const lasts = scatter(fill(n, false), ends, fill(contours, true), (a, z) => z);
-    return map(iota(n), (i) => ({ x: xs[i], y: ys[i], on: (fl[i] & 1u8) != 0u8, last: lasts[i] }));
+    const none = { x: 0.0f32, y: 0.0f32, on: false, last: false };
+    const [ps, after, y, c] = fold(iota(n), [fill(n, none), afterX, 0, 0] as const, (acc, i) => {
+        const [a, p, v, c] = acc;
+        const f = fl[i];
+        const one = (f & 4u8) != 0u8;
+        const keep = (f & 32u8) != 0u8;
+        const d = one ? (keep ? i64(b[p]) : -i64(b[p])) : (keep ? 0 : s16(b, p));
+        const last = i == u16(b, at + 10 + 2 * c);
+        const point = { x: xs[i], y: f32(v + d), on: (f & 1u8) != 0u8, last: last };
+        return [requireUnique(a.with(i, point)), one ? p + 1 : (keep ? p : p + 2), v + d, last ? c + 1 : c] as const;
+    });
+    return ps;
 }
 
 // the points of the glyph `g`, its components placed for a composite one

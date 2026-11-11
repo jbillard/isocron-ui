@@ -6,7 +6,7 @@
 // (glyphs of `cmap`, advances, kerning, a sprite of each glyph that draws
 // something). Each line: the step, the nanoseconds of one glyph (of one
 // line for the last), a checksum, as bench/text.isc prints them.
-// usage: text <rounds>   (cc -O2 -ffp-contract=off text.c -o text -lm)
+// usage: text <rounds> [outline|rasterize|line]   (cc -O2 -ffp-contract=off text.c -o text -lm)
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -216,6 +216,12 @@ static int glyphOf(long c) {
     return 0;
 }
 
+static int hasOutline(int g) {
+    long a = longLoca ? u32(loca + 4 * g) : 2 * u16(loca + 2 * g);
+    long z = longLoca ? u32(loca + 4 * g + 4) : 2 * u16(loca + 2 * g + 2);
+    return z > a;
+}
+
 static int advance(int g) { return u16(hmtx + 4 * (g < metrics ? g : metrics - 1)); }
 
 static int kerning(int left, int right) {
@@ -246,9 +252,10 @@ static int layout(const long *cps, int n, float em, float x, float y, Sprite *ou
     for (int i = 0; i < n; i++) {
         float step = (advance(gs[i]) + (i + 1 < n ? kerning(gs[i], gs[i + 1]) : 0)) * k;
         float q = floorf(pen * 4 + 0.5f) * 0.25f, whole = floorf(q);
-        float tmp[4096];
-        Sprite s = rasterize(gs[i], em, q - whole, tmp);
-        if (s.w > 1 || s.h > 1 || tmp[0] > 0) {
+        // the glyphs that draw something (a space has no outline)
+        if (hasOutline(gs[i])) {
+            float tmp[4096];
+            Sprite s = rasterize(gs[i], em, q - whole, tmp);
             s.mask = malloc(sizeof(float) * s.w * s.h);
             memcpy(s.mask, tmp, sizeof(float) * s.w * s.h);
             s.x += (int)whole;
@@ -285,8 +292,9 @@ int main(int argc, char **argv) {
     for (const char *p = s; *p; p++) cps[n++] = (unsigned char)*p;
     int gs[256];
     for (int i = 0; i < n; i++) gs[i] = glyphOf(cps[i]);
+    const char *only = argc > 2 ? argv[2] : "";
     long o = 0, t0 = now();
-    for (long r = 0; r < rounds; r++) {
+    for (long r = 0; r < rounds && (!*only || !strcmp(only, "outline")); r++) {
         o = 0;
         for (int i = 0; i < n; i++) o += outline(gs[i], 4, segs);
     }
@@ -295,7 +303,7 @@ int main(int argc, char **argv) {
     static float mask[1 << 16];
     long a = 0;
     t0 = now();
-    for (long r = 0; r < rounds; r++) {
+    for (long r = 0; r < rounds && (!*only || !strcmp(only, "rasterize")); r++) {
         a = 0;
         for (int i = 0; i < n; i++) { Sprite sp = rasterize(gs[i], 14.0f, 0.25f, mask); a += sp.w * sp.h; }
     }
@@ -304,7 +312,7 @@ int main(int argc, char **argv) {
     Sprite out[256];
     int m = 0;
     t0 = now();
-    for (long r = 0; r < rounds; r++) {
+    for (long r = 0; r < rounds && (!*only || !strcmp(only, "line")); r++) {
         m = layout(cps, n, 14.0f, 10.0f, 20.0f, out);
         for (int i = 0; i < m; i++) free(out[i].mask);
     }
