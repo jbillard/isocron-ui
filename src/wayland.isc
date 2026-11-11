@@ -75,23 +75,27 @@ function eventStarts(b: u8[n], at: i64, found: i64[]): i64[] {
 // offered)
 export type Globals = { compositor: u32, shm: u32, wmBase: u32, seat: u32 };
 
-// the ids the client gives its objects (the display is 1)
+// the ids the client gives its objects (the display is 1). A compositor
+// takes a new id only when it is the next one or one it has freed
+// (libwayland: `wl_map_insert_at`): the ids follow the order of creation,
+// those of the seat last (a compositor may have none); the callback of a
+// frame is freed by the compositor once done (`delete_id`), its id taken
+// again for the next frame.
 export const DISPLAY: u32 = 1u32;
 export const REGISTRY: u32 = 2u32;
 export const SYNC: u32 = 3u32;
 export const COMPOSITOR: u32 = 4u32;
 export const SHM: u32 = 5u32;
 export const WM_BASE: u32 = 6u32;
-export const SEAT: u32 = 7u32;
-export const SURFACE: u32 = 8u32;
-export const XDG_SURFACE: u32 = 9u32;
-export const TOPLEVEL: u32 = 10u32;
-export const POOL: u32 = 11u32;
-export const BUFFER: u32 = 12u32;
-export const POINTER: u32 = 13u32;
-export const KEYBOARD: u32 = 14u32;
-// the first id of the callbacks of the frames
-export const FRAMES: u32 = 100u32;
+export const SURFACE: u32 = 7u32;
+export const XDG_SURFACE: u32 = 8u32;
+export const TOPLEVEL: u32 = 9u32;
+export const POOL: u32 = 10u32;
+export const BUFFER: u32 = 11u32;
+export const FRAME: u32 = 12u32;
+export const SEAT: u32 = 13u32;
+export const POINTER: u32 = 14u32;
+export const KEYBOARD: u32 = 15u32;
 
 // `wl_registry.bind`: the global `name` of `iface` at `version`, as the
 // object `id`
@@ -118,7 +122,7 @@ export function globalsOf(evs: Event[n], g: Globals): Globals {
 // `title`: its surface, its role, its title, the first commit (without an
 // image: the compositor answers with `configure`)
 export function windowRequests(g: Globals, title: string): u8[] {
-    const binds = concat(concat(concat(bind(g.compositor, "wl_compositor", 4u32, COMPOSITOR), bind(g.shm, "wl_shm", 1u32, SHM)), bind(g.wmBase, "xdg_wm_base", 1u32, WM_BASE)), g.seat == 0u32 ? [] : bind(g.seat, "wl_seat", 5u32, SEAT));
+    const binds = concat(concat(bind(g.compositor, "wl_compositor", 4u32, COMPOSITOR), bind(g.shm, "wl_shm", 1u32, SHM)), bind(g.wmBase, "xdg_wm_base", 1u32, WM_BASE));
     const surface = request(COMPOSITOR, 0u32, le32(SURFACE));
     const role = request(WM_BASE, 2u32, concat(le32(XDG_SURFACE), le32(SURFACE)));
     const toplevel = request(XDG_SURFACE, 1u32, le32(TOPLEVEL));
@@ -135,12 +139,12 @@ export function bufferRequests(bytes: i64, w: i64, h: i64): u8[] {
     return concat(pool, buffer);
 }
 
-// the image of the buffer shown: attached, damaged whole, a callback asked
-// for the next frame (`frame`), committed
-export function showRequests(w: i64, h: i64, frame: u32): u8[] {
+// the image of the buffer shown: attached, damaged whole, the callback of
+// the next frame asked (`FRAME`), committed
+export function showRequests(w: i64, h: i64): u8[] {
     const attach = request(SURFACE, 1u32, concat(concat(le32(BUFFER), i32le(0i32)), i32le(0i32)));
     const damage = request(SURFACE, 9u32, concat(concat(concat(i32le(0i32), i32le(0i32)), i32le(i32(w))), i32le(i32(h))));
-    const callback = request(SURFACE, 3u32, le32(frame));
+    const callback = request(SURFACE, 3u32, le32(FRAME));
     const commit = request(SURFACE, 6u32, []);
     return concat(concat(concat(attach, damage), callback), commit);
 }
@@ -186,8 +190,8 @@ export function input(e: Event): Input {
     if (e.obj == TOPLEVEL && e.op == 1u32) {
         return Close;
     }
-    if (e.obj >= FRAMES && e.op == 0u32) {
-        return FrameDone(e.obj);
+    if (e.obj == FRAME && e.op == 0u32) {
+        return FrameDone(word(e.args, 0));
     }
     if (e.obj == BUFFER && e.op == 0u32) {
         return Released;

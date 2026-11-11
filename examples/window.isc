@@ -41,13 +41,13 @@ action globals(c: net.Conn, pending: u8[], g: wl.Globals): wl.Globals {
 }
 
 // the scene drawn into a new memory shared, given to the compositor, shown
-action show(c: net.Conn, w: i64, h: i64, frame: u32): boolean {
+action show(c: net.Conn, w: i64, h: i64): boolean {
     return match (unix.shared(w * h * 4)) {
         Ok(m) => {
             const px = render(w, h, rgb(0xE5E7EBu32), scene(w, h));
             const written = unix.writeSharedU32(m, 0, px);
             const sent = unix.sendWithFds(c, wl.bufferRequests(w * h * 4, w, h), [unix.sharedFd(m)]);
-            const shown = net.write(c, wl.showRequests(w, h, frame));
+            const shown = net.write(c, wl.showRequests(w, h));
             // the compositor holds its own copy of the descriptor and of the
             // memory: this program's are given back
             unix.closeShared(m);
@@ -99,17 +99,19 @@ action configured(c: net.Conn, serial: u32, st: State): State {
         return st;
     }
     print(`configured ${st.w}x${st.h}`);
-    return { ...st, shown: show(c, st.w, st.h, wl.FRAMES) };
+    return { ...st, shown: show(c, st.w, st.h) };
 }
 
 // a frame shown: counted; the next one asked until `frames` of them
 action frameDone(c: net.Conn, st: State, frames: i64): State {
     const n = st.frames + 1;
-    print(`frame ${n}`);
+    if (n == 1) {
+        print("first frame shown");
+    }
     if (n >= frames) {
         return { ...st, frames: n, done: true };
     }
-    const again = net.write(c, wl.showRequests(st.w, st.h, wl.FRAMES + u32(n)));
+    const again = net.write(c, wl.showRequests(st.w, st.h));
     return { ...st, frames: n };
 }
 
