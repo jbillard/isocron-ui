@@ -1,4 +1,5 @@
-import { crc32, adler32, zlibStored, encode } from "../src/png";
+import { crc32, zlibStored, encode } from "../src/png";
+import { adler32 } from "../src/inflate";
 
 function hex(v: u32): string {
     const d = "0123456789abcdef";

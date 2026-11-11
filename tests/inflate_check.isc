@@ -1,0 +1,28 @@
+// The streams of zlib of tests/inflate (made by the zlib of Python: blocks
+// stored, of the fixed codes and of codes of their own, long runs, blocks
+// emptied by flushes; damaged ones) decoded by src/inflate.isc: the length
+// and the FNV-1a of 64 bits of their bytes, or the reason of the failure.
+import { inflate } from "../src/inflate";
+
+function fnv(b: u8[n]): u64 {
+    return fold(b, 0xcbf29ce484222325u64, (h, x) => (h ^ u64(x)) * 0x100000001b3u64);
+}
+
+// the cases from the `i`-th: each decoded and printed
+action check(cases: string[n], i: i64): void {
+    if (i >= n) {
+        return;
+    }
+    const parts = cases[i].split(" ");
+    const name = parts[0];
+    match (inflate(readBytes(`tests/inflate/${name}.z`), parseI64(parts[1]))) {
+        Ok(b) => print(`${name} ${b.length} ${fnv(b)}`),
+        Err(e) => print(`${name} error: ${e}`),
+    };
+    check(cases, i + 1);
+}
+
+action main(args: string[k]): i32 {
+    check(filter(readText("tests/inflate_cases.txt").split("\n"), (l) => l != ""), 0);
+    return 0;
+}

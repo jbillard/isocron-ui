@@ -1,0 +1,24 @@
+// The files of tests/png (the PngSuite, and files of the tests of Go:
+// every colour type and depth, palettes, transparency, interlacing, odd
+// sizes, damaged files) decoded by src/png.isc: their size and the FNV-1a
+// of 64 bits of their pixels (each a word), or "error", as the decoder of
+// Go gives them (tools/pngref).
+import { decode } from "../src/png";
+
+// the files from the `i`-th
+action check(names: string[n], i: i64): void {
+    if (i >= n) {
+        return;
+    }
+    match (decode(readBytes(`tests/png/${names[i]}`))) {
+        Ok(p) => print(`${names[i]} ${p.width} ${p.height} ${fold(p.pixels, 0xcbf29ce484222325u64, (h, x) => (h ^ u64(x)) * 0x100000001b3u64)}`),
+        Err(e) => print(`${names[i]} error`),
+    };
+    check(names, i + 1);
+}
+
+action main(args: string[k]): i32 {
+    // the names in the order of the reference
+    check(map(filter(readText("tests/png_decode_check.out").split("\n"), (l) => l != ""), (l) => l.split(" ")[0]), 0);
+    return 0;
+}

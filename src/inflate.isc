@@ -1,0 +1,297 @@
+// The streams of zlib (RFC 1950) and their blocks of DEFLATE (RFC 1951)
+// decoded into an array of the length the caller knows (that of the rows
+// of a PNG image): blocks stored, of the fixed codes and of codes of their
+// own. The codes of Huffman are read through a table of their first 10
+// bits (most symbols found in one step), the longer ones bit by bit in the
+// order of their codes (as `puff` of zlib does).
+
+// the length of a code read through the table
+const FAST: i64 = 10;
+
+// a code of Huffman: for each value of the next FAST bits, the symbol whose
+// code they begin and its length (`symbol << 4 | length`; 0: a code longer
+// than FAST bits, or none); the number of codes of each length (1 to 15),
+// and the symbols in the order of their codes; `ok`: no length has more
+// codes than it can hold
+type Code = { fast: i32[], counts: i32[], syms: i32[], ok: boolean };
+
+// the first lengths and distances of their symbols, and their numbers of
+// extra bits (RFC 1951, 3.2.5)
+const LBASE: i64[] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+const LEXT: i64[] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+const DBASE: i64[] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
+const DEXT: i64[] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+
+// the place of each symbol of the code of the lengths in the order its
+// lengths are written (RFC 1951, 3.2.7: 16, 17, 18, 0, 8, 7, 9, 6, 10, 5,
+// 11, 4, 12, 3, 13, 2, 14, 1, 15)
+const PLACE: i64[] = [3, 17, 15, 13, 11, 9, 7, 5, 4, 6, 8, 10, 12, 14, 16, 18, 0, 1, 2];
+
+// the reasons of the failures, by their codes
+const REASONS: string[] = [
+    "",
+    "the stream ends too soon",
+    "a code that stands for no symbol",
+    "more bytes than the image holds",
+    "a distance before the start",
+    "a stored block whose lengths disagree",
+    "a block of an unknown type",
+    "lengths of codes that make no code",
+];
+
+// the Adler-32 of `x` (the checksum of zlib), in parts of 5552 bytes: the
+// sums of one part never pass 2^32 before their remainder is taken
+export function adler32(x: u8[n]): u32 {
+    const parts = (x.length + 5551) / 5552;
+    const ab = fold(iota(parts), [1u64, 0u64] as const, (s, p) => {
+        const [a0, b0] = s;
+        const r = fold(iota(min(5552, x.length - p * 5552)), [a0, b0] as const, (t, k) => {
+            const [a, b] = t;
+            const a2 = a + u64(x[p * 5552 + k]);
+            return [a2, b + a2] as const;
+        });
+        const [a1, b1] = r;
+        return [a1 % 65521u64, b1 % 65521u64] as const;
+    });
+    const [a, b] = ab;
+    return u32((b << 16u64) | a);
+}
+
+// the bits of `src` from the bit `pos` (the first bit of a byte its
+// lowest): at least 57 of them, zeros past its end
+function peek(src: u8[n], pos: i64): u64 {
+    const at = pos >> 3;
+    const w = at + 8 <= n ? readWord(src, at, 8) : fold(iota(8), 0u64, (v, k) => at + k < n ? v | (u64(src[at + k]) << u64(8 * k)) : v);
+    return w >> u64(pos & 7);
+}
+
+// the `k` low bits of `bits`
+function low(bits: u64, k: i64): i64 {
+    return i64(bits & ((1u64 << u64(k)) - 1u64));
+}
+
+// the `l` low bits of `c` in the reverse order
+function reversed(c: i64, l: i64): i64 {
+    return fold(iota(l), 0, (v, k) => (v << 1) | ((c >> k) & 1));
+}
+
+// the code of Huffman whose symbol `s` has a code of `lengths[s]` bits (0:
+// none, at most 15), its codes canonical (RFC 1951, 3.2.2)
+function makeCode(lengths: i64[n]): Code {
+    const counts = fold(lengths, fill(16, 0), (c, l) => requireUnique(c.with(l, c[l] + 1)));
+    // the first place in `syms` of each length, and the first code of each
+    const starts = fold(iota(15), fill(16, 0), (s, l) => requireUnique(s.with(l + 1, s[l] + (l == 0 ? 0 : counts[l]))));
+    const firsts = fold(iota(15), fill(16, 0), (f, l) => requireUnique(f.with(l + 1, l == 0 ? 0 : (f[l] + counts[l]) << 1)));
+    // the symbols in the order of their codes: by length, then by symbol
+    const [syms, ends] = fold(iota(n), [fill(n, 0i32), starts] as const, (acc, s) => {
+        const [sy, st] = acc;
+        const l = lengths[s];
+        return l == 0 ? [sy, st] as const : [requireUnique(sy.with(st[l], i32(s))), requireUnique(st.with(l, st[l] + 1))] as const;
+    });
+    // the codes of at most FAST bits in the table: each code reversed (its
+    // first bit read the lowest), with every value of the bits after it
+    const fast = fold(iota(starts[FAST + 1]), fill(1 << FAST, 0i32), (t, i) => {
+        const s = i64(syms[i]);
+        const l = lengths[s];
+        const r = reversed(firsts[l] + i - starts[l], l);
+        const e = i32((s << 4) | l);
+        return fold(iota(1 << (FAST - l)), t, (u, k) => requireUnique(u.with(r | (k << l), e)));
+    });
+    // no length holds more codes than those of one bit less leave it
+    const left = fold(iota(15), 1, (lf, l) => lf < 0 ? lf : 2 * lf - counts[l + 1]);
+    return { fast: fast, counts: map(counts, (c) => i32(c)), syms: syms, ok: left >= 0 };
+}
+
+// the symbol of the code at the start of `bits`, read bit by bit from its
+// bit `len` (`code`, `first` and `index` as `puff` keeps them), and its
+// length; [-1, 0] for no code
+function slow(c: Code, bits: u64, len: i64, code: i64, first: i64, index: i64): [i64, i64] {
+    if (len > 15) {
+        return [-1, 0] as const;
+    }
+    const code1 = code | i64((bits >> u64(len - 1)) & 1u64);
+    const count = i64(c.counts[len]);
+    if (code1 - count < first) {
+        return [i64(c.syms[index + code1 - first]), len] as const;
+    }
+    return slow(c, bits, len + 1, code1 << 1, (first + count) << 1, index + count);
+}
+
+// the symbol of the code at the start of `bits`, and its length; [-1, 0]
+// for no code
+function decode(c: Code, bits: u64): [i64, i64] {
+    const e = i64(c.fast[low(bits, FAST)]);
+    return e != 0 ? [e >> 4, e & 15] as const : slow(c, bits, 1, 0, 0, 0);
+}
+
+// the symbols of a block from the bit `pos` of `src`, written into `out`
+// from `o`, to the symbol of its end: [out, o, the bit after the block, 0],
+// or a failure (its code)
+function codes(src: u8[n], pos: i64, out: u8[m], o: i64, lit: Code, dist: Code): [u8[m], i64, i64, i64] {
+    if (pos > 8 * n) {
+        return [out, o, pos, 1] as const;
+    }
+    const bits = peek(src, pos);
+    const [sym, len] = decode(lit, bits);
+    if (sym < 256) {
+        if (sym < 0) {
+            return [out, o, pos, 2] as const;
+        }
+        if (o >= m) {
+            return [out, o, pos, 3] as const;
+        }
+        return codes(src, pos + len, requireUnique(out.with(o, u8(sym))), o + 1, lit, dist);
+    }
+    if (sym == 256) {
+        return [out, o, pos + len, 0] as const;
+    }
+    const li = sym - 257;
+    if (li >= 29) {
+        return [out, o, pos, 2] as const;
+    }
+    // the length, then the code of the distance and its extra bits
+    const length = LBASE[li] + low(bits >> u64(len), LEXT[li]);
+    const p2 = pos + len + LEXT[li];
+    const dbits = peek(src, p2);
+    const [ds, dl] = decode(dist, dbits);
+    if (ds < 0 || ds >= 30) {
+        return [out, o, pos, 2] as const;
+    }
+    const d = DBASE[ds] + low(dbits >> u64(dl), DEXT[ds]);
+    if (d > o) {
+        return [out, o, pos, 4] as const;
+    }
+    if (o + length > m) {
+        return [out, o, pos, 3] as const;
+    }
+    // the bytes `d` before, one by one (they may be those just written)
+    const copied = fold(iota(length), out, (x, k) => requireUnique(x.with(o + k, x[o + k - d])));
+    return codes(src, p2 + dl + DEXT[ds], copied, o + length, lit, dist);
+}
+
+// a block stored from the bit `pos` (after its type): its length and its
+// complement at the next byte, then its bytes
+function stored(src: u8[n], pos: i64, out: u8[m], o: i64): [u8[m], i64, i64, i64] {
+    const at = (pos + 7) >> 3;
+    if (at + 4 > n) {
+        return [out, o, pos, 1] as const;
+    }
+    const len = i64(src[at]) | (i64(src[at + 1]) << 8);
+    const nlen = i64(src[at + 2]) | (i64(src[at + 3]) << 8);
+    if (len != (nlen ^ 0xFFFF)) {
+        return [out, o, pos, 5] as const;
+    }
+    if (at + 4 + len > n) {
+        return [out, o, pos, 1] as const;
+    }
+    if (o + len > m) {
+        return [out, o, pos, 3] as const;
+    }
+    const copied = fold(iota(len), out, (x, k) => requireUnique(x.with(o + k, src[at + 4 + k])));
+    return [copied, o + len, (at + 4 + len) * 8, 0] as const;
+}
+
+// the lengths of the codes of a block (its literals and lengths, then its
+// distances) from the bit `pos`, read through the code `c` of the lengths
+// into `lens` from its place `i`: [lens, the bit after them, 0], or a
+// failure
+function lengths(src: u8[n], pos: i64, lens: i64[t], i: i64, c: Code): [i64[t], i64, i64] {
+    if (i >= t) {
+        return [lens, pos, 0] as const;
+    }
+    if (pos > 8 * n) {
+        return [lens, pos, 1] as const;
+    }
+    const bits = peek(src, pos);
+    const [sym, len] = decode(c, bits);
+    if (sym < 0) {
+        return [lens, pos, 2] as const;
+    }
+    if (sym < 16) {
+        return lengths(src, pos + len, requireUnique(lens.with(i, sym)), i + 1, c);
+    }
+    // 16: the length before, 3 to 6 times; 17: zeros, 3 to 10 times; 18:
+    // zeros, 11 to 138 times
+    const extra = sym == 16 ? 2 : (sym == 17 ? 3 : 7);
+    const times = (sym == 18 ? 11 : 3) + low(bits >> u64(len), extra);
+    if ((sym == 16 && i == 0) || i + times > t) {
+        return [lens, pos, 7] as const;
+    }
+    const v = sym == 16 ? lens[i - 1] : 0;
+    const filled = fold(iota(times), lens, (x, k) => requireUnique(x.with(i + k, v)));
+    return lengths(src, pos + len + extra, filled, i + times, c);
+}
+
+// a block of codes of its own from the bit `pos` (after its type): their
+// numbers, the code of their lengths, their lengths, then its symbols
+function dynamic(src: u8[n], pos: i64, out: u8[m], o: i64): [u8[m], i64, i64, i64] {
+    const h = peek(src, pos);
+    const nlit = low(h, 5) + 257;
+    const ndist = low(h >> 5u64, 5) + 1;
+    const nlen = low(h >> 10u64, 4) + 4;
+    if (nlit > 286 || ndist > 30) {
+        return [out, o, pos, 7] as const;
+    }
+    const cl = map(iota(19), (s) => PLACE[s] < nlen ? low(peek(src, pos + 14 + 3 * PLACE[s]), 3) : 0);
+    const lc = makeCode(cl);
+    if (!lc.ok) {
+        return [out, o, pos, 7] as const;
+    }
+    const [lens, p2, failed] = lengths(src, pos + 14 + 3 * nlen, fill(nlit + ndist, 0), 0, lc);
+    if (failed != 0) {
+        return [out, o, p2, failed] as const;
+    }
+    if (lens[256] == 0) {
+        return [out, o, p2, 7] as const;
+    }
+    const lit = makeCode(lens.slice(0, nlit));
+    const dist = makeCode(lens.slice(nlit, nlit + ndist));
+    if (!lit.ok || !dist.ok) {
+        return [out, o, p2, 7] as const;
+    }
+    return codes(src, p2, out, o, lit, dist);
+}
+
+// the blocks from the bit `pos`, to the last one
+function blocks(src: u8[n], pos: i64, out: u8[m], o: i64, fixedLit: Code, fixedDist: Code): [u8[m], i64, i64, i64] {
+    const h = peek(src, pos);
+    const last = (h & 1u64) != 0u64;
+    const kind = low(h >> 1u64, 2);
+    const [out2, o2, p2, failed] = kind == 0 ? stored(src, pos + 3, out, o)
+        : (kind == 1 ? codes(src, pos + 3, out, o, fixedLit, fixedDist)
+        : (kind == 2 ? dynamic(src, pos + 3, out, o) : [out, o, pos, 6] as const));
+    if (failed != 0 || last) {
+        return [out2, o2, p2, failed] as const;
+    }
+    return blocks(src, p2, out2, o2, fixedLit, fixedDist);
+}
+
+// the `total` bytes of the stream of zlib `src`, its checksum checked
+export function inflate(src: u8[n], total: i64): Result<u8[], string> {
+    if (n < 6) {
+        return Err("not a stream of zlib: too short");
+    }
+    const cmf = i64(src[0]);
+    const flg = i64(src[1]);
+    if ((cmf & 15) != 8 || (cmf >> 4) > 7 || (cmf * 256 + flg) % 31 != 0 || (flg & 32) != 0) {
+        return Err("not a stream of zlib: its header");
+    }
+    const fixedLit = makeCode(map(iota(288), (s) => s < 144 ? 8 : (s < 256 ? 9 : (s < 280 ? 7 : 8))));
+    const fixedDist = makeCode(fill(30, 5));
+    const [out, o, pos, failed] = blocks(src, 16, fill(total, 0u8), 0, fixedLit, fixedDist);
+    if (failed != 0) {
+        return Err(REASONS[failed]);
+    }
+    if (o != total) {
+        return Err("fewer bytes than the image holds");
+    }
+    const at = (pos + 7) >> 3;
+    if (at + 4 > n) {
+        return Err("the stream ends too soon: its checksum");
+    }
+    const sum = (u32(src[at]) << 24u32) | (u32(src[at + 1]) << 16u32) | (u32(src[at + 2]) << 8u32) | u32(src[at + 3]);
+    if (sum != adler32(out)) {
+        return Err("a wrong checksum (Adler-32)");
+    }
+    return Ok(out);
+}

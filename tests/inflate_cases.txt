@@ -1,0 +1,13 @@
+empty 0
+hello 20
+stored 70000
+text9 210023
+text1 210023
+random 40000
+zeros 300000
+gradient 120000
+flushed 50000
+badsum 5000
+truncated 5000
+badheader 5000
+badtype 5000

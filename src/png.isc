@@ -1,7 +1,13 @@
-// PNG files of the images of the library: 8 bits a channel, red, green, blue
-// and alpha (colour type 6), the pixels stored without compression (deflate
-// blocks of type 0): what the tests compare and what a person opens.
-// A pixel is a `u32` `0xAARRGGBB`.
+// PNG files. Written: 8 bits a channel, red, green, blue and alpha (colour
+// type 6), the pixels stored without compression (deflate blocks of type
+// 0): what the tests compare and what a person opens. Read: every file of
+// the standard (ISO 15948): its chunks and their CRCs, the five colour
+// types and their depths (1 to 16 bits), the palette and the transparency
+// (tRNS), the five filters of the rows, the interlacing Adam7, the data
+// inflated by `inflate.isc`; the pixels as 8 bits a channel (a sample of
+// 16 bits: its high byte).
+// A pixel is a `u32` `0xAARRGGBB`, not premultiplied.
+import { inflate, adler32 } from "./inflate";
 
 // the table of the CRC-32 of PNG (ISO 3309, the polynomial reversed)
 function crcTable(): u32[256] {
@@ -13,25 +19,6 @@ export function crc32(x: u8[n]): u32 {
     const t = crcTable();
     // (`~` missing from Isocron: noted, to add)
     return fold(x, 0xFFFFFFFFu32, (c, b) => t[i64((c ^ u32(b)) & 0xFFu32)] ^ (c >> 8u32)) ^ 0xFFFFFFFFu32;
-}
-
-// the Adler-32 of `x` (the checksum of zlib), in parts of 5552 bytes: the
-// sums of one part never pass 2^32 before their remainder is taken
-export function adler32(x: u8[n]): u32 {
-    const parts = (x.length + 5551) / 5552;
-    const ab = fold(iota(parts), [1u64, 0u64] as const, (s, p) => {
-        const part = x.slice(p * 5552, min(x.length, p * 5552 + 5552));
-        const [a0, b0] = s;
-        const r = fold(part, [a0, b0] as const, (t, v) => {
-            const [a, b] = t;
-            const a2 = a + u64(v);
-            return [a2, b + a2] as const;
-        });
-        const [a1, b1] = r;
-        return [a1 % 65521u64, b1 % 65521u64] as const;
-    });
-    const [a, b] = ab;
-    return u32((b << 16u64) | a);
 }
 
 // the 4 bytes of `v`, the most significant first
@@ -84,4 +71,268 @@ export function encode(width: i64, height: i64, px: u32[n]): u8[] {
     const header = concat(concat(be32(u32(width)), be32(u32(height))), [8u8, 6u8, 0u8, 0u8, 0u8]);
     const signature = [0x89u8, 0x50u8, 0x4Eu8, 0x47u8, 0x0Du8, 0x0Au8, 0x1Au8, 0x0Au8];
     return concat(concat(concat(signature, chunk("IHDR", header)), chunk("IDAT", zlibStored(raw))), chunk("IEND", []));
+}
+
+// ----- reading ---------------------------------------------------------------
+
+// an image: its pixels (`0xAARRGGBB`, not premultiplied), rows from the top
+export type Picture = { width: i64, height: i64, pixels: u32[] };
+
+// the names of the chunks read, as their words
+const IHDR: i64 = 0x49484452;
+const PLTE: i64 = 0x504C5445;
+const IDAT: i64 = 0x49444154;
+const IEND: i64 = 0x49454E44;
+const TRNS: i64 = 0x74524E53;
+
+// the samples of a pixel of each colour type (0 grey, 2 colour, 3 index of
+// a palette, 4 grey and alpha, 6 colour and alpha)
+const CHANNELS: i64[] = [1, 0, 3, 1, 2, 0, 4];
+
+// the passes of Adam7: their first column and row, and their steps
+const XS: i64[] = [0, 4, 0, 2, 0, 1, 0];
+const YS: i64[] = [0, 0, 4, 0, 2, 0, 1];
+const DX: i64[] = [8, 8, 4, 4, 2, 2, 1];
+const DY: i64[] = [8, 8, 8, 4, 4, 2, 2];
+
+// what the chunks of a file say: its header; its palette, with the alphas
+// of tRNS (opaque black past its end, as libpng and Go read an index out of
+// it); the key of transparency of a grey or a colour image (its samples,
+// whole); the chunks seen; the reason it is refused ("" for none)
+type Header = { width: i64, height: i64, depth: i64, kind: i64, interlace: i64, palette: u32[], key: i64[], seen: boolean, colours: boolean, ended: boolean, failure: string };
+
+// the word of 4 bytes at `at` of `b`, the most significant first
+function word(b: u8[n], at: i64): i64 {
+    return (i64(b[at]) << 24) | (i64(b[at + 1]) << 16) | (i64(b[at + 2]) << 8) | i64(b[at + 3]);
+}
+
+// the CRC-32 of the bytes `from` to `to` of `b`, by the table `t`
+function crcOf(t: u32[256], b: u8[n], from: i64, to: i64): u32 {
+    return fold(iota(to - from), 0xFFFFFFFFu32, (c, k) => t[i64((c ^ u32(b[from + k])) & 0xFFu32)] ^ (c >> 8u32)) ^ 0xFFFFFFFFu32;
+}
+
+// a depth allowed for the colour type `k`
+function allowed(k: i64, d: i64): boolean {
+    return (k == 0 && (d == 1 || d == 2 || d == 4 || d == 8 || d == 16))
+        || (k == 3 && (d == 1 || d == 2 || d == 4 || d == 8))
+        || ((k == 2 || k == 4 || k == 6) && (d == 8 || d == 16));
+}
+
+// the header (IHDR) of `len` bytes at `at`
+function header(f: u8[n], at: i64, len: i64, h: Header): Header {
+    if (len != 13 || h.seen) {
+        return { ...h, failure: "a header (IHDR) of a wrong length, or a second one" };
+    }
+    const w = word(f, at);
+    const ht = word(f, at + 4);
+    const d = i64(f[at + 8]);
+    const k = i64(f[at + 9]);
+    if (w < 1 || ht < 1 || w > 0x7FFFFFFF || ht > 0x7FFFFFFF) {
+        return { ...h, failure: "an image of no pixels" };
+    }
+    if (w * ht > 1 << 28) {
+        return { ...h, failure: "an image of more than 2^28 pixels" };
+    }
+    if (!allowed(k, d)) {
+        return { ...h, failure: "a colour type and a depth that do not go together" };
+    }
+    if (f[at + 10] != 0u8 || f[at + 11] != 0u8 || f[at + 12] > 1u8) {
+        return { ...h, failure: "an unknown compression, filtering or interlacing" };
+    }
+    return { ...h, width: w, height: ht, depth: d, kind: k, interlace: i64(f[at + 12]), seen: true };
+}
+
+// the palette (PLTE) of `len` bytes at `at`
+function colours(f: u8[n], at: i64, len: i64, h: Header): Header {
+    if (len % 3 != 0 || len == 0 || len > 768) {
+        return { ...h, failure: "a palette (PLTE) of a wrong length" };
+    }
+    const count = len / 3;
+    return { ...h, colours: true, palette: map(iota(256), (i) => i < count ? 0xFF000000u32 | (u32(f[at + 3 * i]) << 16u32) | (u32(f[at + 3 * i + 1]) << 8u32) | u32(f[at + 3 * i + 2]) : 0xFF000000u32) };
+}
+
+// the transparency (tRNS) of `len` bytes at `at`: the alphas of the
+// palette, or the key of a grey (one sample) or of a colour (three)
+function transparency(f: u8[n], at: i64, len: i64, h: Header): Header {
+    if (h.kind == 3) {
+        return { ...h, palette: map(iota(256), (i) => i < len ? (h.palette[i] & 0xFFFFFFu32) | (u32(f[at + i]) << 24u32) : h.palette[i]) };
+    }
+    const samples = h.kind == 0 ? 1 : (h.kind == 2 ? 3 : 0);
+    if (samples == 0 || len < 2 * samples) {
+        return h;
+    }
+    return { ...h, key: map(iota(samples), (c) => (i64(f[at + 2 * c]) << 8) | i64(f[at + 2 * c + 1])) };
+}
+
+// the chunks from the byte `at` of the file `f` to IEND: the header, the
+// palette and the transparency in `h`, the data of the IDATs gathered into
+// `data` from `used`
+function chunks(f: u8[n], at: i64, data: u8[m], used: i64, h: Header, t: u32[256]): [u8[m], i64, Header] {
+    if (h.ended || h.failure != "") {
+        return [data, used, h] as const;
+    }
+    if (at + 12 > n) {
+        return [data, used, { ...h, failure: "the file ends before its last chunk (IEND)" }] as const;
+    }
+    const len = word(f, at);
+    if (len > n - at - 12) {
+        return [data, used, { ...h, failure: "a chunk longer than the file" }] as const;
+    }
+    const kind = word(f, at + 4);
+    if (u32(word(f, at + 8 + len)) != crcOf(t, f, at + 4, at + 8 + len)) {
+        return [data, used, { ...h, failure: "a chunk whose CRC is wrong" }] as const;
+    }
+    if (kind == IDAT) {
+        if (!h.seen) {
+            return [data, used, { ...h, failure: "data (IDAT) before the header (IHDR)" }] as const;
+        }
+        const gathered = fold(iota(len), data, (x, k) => requireUnique(x.with(used + k, f[at + 8 + k])));
+        return chunks(f, at + 12 + len, gathered, used + len, h, t);
+    }
+    // an unknown chunk is skipped, unless it is critical (its first letter
+    // a capital)
+    const next = kind == IHDR ? header(f, at + 8, len, h)
+        : (kind == PLTE ? colours(f, at + 8, len, h)
+        : (kind == TRNS ? transparency(f, at + 8, len, h)
+        : (kind == IEND ? { ...h, ended: true }
+        : (((kind >> 24) & 0x20) == 0 ? { ...h, failure: "an unknown critical chunk" } : h))));
+    return chunks(f, at + 12 + len, data, used, next, t);
+}
+
+// the predictor of Paeth of the bytes left `a`, above `b`, above left `c`
+function paeth(a: u8, b: u8, c: u8): u8 {
+    const p = i64(a) + i64(b) - i64(c);
+    const pa = max(p - i64(a), i64(a) - p);
+    const pb = max(p - i64(b), i64(b) - p);
+    const pc = max(p - i64(c), i64(c) - p);
+    return pa <= pb && pa <= pc ? a : (pb <= pc ? b : c);
+}
+
+// the `rows` rows of `s` bytes from the byte `base` of `raw` (each after the
+// byte of its filter) with their filters undone; `b` the bytes of a pixel
+// (at least 1)
+function unfilter(raw: u8[n], base: i64, rows: i64, s: i64, b: i64): u8[] {
+    return fold(iota(rows), fill(rows * s, 0u8), (out, y) => {
+        const ft = raw[base + y * (s + 1)];
+        const from = base + y * (s + 1) + 1;
+        const at = y * s;
+        if (ft == 1u8) {
+            return fold(iota(s), out, (o, x) => requireUnique(o.with(at + x, raw[from + x] + (x >= b ? o[at + x - b] : 0u8))));
+        }
+        if (ft == 2u8 && y > 0) {
+            return fold(iota(s), out, (o, x) => requireUnique(o.with(at + x, raw[from + x] + o[at - s + x])));
+        }
+        if (ft == 3u8) {
+            return fold(iota(s), out, (o, x) => {
+                const left = x >= b ? i64(o[at + x - b]) : 0;
+                const up = y > 0 ? i64(o[at - s + x]) : 0;
+                return requireUnique(o.with(at + x, raw[from + x] + u8((left + up) >> 1)));
+            });
+        }
+        if (ft == 4u8) {
+            return fold(iota(s), out, (o, x) => {
+                const left = x >= b ? o[at + x - b] : 0u8;
+                const up = y > 0 ? o[at - s + x] : 0u8;
+                const corner = x >= b && y > 0 ? o[at - s + x - b] : 0u8;
+                return requireUnique(o.with(at + x, raw[from + x] + paeth(left, up, corner)));
+            });
+        }
+        // none (0), or up on the first row
+        return fold(iota(s), out, (o, x) => requireUnique(o.with(at + x, raw[from + x])));
+    });
+}
+
+// the pixel `x` of the row starting at the byte `r` of `rows`
+function pixelOf(rows: u8[k], r: i64, x: i64, h: Header): u32 {
+    const d = h.depth;
+    if (d < 8) {
+        const bit = x * d;
+        const v = (i64(rows[r + (bit >> 3)]) >> (8 - d - (bit & 7))) & ((1 << d) - 1);
+        if (h.kind == 3) {
+            return h.palette[v];
+        }
+        const g = u32(v * (255 / ((1 << d) - 1)));
+        const a = h.key.length > 0 && h.key[0] == v ? 0u32 : 0xFF000000u32;
+        return a | (g << 16u32) | (g << 8u32) | g;
+    }
+    if (h.kind == 3) {
+        return h.palette[i64(rows[r + x])];
+    }
+    const c = CHANNELS[h.kind];
+    const wide = d == 16 ? 2 : 1;
+    // the high byte of the sample `j`, and the sample whole
+    const at = r + x * c * wide;
+    const hi = (j: i64) => u32(rows[at + j * wide]);
+    const whole = (j: i64) => d == 16 ? (i64(rows[at + 2 * j]) << 8) | i64(rows[at + 2 * j + 1]) : i64(rows[at + j]);
+    if (h.kind == 0) {
+        const g = hi(0);
+        const a = h.key.length > 0 && h.key[0] == whole(0) ? 0u32 : 0xFF000000u32;
+        return a | (g << 16u32) | (g << 8u32) | g;
+    }
+    if (h.kind == 2) {
+        const a = h.key.length > 2 && h.key[0] == whole(0) && h.key[1] == whole(1) && h.key[2] == whole(2) ? 0u32 : 0xFF000000u32;
+        return a | (hi(0) << 16u32) | (hi(1) << 8u32) | hi(2);
+    }
+    if (h.kind == 4) {
+        const g = hi(0);
+        return (hi(1) << 24u32) | (g << 16u32) | (g << 8u32) | g;
+    }
+    return (hi(3) << 24u32) | (hi(0) << 16u32) | (hi(1) << 8u32) | hi(2);
+}
+
+// the bytes of a row of `w` pixels of `bits` bits
+function strideOf(w: i64, bits: i64): i64 {
+    return (w * bits + 7) / 8;
+}
+
+// the image of the PNG file `f`
+export function decode(f: u8[n]): Result<Picture, string> {
+    const signature = [0x89u8, 0x50u8, 0x4Eu8, 0x47u8, 0x0Du8, 0x0Au8, 0x1Au8, 0x0Au8];
+    if (n < 8 || findIndex(iota(8), (k) => f[k] != signature[k]) >= 0) {
+        return Err("not a PNG file");
+    }
+    const start: Header = { width: 0, height: 0, depth: 0, kind: 0, interlace: 0, palette: fill(256, 0xFF000000u32), key: [], seen: false, colours: false, ended: false, failure: "" };
+    const [data, used, h] = chunks(f, 8, fill(n, 0u8), 0, start, crcTable());
+    if (h.failure != "") {
+        return Err(h.failure);
+    }
+    if (!h.seen) {
+        return Err("no header (IHDR)");
+    }
+    if (h.kind == 3 && !h.colours) {
+        return Err("an image of a palette without its palette (PLTE)");
+    }
+    const w = h.width;
+    const ht = h.height;
+    const bits = CHANNELS[h.kind] * h.depth;
+    const bpp = max(1, bits / 8);
+    // the passes (one without interlacing): their sizes, where their rows
+    // start among the bytes inflated
+    const np = h.interlace == 0 ? 1 : 7;
+    const xs = (p: i64) => h.interlace == 0 ? 0 : XS[p];
+    const ys = (p: i64) => h.interlace == 0 ? 0 : YS[p];
+    const dx = (p: i64) => h.interlace == 0 ? 1 : DX[p];
+    const dy = (p: i64) => h.interlace == 0 ? 1 : DY[p];
+    const pw = map(iota(np), (p) => w > xs(p) ? (w - xs(p) + dx(p) - 1) / dx(p) : 0);
+    const ph = map(iota(np), (p) => ht > ys(p) ? (ht - ys(p) + dy(p) - 1) / dy(p) : 0);
+    const sizes = map(iota(np), (p) => pw[p] == 0 || ph[p] == 0 ? 0 : ph[p] * (1 + strideOf(pw[p], bits)));
+    const starts = fold(iota(np), fill(np + 1, 0), (s, p) => requireUnique(s.with(p + 1, s[p] + sizes[p])));
+    return match (inflate(data.slice(0, used), starts[np])) {
+        Ok(raw) => {
+            const bad = findIndex(iota(np), (p) => sizes[p] > 0 && findIndex(iota(ph[p]), (y) => raw[starts[p] + y * (1 + strideOf(pw[p], bits))] > 4u8) >= 0);
+            if (bad >= 0) {
+                return Err("a row of an unknown filter");
+            }
+            const pixels = fold(iota(np), fill(w * ht, 0u32), (px, p) => {
+                if (sizes[p] == 0) {
+                    return px;
+                }
+                const s = strideOf(pw[p], bits);
+                const rows = unfilter(raw, starts[p], ph[p], s, bpp);
+                return fold(iota(ph[p]), px, (q, y) => fold(iota(pw[p]), q, (o, x) => requireUnique(o.with((ys(p) + y * dy(p)) * w + xs(p) + x * dx(p), pixelOf(rows, y * s, x, h)))));
+            });
+            return Ok({ width: w, height: ht, pixels: pixels });
+        },
+        Err(e) => Err(e),
+    };
 }

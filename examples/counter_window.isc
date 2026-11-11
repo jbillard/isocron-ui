@@ -8,13 +8,15 @@
 // through the procedure of the window, and prints the model they make;
 // with a PNG file, what the window shows is captured into it at the end;
 // with a number, the window closes after that many seconds. The font is
-// `DejaVuSans.ttf` beside the program, or the file of `--font=`.
+// that of `loadFont` (`DejaVuSans.ttf` beside the program, the file of
+// `--font=`, or a font of the system); a failure shown in a box.
 // usage: counter_window [play] [capture.png] [seconds] [--font=file]
 import * as win from "win32";
 import * as sys from "sys";
 import { rgb, render } from "../src/paint";
 import { encode } from "../src/png";
-import { parse, Font } from "../src/font";
+import { Font } from "../src/font";
+import { loadFont, fail } from "../src/app";
 import { place, hitTest, Hit } from "../src/ui";
 import { Model, initial, update, view, INCREMENT, DECREMENT, STEP } from "./counter";
 
@@ -77,12 +79,6 @@ action post(w: win.Window, hits: Hit[n], id: i64): void {
     const up = win.post(w, 514, 0, at);
 }
 
-// the value of the argument `--name=value`, or `d`
-function option(args: string[k], name: string, d: string): string {
-    const at = findIndex(args, (a) => a.startsWith(`--${name}=`));
-    return at < 0 ? d : args[at].slice(name.length + 3, args[at].length);
-}
-
 action main(args: string[k]): i32 {
     if (sys.platform() != "windows") {
         print("Windows only");
@@ -91,7 +87,7 @@ action main(args: string[k]): i32 {
     const play = findIndex(args, (a) => a == "play") >= 0;
     const capture = findIndex(args, (a) => a.endsWith(".png"));
     const timed = findIndex(args, (a) => a.length > 0 && findIndex(bytes(a), (b) => b < 48u8 || b > 57u8) < 0);
-    return match (parse(readBytes(option(args, "font", "DejaVuSans.ttf")))) {
+    return match (loadFont(args)) {
         Ok(f) => match (win.open("Isocron : un compteur", 480, 320)) {
             Ok(w) => {
                 const [width, height] = win.clientSize(w);
@@ -121,12 +117,12 @@ action main(args: string[k]): i32 {
                 return 0;
             },
             Err(e) => {
-                print(sys.message(e));
+                fail("Isocron : un compteur", `the window could not be opened: ${sys.message(e)}`);
                 return 1;
             },
         },
         Err(e) => {
-            print(e);
+            fail("Isocron : un compteur", e);
             return 1;
         },
     };

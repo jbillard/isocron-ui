@@ -2,7 +2,8 @@
 // module `win32`, the image drawn by the library and shown until the window
 // is closed (or for the seconds of a number given; with a PNG file, what
 // the window shows is captured into it at the end); the font
-// `DejaVuSans.ttf` beside the program, or the file of `--font=`. Under
+// that of `loadFont` (`DejaVuSans.ttf` beside the program, the file of
+// `--font=`, or a font of the system); a failure shown in a box. Under
 // Linux, `examples/window.isc` shows a scene by Wayland.
 // usage: gallery_window [capture.png] [seconds] [--font=file]
 import * as win from "win32";
@@ -10,7 +11,7 @@ import * as sys from "sys";
 import { Primitive, rgb, render } from "../src/paint";
 import { encode } from "../src/png";
 import { plate } from "./gallery_plate";
-import { parse } from "../src/font";
+import { loadFont, fail } from "../src/app";
 
 // the window kept on the screen until `until` (nanoseconds of `clock`), its
 // image shown again when Windows asks for it
@@ -40,11 +41,12 @@ action main(args: string[k]): i32 {
         Ok(w) => {
             const [width, height] = win.clientSize(w);
             const t0 = clock();
-            const at = findIndex(args, (a) => a.startsWith("--font="));
-            const font = readBytes(at < 0 ? "DejaVuSans.ttf" : args[at].slice(7, args[at].length));
-            const px = render(width, height, rgb(0xF3F4F6u32), match (parse(font)) {
+            const px = render(width, height, rgb(0xF3F4F6u32), match (loadFont(args)) {
                 Ok(f) => plate(f),
-                Err(e) => [],
+                Err(e) => {
+                    fail("isocron-ui: the plate", e);
+                    return [];
+                },
             });
             const t1 = clock();
             print(`${width}x${height} drawn in ${f64(t1 - t0) / 1e6} ms`);
@@ -64,7 +66,7 @@ action main(args: string[k]): i32 {
             return 0;
         },
         Err(e) => {
-            print(sys.message(e));
+            fail("isocron-ui: the plate", `the window could not be opened: ${sys.message(e)}`);
             return 1;
         },
     };

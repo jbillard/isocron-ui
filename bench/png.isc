@@ -1,0 +1,29 @@
+// The decoding of a PNG file (src/png.isc) timed: the best of `rounds`
+// decodings, its nanoseconds, the pixels a second, a checksum of a pixel.
+// usage: png FILE ROUNDS
+import { decode } from "../src/png";
+
+// the best time of `left` decodings of `f`, and the sum of their checksums
+action rounds(f: u8[n], left: i64, best: u64, sum: u64): [u64, u64] {
+    if (left == 0) {
+        return [best, sum] as const;
+    }
+    const t0 = clock();
+    const r = decode(f);
+    const t1 = clock();
+    const s = match (r) {
+        Ok(p) => u64(p.pixels[p.pixels.length / 2]) + u64(p.width),
+        Err(e) => 0u64,
+    };
+    return rounds(f, left - 1, min(best, t1 - t0), sum + s);
+}
+
+action main(args: string[k]): i32 {
+    const f = readBytes(args[0]);
+    const [best, sum] = rounds(f, parseI64(args[1]), 18446744073709551615u64, 0u64);
+    match (decode(f)) {
+        Ok(p) => print(`${args[0]}: ${p.width}x${p.height}, ${f64(best) / 1e6} ms, ${f64(p.width * p.height) / f64(best) * 1e3} Mpixels/s, checksum ${sum}`),
+        Err(e) => print(e),
+    };
+    return 0;
+}

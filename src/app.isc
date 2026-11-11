@@ -12,7 +12,7 @@ import * as unix from "unix";
 import * as net from "net";
 import * as wl from "./wayland";
 import { rgb, render } from "./paint";
-import { Font } from "./font";
+import { Font, parse } from "./font";
 import { Element, placeScrolled, hitTest, scrolled, Hit } from "./ui";
 import { Keymap, parseKeymap, charOf, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./xkb";
 
@@ -29,6 +29,56 @@ export action run<M>(title: string, width: i64, height: i64, f: Font, m: M, view
         return runWindows(title, width, height, f, m, view, update, typed, hovered);
     } else {
         return runWayland(title, width, height, f, m, view, update, typed, hovered);
+    }
+}
+
+// the font of the file `paths[i]`, or of the first after it that is one;
+// the reasons of those that are not
+action firstFont(paths: string[n], i: i64, reasons: string): Result<Font, string> {
+    if (i >= n) {
+        return Err(`no font found:${reasons}`);
+    }
+    return match (sys.readFile(paths[i])) {
+        Ok(b) => match (parse(b)) {
+            Ok(f) => Ok(f),
+            Err(e) => firstFont(paths, i + 1, `${reasons}\n  ${paths[i]}: ${e}`),
+        },
+        Err(e) => firstFont(paths, i + 1, `${reasons}\n  ${paths[i]}: ${sys.message(e)}`),
+    };
+}
+
+// the font of an application: the file of `--font=file` among its
+// arguments; else DejaVuSans.ttf beside the program (under Windows), in the
+// current folder, then a font of the system: Segoe UI or Arial under
+// Windows, DejaVu Sans in the usual folders of Linux (a program started
+// from elsewhere than its folder, or alone, still finds one)
+export action loadFont(args: string[k]): Result<Font, string> {
+    const at = findIndex(args, (a) => a.startsWith("--font="));
+    if (at >= 0) {
+        return firstFont([args[at].slice(7, args[at].length)], 0, "");
+    }
+    if (sys.platform() == "windows") {
+        const beside = match (win.programPath()) {
+            Ok(p) => [`${p.slice(0, p.lastIndexOf("\\") + 1)}DejaVuSans.ttf`],
+            Err(e) => [],
+        };
+        const root = match (sys.env("WINDIR")) {
+            Some(w) => w,
+            None => "C:\\Windows",
+        };
+        return firstFont(concat(beside, ["DejaVuSans.ttf", `${root}\\Fonts\\segoeui.ttf`, `${root}\\Fonts\\arial.ttf`]), 0, "");
+    }
+    return firstFont(["DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/dejavu/DejaVuSans.ttf", "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf"], 0, "");
+}
+
+// a failure of the application `title` shown: under Windows in a box of
+// messages (a program without a console has no other place to show it),
+// elsewhere printed
+export action fail(title: string, text: string): void {
+    if (sys.platform() == "windows") {
+        win.alert(title, text);
+    } else {
+        print(`${title}: ${text}`);
     }
 }
 
@@ -52,7 +102,10 @@ action runWindows<M>(title: string, width: i64, height: i64, f: Font, m: M, view
             win.close(w);
             return end;
         },
-        Err(e) => m,
+        Err(e) => {
+            fail(title, `the window could not be opened: ${sys.message(e)}`);
+            return m;
+        },
     };
 }
 
