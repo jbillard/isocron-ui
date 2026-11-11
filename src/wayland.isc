@@ -191,6 +191,7 @@ export type Input =
     | Key(u32, boolean)
     | Keymap(u32)
     | Modifiers(u32)
+    | Axis(u32, f64)
     | Capabilities(u32)
     | Failure(string)
     | Other(u32, u32);
@@ -233,6 +234,11 @@ export function input(e: Event): Input {
         // enter: serial, surface, x, y; motion: time, x, y
         const at = e.op == 0u32 ? 8 : 4;
         return Pointer(fixed(word(e.args, at)), fixed(word(e.args, at + 4)));
+    }
+    // the wheel: an axis (0 vertical) and a distance in pixels (down:
+    // positive)
+    if (e.obj == POINTER && e.op == 4u32 && e.args.length >= 12) {
+        return Axis(word(e.args, 4), fixed(word(e.args, 8)));
     }
     if (e.obj == POINTER && e.op == 3u32 && e.args.length >= 16) {
         return Button(word(e.args, 8), word(e.args, 12) == 1u32);

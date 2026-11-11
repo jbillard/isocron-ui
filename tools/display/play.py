@@ -14,6 +14,8 @@ The actions, in their order:
                button pressed and released (the program prints the centres)
   clickat:X,Y  the same at a point of the window
   type:TEXT    the keys of TEXT typed (xdotool type)
+  wheel:X,Y,N  the pointer moved to a point of the window, the wheel turned
+               by N notches (down when positive, up when negative)
   endserver    Weston stopped: the program sees its connection closed
   key:NAME     a key of xdotool pressed and released (Up, Down, r, Escape)
   shot:FILE    the screen of Weston written to FILE (PNG)
@@ -85,6 +87,11 @@ def main():
                 xdo("mousemove", x, y)
                 time.sleep(0.15)
                 xdo("click", "1")
+            elif kind == "wheel":
+                x, y, n = arg.split(",")
+                xdo("mousemove", x, y)
+                time.sleep(0.15)
+                xdo("click", "--repeat", str(abs(int(n))), "--delay", "60", "5" if int(n) > 0 else "4")
             elif kind == "type":
                 xdo("type", "--delay", "60", arg)
             elif kind == "key":

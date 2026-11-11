@@ -1,7 +1,8 @@
 // An application in the manner of Elm in a window of the system: its model
 // (of any type), its view laid out at the size of the window, the message
 // of a click on a place, the characters typed, the place under the
-// pointer. Under Windows, a window of `win32`; under Linux, a window of
+// pointer; the boxes that scroll moved by the wheel (their offsets kept
+// here, 16 at most). Under Windows, a window of `win32`; under Linux, a window of
 // Wayland (the module `unix`, the protocol spoken by `wayland.isc`, the
 // keyboard read by `xkb.isc`): the same application. The model drawn
 // again after each change; a window resized, laid out again.
@@ -12,7 +13,7 @@ import * as net from "net";
 import * as wl from "./wayland";
 import { rgb, render } from "./paint";
 import { Font } from "./font";
-import { Element, place, hitTest, Hit } from "./ui";
+import { Element, placeScrolled, hitTest, scrolled, Hit } from "./ui";
 import { Keymap, parseKeymap, charOf, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./xkb";
 
 // the application titled `title` in a window of `width` by `height` pixels
@@ -33,9 +34,10 @@ export action run<M>(title: string, width: i64, height: i64, f: Font, m: M, view
 
 // ----- Windows ---------------------------------------------------------
 
-// the view of `m` laid out in the window, drawn and shown; its places
-action frame<M>(w: win.Window, f: Font, m: M, view: (M) => Element, width: i64, height: i64): Hit[] {
-    const [ps, hits] = place(f, view(m), 0.0f32, 0.0f32, f32(width), f32(height));
+// the view of `m` laid out in the window (its boxes that scroll moved by
+// `offsets`), drawn and shown; its places
+action frame<M>(w: win.Window, f: Font, m: M, view: (M) => Element, width: i64, height: i64, offsets: f32[]): Hit[] {
+    const [ps, hits] = placeScrolled(f, view(m), 0.0f32, 0.0f32, f32(width), f32(height), offsets);
     const shown = win.show(w, render(width, height, rgb(0xFFFFFFu32), ps), width, height);
     return hits;
 }
@@ -44,8 +46,9 @@ action runWindows<M>(title: string, width: i64, height: i64, f: Font, m: M, view
     return match (win.open(title, width, height)) {
         Ok(w) => {
             const [cw, ch] = win.clientSize(w);
-            const hits = frame(w, f, m, view, cw, ch);
-            const end = loopWindows(w, f, m, hits, 0, 0, -1, 0, cw, ch, view, update, typed, hovered);
+            const offsets = fill(16, 0.0f32);
+            const hits = frame(w, f, m, view, cw, ch, offsets);
+            const end = loopWindows(w, f, m, hits, offsets, 0, 0, -1, 0, cw, ch, view, update, typed, hovered);
             win.close(w);
             return end;
         },
@@ -63,33 +66,36 @@ function editKey(k: i64): i64 {
 // message, the characters typed (a pair of units of UTF-16 joined), the
 // keys that edit text; the size followed; the model drawn again after a
 // change
-action loopWindows<M>(w: win.Window, f: Font, m: M, hits: Hit[], x: i64, y: i64, hover: i64, high: i64, width: i64, height: i64, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): M {
+action loopWindows<M>(w: win.Window, f: Font, m: M, hits: Hit[], offsets: f32[], x: i64, y: i64, hover: i64, high: i64, width: i64, height: i64, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): M {
     return match (win.events(w, -1)) {
         Ok(evs) => {
-            const [next, nx, ny, nhover, nhigh, again, closed, nw, nh] = fold(evs, [m, x, y, hover, high, false, false, width, height] as const, (acc, e) => {
-                const [mm, px, py, hv, hs, redraw, cl, ww, hh] = acc;
+            const start: [M, f32[], i64, i64, i64, i64, boolean, boolean, i64, i64] = [m, offsets, x, y, hover, high, false, false, width, height] as const;
+            const [next, noff, nx, ny, nhover, nhigh, again, closed, nw, nh] = fold(evs, start, (acc, e) => {
+                const [mm, of, px, py, hv, hs, redraw, cl, ww, hh] = acc;
                 return match (e) {
-                    win.Resize(a, b) => [mm, px, py, hv, hs, true, cl, a, b] as const,
+                    win.Resize(a, b) => [mm, of, px, py, hv, hs, true, cl, a, b] as const,
                     win.Pointer(a, b) => {
                         const now = hitTest(hits, f32(a) + 0.5f32, f32(b) + 0.5f32);
-                        return now == hv ? [mm, a, b, hv, hs, redraw, cl, ww, hh] as const : [hovered(mm, now), a, b, now, hs, true, cl, ww, hh] as const;
+                        return now == hv ? [mm, of, a, b, hv, hs, redraw, cl, ww, hh] as const : [hovered(mm, now), of, a, b, now, hs, true, cl, ww, hh] as const;
                     },
                     win.Button(b, down) => {
                         const msg = b == 0 && down ? hitTest(hits, f32(px) + 0.5f32, f32(py) + 0.5f32) : -1;
-                        return msg >= 0 ? [update(mm, msg), px, py, hv, hs, true, cl, ww, hh] as const : acc;
+                        return msg >= 0 ? [update(mm, msg), of, px, py, hv, hs, true, cl, ww, hh] as const : acc;
                     },
+                    // a notch (120) of the wheel: 48 pixels
+                    win.Wheel(d) => [mm, scrolled(of, hits, f32(px) + 0.5f32, f32(py) + 0.5f32, -f32(d) * 0.4f32), px, py, hv, hs, true, cl, ww, hh] as const,
                     win.Char(u) => {
                         if (u >= 0xD800 && u < 0xDC00) {
-                            return [mm, px, py, hv, u, redraw, cl, ww, hh] as const;
+                            return [mm, of, px, py, hv, u, redraw, cl, ww, hh] as const;
                         }
                         const c = u >= 0xDC00 && u < 0xE000 && hs > 0 ? 0x10000 + (hs - 0xD800) * 1024 + (u - 0xDC00) : u;
-                        return [typed(mm, c), px, py, hv, 0, true, cl, ww, hh] as const;
+                        return [typed(mm, c), of, px, py, hv, 0, true, cl, ww, hh] as const;
                     },
                     win.Key(k, down, s) => {
                         const c = down ? editKey(k) : 0;
-                        return c != 0 ? [typed(mm, c), px, py, hv, hs, true, cl, ww, hh] as const : acc;
+                        return c != 0 ? [typed(mm, c), of, px, py, hv, hs, true, cl, ww, hh] as const : acc;
                     },
-                    win.Close => [mm, px, py, hv, hs, redraw, true, ww, hh] as const,
+                    win.Close => [mm, of, px, py, hv, hs, redraw, true, ww, hh] as const,
                     _ => acc,
                 };
             });
@@ -97,9 +103,9 @@ action loopWindows<M>(w: win.Window, f: Font, m: M, hits: Hit[], x: i64, y: i64,
                 return next;
             }
             if (again && nw > 0 && nh > 0) {
-                return loopWindows(w, f, next, frame(w, f, next, view, nw, nh), nx, ny, nhover, nhigh, nw, nh, view, update, typed, hovered);
+                return loopWindows(w, f, next, frame(w, f, next, view, nw, nh, noff), noff, nx, ny, nhover, nhigh, nw, nh, view, update, typed, hovered);
             }
-            return loopWindows(w, f, next, hits, nx, ny, nhover, nhigh, nw, nh, view, update, typed, hovered);
+            return loopWindows(w, f, next, hits, noff, nx, ny, nhover, nhigh, nw, nh, view, update, typed, hovered);
         },
         Err(e) => m,
     };
@@ -111,7 +117,7 @@ action loopWindows<M>(w: win.Window, f: Font, m: M, hits: Hit[], x: i64, y: i64,
 // by a read, the size of the window, whether it is shown, the places of
 // the view, the pointer and the place under it, the images made (their
 // objects), the keyboard (its table, its modifiers), the end
-type State = { pending: u8[], w: i64, h: i64, shown: boolean, hits: Hit[], x: f64, y: f64, hover: i64, images: i64, keymap: Keymap, mods: u32, done: boolean, failed: string };
+type State = { pending: u8[], w: i64, h: i64, shown: boolean, hits: Hit[], offsets: f32[], x: f64, y: f64, hover: i64, images: i64, keymap: Keymap, mods: u32, done: boolean, failed: string };
 
 // the objects of the `k`-th image: its pool and its buffer (ids from
 // `wl.POOL` on, in the order they are made)
@@ -137,7 +143,7 @@ action globals(c: net.Conn, pending: u8[], g: wl.Globals): wl.Globals {
 // the view of `m` drawn into a new memory shared with the compositor and
 // shown as the `images`-th image, the previous one destroyed; its places
 action drawWayland<M>(c: net.Conn, f: Font, m: M, view: (M) => Element, st: State): State {
-    const [ps, hits] = place(f, view(m), 0.0f32, 0.0f32, f32(st.w), f32(st.h));
+    const [ps, hits] = placeScrolled(f, view(m), 0.0f32, 0.0f32, f32(st.w), f32(st.h), st.offsets);
     const k = st.images;
     return match (unix.shared(st.w * st.h * 4)) {
         Ok(mem) => {
@@ -179,7 +185,7 @@ action runWayland<M>(title: string, width: i64, height: i64, f: Font, m: M, view
                 return m;
             }
             const made = net.write(c, wl.windowRequests(g, title));
-            const st = { pending: [], w: width, h: height, shown: false, hits: [], x: 0.0, y: 0.0, hover: -1, images: 0, keymap: parseKeymap(""), mods: 0u32, done: false, failed: "" };
+            const st = { pending: [], w: width, h: height, shown: false, hits: [], offsets: fill(16, 0.0f32), x: 0.0, y: 0.0, hover: -1, images: 0, keymap: parseKeymap(""), mods: 0u32, done: false, failed: "" };
             const end = loopWayland(c, f, m, st, view, update, typed, hovered);
             net.close(c);
             return end;
@@ -234,6 +240,8 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, st: State
             return msg >= 0 ? changed(c, f, update(m, msg), view, st) : [m, st] as const;
         },
         wl.Modifiers(mods) => [m, { ...st, mods: mods }] as const,
+        // the vertical wheel: its distance, four times (a notch: 10)
+        wl.Axis(axis, value) => axis == 0u32 ? changed(c, f, m, view, { ...st, offsets: scrolled(st.offsets, st.hits, f32(st.x), f32(st.y), f32(value) * 4.0f32) }) : [m, st] as const,
         wl.Key(code, down) => {
             const ch = down ? charOf(st.keymap, code, st.mods) : 0;
             return ch != 0 ? changed(c, f, typed(m, ch), view, st) : [m, st] as const;

@@ -179,9 +179,13 @@ export function view(m: Model): Element {
             button("Effacer les terminées", CLEAR, false, m.hover == CLEAR, Px(170.0f32)),
         ]),
     ];
+    // the tasks in a column that scrolls (its offset the first the
+    // application keeps), between the header and the footer
+    const list = Div({ ...style(), height: Fill(1.0f32), scroll: 0 }, rows);
     const card = Div({
         ...style(),
         width: Px(440.0f32),
+        height: Fill(1.0f32),
         padding: 24.0f32,
         gap: 12.0f32,
         background: rgb(0xFFFFFFu32),
@@ -189,7 +193,7 @@ export function view(m: Model): Element {
         shadowBlur: 12.0f32,
         shadowY: 6.0f32,
         shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.18f32),
-    }, concat(concat(header, rows), footer));
+    }, concat(concat(header, [list]), footer));
     // the card at the top, in the middle across (it grows downwards: the
     // places above do not move); a click on the ground gives NOTHING (the
     // field loses the focus)

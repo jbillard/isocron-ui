@@ -33,8 +33,11 @@ export type Shadow = {
 // pixels in [0, 1] (rows from the top; at least one pixel)
 export type Sprite = { x: i64, y: i64, w: i64, h: i64, color: Color, mask: f32[] };
 
-// what a scene holds, drawn in its order
-export type Primitive = Box(Quad) | Blur(Shadow) | Glyph(Sprite);
+// what a scene holds, drawn in its order; `Clip(x0, y0, x1, y1)` and
+// `Unclip`: the primitives between them drawn only on the pixels whose
+// centre is inside the rectangle (and inside those of the `Clip`s around
+// them)
+export type Primitive = Box(Quad) | Blur(Shadow) | Glyph(Sprite) | Clip(f32, f32, f32, f32) | Unclip;
 
 export function rgba(r: f32, g: f32, b: f32, a: f32): Color {
     return { r: r, g: g, b: b, a: a };
@@ -202,7 +205,34 @@ function reach(p: Primitive): [f32, f32, f32, f32] {
             return [s.x - m, s.y - m, s.x + s.w + m, s.y + s.h + m] as const;
         },
         Glyph(g) => [f32(g.x), f32(g.y), f32(g.x + g.w), f32(g.y + g.h)] as const,
+        // (they draw nothing)
+        _ => [0.0f32, 0.0f32, 0.0f32, 0.0f32] as const,
     };
+}
+
+// the rectangle of each primitive's clip: those of the `Clip`s open before
+// it intersected (the whole plane when none is; 16 at most, those deeper
+// clipped by the 16th)
+function clips(ps: Primitive[n]): [f32, f32, f32, f32][n] {
+    const all = [-1e30f32, -1e30f32, 1e30f32, 1e30f32] as const;
+    const [out, stack, depth] = fold(iota(n), [fill(n, all), fill(64, 0.0f32), 0] as const, (acc, k) => {
+        const [o, st, d] = acc;
+        const top = d == 0 ? all : [st[d * 4 - 4], st[d * 4 - 3], st[d * 4 - 2], st[d * 4 - 1]] as const;
+        return match (ps[k]) {
+            Clip(a, b, c, e) => {
+                const [t0, t1, t2, t3] = top;
+                const nd = min(d + 1, 16);
+                const at = (nd - 1) * 4;
+                const s1 = requireUnique(st.with(at, max(a, t0)));
+                const s2 = requireUnique(s1.with(at + 1, max(b, t1)));
+                const s3 = requireUnique(s2.with(at + 2, min(c, t2)));
+                return [o, requireUnique(s3.with(at + 3, min(e, t3))), nd] as const;
+            },
+            Unclip => [o, st, max(0, d - 1)] as const,
+            _ => [requireUnique(o.with(k, top)), st, d] as const,
+        };
+    });
+    return out;
 }
 
 // the side of a tile, in pixels
@@ -316,7 +346,10 @@ function tile(t: i64, tx: i64, base: Color, ps: Primitive[n], boxes: [f32, f32, 
                 const sa = map(iota(256), (j) => {
                     const col = (t % tx) * TILE + j % TILE - gl.x;
                     const row = (t / tx) * TILE + j / TILE - gl.y;
-                    const inside = col >= 0 && col < gl.w && row >= 0 && row < gl.h;
+                    const px = ox + f32(j % TILE);
+                    const py = oy + f32(j / TILE);
+                    // (its box: the sprite within its clip)
+                    const inside = col >= 0 && col < gl.w && row >= 0 && row < gl.h && px > x0 && px < x1 && py > y0 && py < y1;
                     // (the place read whatever the pixel, then kept or not: a
                     // branch that cannot fail, for every pixel at once)
                     const v = m[inside ? row * gl.w + col : 0];
@@ -325,6 +358,8 @@ function tile(t: i64, tx: i64, base: Color, ps: Primitive[n], boxes: [f32, f32, 
                 const over = (d: f32[256], cc: f32) => map(iota(256), (j) => cc * sa[j] + d[j] * (1.0f32 - sa[j]));
                 return [over(r, gl.color.r), over(g, gl.color.g), over(b, gl.color.b), map(iota(256), (j) => sa[j] + a[j] * (1.0f32 - sa[j]))] as const;
             },
+            // (never among the primitives of a tile: their boxes are empty)
+            _ => acc,
         };
     });
     const [r, g, b, a] = c;
@@ -341,7 +376,13 @@ function tile(t: i64, tx: i64, base: Color, ps: Primitive[n], boxes: [f32, f32, 
 export function render(width: i64, height: i64, base: Color, ps: Primitive[n]): u32[] {
     const tx = (width + TILE - 1) / TILE;
     const ty = (height + TILE - 1) / TILE;
-    const boxes = map(ps, (p) => reach(p));
+    // each box within its clip
+    const cl = clips(ps);
+    const boxes = map(iota(ps.length), (k) => {
+        const [x0, y0, x1, y1] = reach(ps[k]);
+        const [c0, c1, c2, c3] = cl[k];
+        return [max(x0, c0), max(y0, c1), min(x1, c2), min(y1, c3)] as const;
+    });
     const tiles = map(iota(tx * ty), (t) => {
         // the centres of the first and last pixels of the tile
         const cx0 = f32((t % tx) * TILE) + 0.5f32;

@@ -25,4 +25,10 @@ played="$(python3 tools/display/play.py 480 320 click:1 click:1 click:1 click:2 
 cp tests/fonts/DejaVuSans.ttf "$out/"
 tasks="$(cd "$out" && python3 "$here/../tools/display/play.py" 520 420 clickat:211,124 type:Lait key:Return type:Pain clickat:411,124 clickat:80,174 clickat:211,124 type:Thex key:BackSpace key:Return endserver -- "$out/todo" | tail -1)"
 [ "$tasks" = "[[ ] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Lait, [ ] Pain, [ ] The]" ] || { echo "FAILED: tasks: $tasks"; exit 1; }
-echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks"
+# ten tasks: their list scrolled to its end by the wheel, the tick at (80,
+# 288) is the last task's (the fourth's without the wheel)
+words="Un Deux Trois Quatre Cinq Six Sept Huit"
+typing="$(for w in $words; do printf 'type:%s key:Return ' "$w"; done)"
+scrolled="$(cd "$out" && python3 "$here/../tools/display/play.py" 520 420 clickat:211,124 $typing wheel:260,250,10 clickat:80,288 endserver -- "$out/todo" | tail -1)"
+[ "$scrolled" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Un, [ ] Deux, [ ] Trois, [ ] Quatre, [ ] Cinq, [ ] Six, [ ] Sept, [x] Huit]" ] || { echo "FAILED: scrolled: $scrolled"; exit 1; }
+echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled"

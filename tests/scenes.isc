@@ -5,7 +5,7 @@ import { Primitive, Box, Blur, Color, quad, rounded, bordered, rgb, rgba, render
 import { encode, crc32 } from "../src/png";
 import { parse } from "../src/font";
 import { line } from "../src/text";
-import { place } from "../src/ui";
+import { place, placeScrolled } from "../src/ui";
 import { view, initial, update, INCREMENT, STEP } from "../examples/counter";
 import * as todo from "../examples/todo";
 
@@ -56,6 +56,11 @@ action main(args: string[k]): i32 {
             const t = { ...todo.typed(todo.typed(todo.typed(todo.typed(todo.update(todo.initial(), todo.FIELD), 80), 97), 105), 110), hover: todo.ADD };
             const [tp, th] = place(f, todo.view(t), 0.0f32, 0.0f32, 520.0f32, 420.0f32);
             scene(args[0], "todo", 520, 420, white, tp);
+            // ten tasks, their column scrolled by 100 pixels: cut at its
+            // top and its bottom
+            const many = { ...todo.initial(), items: map(iota(10), (i) => ({ text: `Tâche ${i}`, done: i % 3 == 0 })) };
+            const [sp, sh] = placeScrolled(f, todo.view(many), 0.0f32, 0.0f32, 520.0f32, 420.0f32, map(iota(16), (i) => i == 0 ? 100.0f32 : 0.0f32));
+            scene(args[0], "scrolled", 520, 420, white, sp);
         },
         Err(e) => print(e),
     };

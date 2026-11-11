@@ -1,0 +1,45 @@
+// A column that scrolls (the list of tasks of examples/todo.isc, ten tasks
+// in 520 by 420 pixels): its range, the places of its tasks moved by an
+// offset and cut to its box (a task hidden reached by no click), a click
+// on a task brought into view, the offset kept within its range by the
+// wheel.
+import { parse } from "../src/font";
+import { placeScrolled, hitTest, scrollTest, scrolled, Hit } from "../src/ui";
+import { Model, Item, update, view, TICK } from "../examples/todo";
+
+// the ticks of the tasks among the places `hs`: their tasks and their tops
+function ticks(hs: Hit[n]): [i64, i64][] {
+    return map(filter(hs, (h) => h.id >= TICK && h.id < TICK + 100), (h) => [h.id - TICK, i64(h.y)] as const);
+}
+
+action main(args: string[k]): i32 {
+    return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => {
+            const m: Model = { items: map(iota(10), (i) => ({ text: `Tâche ${i}`, done: false })), draft: "", focused: false, hover: -1 };
+            const [ps0, h0] = placeScrolled(f, view(m), 0.0f32, 0.0f32, 520.0f32, 420.0f32, fill(16, 0.0f32));
+            const [id, range] = scrollTest(h0, 260.0f32, 200.0f32);
+            print([id, i64(range)] as const);
+            // the ticks of the tasks seen, unmoved, and their tops
+            print(ticks(h0));
+            // moved by 100 pixels: other tasks seen, the first ones gone
+            const [ps1, h1] = placeScrolled(f, view(m), 0.0f32, 0.0f32, 520.0f32, 420.0f32, map(iota(16), (i) => i == 0 ? 100.0f32 : 0.0f32));
+            print(ticks(h1));
+            // a click on the tick at 184 to 204: the task now there; on the
+            // part of the third tick cut away above the column: nothing of
+            // it (the ground)
+            print([hitTest(h1, 80.0f32, 194.0f32) - TICK, hitTest(h1, 80.0f32, 150.0f32)] as const);
+            // the wheel: down by 1000 pixels, kept within the range; up by
+            // 30 from there
+            const o = scrolled(fill(16, 0.0f32), h0, 260.0f32, 200.0f32, 1000.0f32);
+            const o2 = scrolled(o, h0, 260.0f32, 200.0f32, -30.0f32);
+            print([i64(o[0]), i64(o2[0])] as const);
+            // the wheel outside the column: nothing
+            print(i64(scrolled(fill(16, 0.0f32), h0, 10.0f32, 10.0f32, 50.0f32)[0]));
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

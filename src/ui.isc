@@ -4,7 +4,7 @@
 // at the start, the centre or the end, or spread; aligned across or
 // stretched), and texts cut in lines; the primitives that draw them, and
 // the places a click reaches, the last drawn first.
-import { Primitive, Box, Blur, Color, quad, rounded, bordered, transparent } from "./paint";
+import { Primitive, Box, Blur, Clip, Unclip, Color, quad, rounded, bordered, transparent } from "./paint";
 import { Font } from "./font";
 import { Align, Start, Center, End, paragraph, measureParagraph } from "./text";
 
@@ -41,6 +41,11 @@ export type Style = {
     shadowColor: Color,
     // the message a click on the box gives (-1: none)
     onClick: i64,
+    // its children drawn within its padding box alone
+    clip: boolean,
+    // a box whose column of children scrolls (clipped): the number of its
+    // offset among those the application keeps (0 to 15; -1: none)
+    scroll: i64,
 };
 
 // how a text looks: its size (`em`, pixels a em), its colour, how its lines are
@@ -50,8 +55,10 @@ export type TextStyle = { em: f32, color: Color, align: Align, lineHeight: f32 }
 // an element: a box and its children, or a text
 export type Element = Div(Style, Element[k]) | Label(TextStyle, string);
 
-// a place a click reaches: a box and its message
-export type Hit = { x: f32, y: f32, w: f32, h: f32, id: i64 };
+// a place a click reaches (`kind` 0: a box and its message), or a place
+// the wheel scrolls (`kind` 1: a box that scrolls, the number of its
+// offset as `id`, as far as `range` pixels)
+export type Hit = { x: f32, y: f32, w: f32, h: f32, id: i64, kind: i64, range: f32 };
 
 // a box that draws nothing and lays out a column
 export function style(): Style {
@@ -72,6 +79,8 @@ export function style(): Style {
         shadowY: 0.0f32,
         shadowColor: transparent(),
         onClick: -1,
+        clip: false,
+        scroll: -1,
     };
 }
 
@@ -160,11 +169,18 @@ function decoration(st: Style, x: f32, y: f32, w: f32, h: f32): Primitive[] {
 // the element `e` laid out in the box (x, y, w, h): what draws it, in the
 // order it is drawn, and the places a click on it reaches
 export function place(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32): [Primitive[], Hit[]] {
+    return placeScrolled(f, e, x, y, w, h, []);
+}
+
+// `place`, the boxes that scroll moved by the offsets `offsets` (by their
+// numbers; none: 0), each offset within its range (the height of its
+// content past its own)
+export function placeScrolled(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, offsets: f32[]): [Primitive[], Hit[]] {
     return match (e) {
         Label(ts, s) => [paragraph(f, ts.em, s, x, baseline(f, ts, y), w, ts.lineHeight, ts.align, ts.color), []] as const,
         Div(st, cs) => {
             const deco = decoration(st, x, y, w, h);
-            const hits: Hit[] = st.onClick >= 0 ? [{ x: x, y: y, w: w, h: h, id: st.onClick }] : [];
+            const hits: Hit[] = st.onClick >= 0 ? [{ x: x, y: y, w: w, h: h, id: st.onClick, kind: 0, range: 0.0f32 }] : [];
             const row = isRow(st.direction);
             const n = cs.length;
             const ix = x + st.padding;
@@ -196,6 +212,11 @@ export function place(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32): [Pri
                 Between => [0.0f32, n > 1 ? left / f32(n - 1) : 0.0f32] as const,
             };
             const ends = scan(map(iota(n), (i) => mains[i] + st.gap + extra), (a, b) => a + b, 0.0f32);
+            // a column that scrolls: its children moved up by its offset,
+            // within the height they have past its own
+            const scrolls = st.scroll >= 0 && !row;
+            const range = scrolls ? max(0.0f32, used - mainRoom) : 0.0f32;
+            const off = scrolls && st.scroll < offsets.length ? min(range, max(0.0f32, offsets[st.scroll])) : 0.0f32;
             // the frame of each child: across, the room, a size fixed or
             // the content's, placed by `align`
             const frames = map(iota(n), (i) => {
@@ -212,29 +233,58 @@ export function place(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32): [Pri
                     Center => (crossRoom - cross) * 0.5f32,
                     End => crossRoom - cross,
                 };
-                const along = first + ends[i] - (mains[i] + st.gap + extra);
+                const along = first + ends[i] - (mains[i] + st.gap + extra) - off;
                 return row
                     ? [ix + along, iy + at, mains[i], cross] as const
                     : [ix + at, iy + along, cross, mains[i]] as const;
             });
-            return placeFrom(f, cs, frames, 0, deco, hits);
+            const [cps, chs] = placeFrom(f, cs, frames, 0, [], [], offsets);
+            if (!st.clip && !scrolls) {
+                return [concat(deco, cps), concat(hits, chs)] as const;
+            }
+            // clipped: the children drawn within the padding box, their
+            // places cut to it (none left where they are hidden)
+            const x1 = ix + iw;
+            const y1 = iy + ih;
+            const seen = filter(chs, (c) => c.x < x1 && c.x + c.w > ix && c.y < y1 && c.y + c.h > iy);
+            const cut = map(seen, (c) => {
+                const cx = max(c.x, ix);
+                const cy = max(c.y, iy);
+                return { ...c, x: cx, y: cy, w: min(c.x + c.w, x1) - cx, h: min(c.y + c.h, y1) - cy };
+            });
+            const wheel: Hit[] = scrolls ? [{ x: ix, y: iy, w: iw, h: ih, id: st.scroll, kind: 1, range: range }] : [];
+            const drawn = concat(concat(concat(deco, [Clip(ix, iy, x1, y1)]), cps), [Unclip]);
+            return [drawn, concat(concat(hits, wheel), cut)] as const;
         },
     };
 }
 
 // the children `cs` from the `i`-th, each laid out in its frame, after
 // what draws those before (`ps`) and their places (`hs`)
-function placeFrom(f: Font, cs: Element[n], frames: [f32, f32, f32, f32][n], i: i64, ps: Primitive[], hs: Hit[]): [Primitive[], Hit[]] {
+function placeFrom(f: Font, cs: Element[n], frames: [f32, f32, f32, f32][n], i: i64, ps: Primitive[], hs: Hit[], offsets: f32[]): [Primitive[], Hit[]] {
     if (i >= n) {
         return [ps, hs] as const;
     }
     const [x, y, w, h] = frames[i];
-    const [cp, ch] = place(f, cs[i], x, y, w, h);
-    return placeFrom(f, cs, frames, i + 1, concat(ps, cp), concat(hs, ch));
+    const [cp, ch] = placeScrolled(f, cs[i], x, y, w, h, offsets);
+    return placeFrom(f, cs, frames, i + 1, concat(ps, cp), concat(hs, ch), offsets);
 }
 
 // the message of a click at (px, py): that of the last place drawn that
 // holds it, -1 for none
 export function hitTest(hits: Hit[n], px: f32, py: f32): i64 {
-    return fold(hits, -1, (found, h) => px >= h.x && px < h.x + h.w && py >= h.y && py < h.y + h.h ? h.id : found);
+    return fold(hits, -1, (found, h) => h.kind == 0 && px >= h.x && px < h.x + h.w && py >= h.y && py < h.y + h.h ? h.id : found);
+}
+
+// the box the wheel scrolls at (px, py): the number of its offset and its
+// range, the last drawn that holds it ([-1, 0]: none)
+export function scrollTest(hits: Hit[n], px: f32, py: f32): [i64, f32] {
+    return fold(hits, [-1, 0.0f32] as const, (found, h) => h.kind == 1 && px >= h.x && px < h.x + h.w && py >= h.y && py < h.y + h.h ? [h.id, h.range] as const : found);
+}
+
+// the offsets `offsets` (16) with that of the box the wheel scrolls at
+// (px, py) moved by `dy` pixels (down: positive), within its range
+export function scrolled(offsets: f32[n], hits: Hit[m], px: f32, py: f32, dy: f32): f32[n] {
+    const [id, range] = scrollTest(hits, px, py);
+    return id < 0 || id >= n ? offsets : map(iota(n), (i) => i == id ? min(range, max(0.0f32, offsets[i] + dy)) : offsets[i]);
 }
