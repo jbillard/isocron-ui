@@ -75,9 +75,9 @@ export function rasterize(f: Font, g: i64, em: f32, fx: f32): [i64, i64, i64, i6
     // each part drawn row by row into the areas (rows of `width` cells),
     // updated in place: each cell it crosses given the area of the row it
     // leaves on its right, the cell after given the rest, so that a row
-    // added up from its left is the coverage of the outline (the code of
-    // the lambdas inlined: a function called could not update its argument
-    // in place, D637)
+    // added up from its left is the coverage of the outline (the rows in
+    // lambdas of the `fold`, always inlined: a function the compiler calls
+    // would cost a call a row, 100 to 200 a glyph)
     const areas = fold(ss, fill(width * h, 0.0f32), (a, s) => {
         const x0 = fx + s.x0 * k - left;
         const y0 = -s.y0 * k - top;
