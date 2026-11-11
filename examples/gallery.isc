@@ -1,0 +1,192 @@
+// Everything the library draws, with variants of each effect, in one
+// image (1280 by 1040), written to the PNG file of the first argument. The
+// rows, from the top: the radii of the corners; the borders; colours with
+// alpha over each other; the shadows; widgets made of them; a card of an
+// interface; places and sizes that are not whole pixels.
+import { Primitive, Box, Blur, Color, Quad, quad, rounded, bordered, rgb, rgba, transparent, render } from "../src/paint";
+import { encode } from "../src/png";
+
+// a quad with a radius for each corner
+function corners(q: Quad, tl: f32, tr: f32, br: f32, bl: f32): Quad {
+    return { ...q, topLeft: tl, topRight: tr, bottomRight: br, bottomLeft: bl };
+}
+
+// a quad with a width of border for each side
+function sides(q: Quad, top: f32, right: f32, bottom: f32, left: f32, c: Color): Quad {
+    return { ...q, borderColor: c, top: top, right: right, bottom: bottom, left: left };
+}
+
+// the shadow of a rectangle with the radius `r`, moved by (dx, dy)
+function shadow(x: f32, y: f32, w: f32, h: f32, r: f32, dx: f32, dy: f32, blur: f32, c: Color): Primitive {
+    return Blur({ x: x + dx, y: y + dy, w: w, h: h, blur: blur, color: c, topLeft: r, topRight: r, bottomRight: r, bottomLeft: r });
+}
+
+function box(q: Quad): Primitive {
+    return Box(q);
+}
+
+// a white card with a soft shadow under it
+function card(x: f32, y: f32, w: f32, h: f32, r: f32): Primitive[2] {
+    return [shadow(x, y, w, h, r, 0.0f32, 4.0f32, 8.0f32, rgba(0.0f32, 0.0f32, 0.0f32, 0.18f32)), box(rounded(quad(x, y, w, h, rgb(0xFFFFFFu32)), r))];
+}
+
+function blue(): Color {
+    return rgb(0x3B82F6u32);
+}
+
+// row 1: the radii of the corners
+function radii(): Primitive[] {
+    const y = 30.0f32;
+    const c = blue();
+    return [
+        box(quad(40.0f32, y, 110.0f32, 80.0f32, c)),
+        box(rounded(quad(190.0f32, y, 110.0f32, 80.0f32, c), 4.0f32)),
+        box(rounded(quad(340.0f32, y, 110.0f32, 80.0f32, c), 12.0f32)),
+        box(rounded(quad(490.0f32, y, 110.0f32, 80.0f32, c), 24.0f32)),
+        box(rounded(quad(640.0f32, y, 110.0f32, 80.0f32, c), 40.0f32)),
+        box(corners(quad(790.0f32, y, 110.0f32, 80.0f32, c), 36.0f32, 0.0f32, 0.0f32, 0.0f32)),
+        box(corners(quad(940.0f32, y, 110.0f32, 80.0f32, c), 36.0f32, 0.0f32, 36.0f32, 0.0f32)),
+        box(rounded(quad(1110.0f32, y, 80.0f32, 80.0f32, c), 40.0f32)),
+    ];
+}
+
+// row 2: the borders
+function borders(): Primitive[] {
+    const y = 150.0f32;
+    const ink = rgb(0x111827u32);
+    const white = rgb(0xFFFFFFu32);
+    return [
+        box(bordered(rounded(quad(40.0f32, y, 110.0f32, 80.0f32, white), 10.0f32), 1.0f32, ink)),
+        box(bordered(rounded(quad(190.0f32, y, 110.0f32, 80.0f32, white), 10.0f32), 2.0f32, ink)),
+        box(bordered(rounded(quad(340.0f32, y, 110.0f32, 80.0f32, white), 10.0f32), 4.0f32, blue())),
+        box(bordered(rounded(quad(490.0f32, y, 110.0f32, 80.0f32, white), 20.0f32), 10.0f32, rgb(0x10B981u32))),
+        box(sides(quad(640.0f32, y, 110.0f32, 80.0f32, rgb(0xFEF3C7u32)), 8.0f32, 0.0f32, 0.0f32, 0.0f32, rgb(0xD97706u32))),
+        box(sides(rounded(quad(790.0f32, y, 110.0f32, 80.0f32, rgb(0xFCE7F3u32)), 14.0f32), 2.0f32, 10.0f32, 2.0f32, 10.0f32, rgb(0xDB2777u32))),
+        box(bordered(rounded(quad(940.0f32, y, 110.0f32, 80.0f32, transparent()), 16.0f32), 3.0f32, rgb(0x7C3AEDu32))),
+        box(bordered(rounded(quad(1110.0f32, y, 80.0f32, 80.0f32, rgb(0xE0F2FEu32)), 40.0f32), 8.0f32, rgba(0.0f32, 0.3f32, 0.8f32, 0.35f32))),
+    ];
+}
+
+// row 3: colours with alpha over each other
+function alphas(): Primitive[] {
+    const y = 270.0f32;
+    // a checkerboard, to see through
+    const checks = map(iota(48), (i) => box(quad(40.0f32 + f32(i % 12) * 20.0f32, y + f32(i / 12) * 20.0f32, 20.0f32, 20.0f32, (i % 12 + i / 12) % 2 == 0 ? rgb(0xFFFFFFu32) : rgb(0xD1D5DBu32))));
+    const veils = [
+        box(quad(50.0f32, y + 10.0f32, 50.0f32, 60.0f32, rgba(0.23f32, 0.51f32, 0.96f32, 0.25f32))),
+        box(quad(110.0f32, y + 10.0f32, 50.0f32, 60.0f32, rgba(0.23f32, 0.51f32, 0.96f32, 0.5f32))),
+        box(quad(170.0f32, y + 10.0f32, 50.0f32, 60.0f32, rgba(0.23f32, 0.51f32, 0.96f32, 0.75f32))),
+        box(quad(230.0f32, y + 10.0f32, 40.0f32, 60.0f32, rgba(0.23f32, 0.51f32, 0.96f32, 1.0f32))),
+    ];
+    // three discs of red, green and blue at half alpha
+    const discs = [
+        box(rounded(quad(330.0f32, y, 60.0f32, 60.0f32, rgba(1.0f32, 0.0f32, 0.0f32, 0.5f32)), 30.0f32)),
+        box(rounded(quad(365.0f32, y, 60.0f32, 60.0f32, rgba(0.0f32, 0.8f32, 0.0f32, 0.5f32)), 30.0f32)),
+        box(rounded(quad(347.0f32, y + 28.0f32, 60.0f32, 60.0f32, rgba(0.0f32, 0.0f32, 1.0f32, 0.5f32)), 30.0f32)),
+    ];
+    // cards of colours fanned out, each over the one before
+    const fan = map(iota(6), (i) => box(bordered(rounded(quad(480.0f32 + f32(i) * 34.0f32, y + f32(i) * 6.0f32, 90.0f32, 60.0f32, rgba(f32(i) / 6.0f32, 0.4f32, 1.0f32 - f32(i) / 6.0f32, 0.8f32)), 10.0f32), 2.0f32, rgb(0xFFFFFFu32))));
+    // a glass panel over stripes
+    const stripes = map(iota(8), (i) => box(quad(800.0f32 + f32(i) * 50.0f32, y, 25.0f32, 80.0f32, i % 2 == 0 ? rgb(0xF59E0Bu32) : rgb(0xEF4444u32))));
+    const glass = [box(bordered(rounded(quad(830.0f32, y + 15.0f32, 330.0f32, 50.0f32, rgba(1.0f32, 1.0f32, 1.0f32, 0.55f32)), 14.0f32), 1.0f32, rgba(1.0f32, 1.0f32, 1.0f32, 0.9f32)))];
+    return concat(concat(concat(concat(concat(checks, veils), discs), fan), stripes), glass);
+}
+
+// row 4: the shadows
+function shadows(): Primitive[] {
+    const y = 410.0f32;
+    const black = (a: f32) => rgba(0.0f32, 0.0f32, 0.0f32, a);
+    const white = rgb(0xFFFFFFu32);
+    const at = (i: i64) => 40.0f32 + f32(i) * 150.0f32;
+    const blurs = map(iota(6), (i) => [0.0f32, 2.0f32, 4.0f32, 8.0f32, 12.0f32, 18.0f32][i]);
+    const under = map(iota(6), (i) => shadow(at(i), y, 110.0f32, 80.0f32, 12.0f32, 0.0f32, 6.0f32, blurs[i], black(0.3f32)));
+    const cards = map(iota(6), (i) => box(rounded(quad(at(i), y, 110.0f32, 80.0f32, white), 12.0f32)));
+    // a glow of colour, not moved; layers of shadows (a small sharp one,
+    // a large soft one)
+    const glow = [shadow(940.0f32, y, 110.0f32, 80.0f32, 12.0f32, 0.0f32, 0.0f32, 12.0f32, rgba(0.23f32, 0.51f32, 0.96f32, 0.9f32)), box(rounded(quad(940.0f32, y, 110.0f32, 80.0f32, white), 12.0f32))];
+    const layered = [
+        shadow(1100.0f32, y, 110.0f32, 80.0f32, 12.0f32, 0.0f32, 1.0f32, 1.0f32, black(0.3f32)),
+        shadow(1100.0f32, y, 110.0f32, 80.0f32, 12.0f32, 0.0f32, 14.0f32, 20.0f32, black(0.25f32)),
+        box(rounded(quad(1100.0f32, y, 110.0f32, 80.0f32, white), 12.0f32)),
+    ];
+    // a sharp shadow moved down and right, as a printed label
+    const hard = [shadow(40.0f32, y + 110.0f32, 160.0f32, 34.0f32, 6.0f32, 6.0f32, 6.0f32, 0.0f32, rgb(0x111827u32)), box(bordered(rounded(quad(40.0f32, y + 110.0f32, 160.0f32, 34.0f32, rgb(0xFDE047u32)), 6.0f32), 2.0f32, rgb(0x111827u32)))];
+    // a shadow of every corner its radius
+    const odd = [shadow(260.0f32, y + 110.0f32, 160.0f32, 34.0f32, 0.0f32, 0.0f32, 6.0f32, 6.0f32, black(0.4f32)), box(corners(quad(260.0f32, y + 110.0f32, 160.0f32, 34.0f32, rgb(0xFFFFFFu32)), 17.0f32, 0.0f32, 17.0f32, 0.0f32))];
+    return concat(concat(concat(concat(concat(under, cards), glow), layered), hard), odd);
+}
+
+// row 5: widgets made of quads and shadows
+function widgets(): Primitive[] {
+    const y = 600.0f32;
+    const white = rgb(0xFFFFFFu32);
+    const gray = rgb(0xD1D5DBu32);
+    const green = rgb(0x10B981u32);
+    const knob = (x: f32, yy: f32, d: f32) => [shadow(x, yy, d, d, d * 0.5f32, 0.0f32, 1.0f32, 2.0f32, rgba(0.0f32, 0.0f32, 0.0f32, 0.35f32)), box(rounded(quad(x, yy, d, d, white), d * 0.5f32))];
+    const button = [shadow(40.0f32, y, 120.0f32, 40.0f32, 20.0f32, 0.0f32, 2.0f32, 4.0f32, rgba(0.23f32, 0.51f32, 0.96f32, 0.5f32)), box(rounded(quad(40.0f32, y, 120.0f32, 40.0f32, blue()), 20.0f32))];
+    const pressed = [box(rounded(quad(180.0f32, y, 120.0f32, 40.0f32, rgb(0x1D4ED8u32)), 20.0f32))];
+    const outlined = [box(bordered(rounded(quad(320.0f32, y, 120.0f32, 40.0f32, white), 20.0f32), 2.0f32, blue()))];
+    const toggleOn = concat([box(rounded(quad(470.0f32, y + 4.0f32, 64.0f32, 32.0f32, green), 16.0f32))], knob(504.0f32, y + 7.0f32, 26.0f32));
+    const toggleOff = concat([box(rounded(quad(560.0f32, y + 4.0f32, 64.0f32, 32.0f32, gray), 16.0f32))], knob(563.0f32, y + 7.0f32, 26.0f32));
+    const checked = [box(rounded(quad(650.0f32, y + 6.0f32, 28.0f32, 28.0f32, blue()), 6.0f32)), box(rounded(quad(659.0f32, y + 15.0f32, 10.0f32, 10.0f32, white), 2.0f32))];
+    const unchecked = [box(bordered(rounded(quad(700.0f32, y + 6.0f32, 28.0f32, 28.0f32, white), 6.0f32), 2.0f32, rgb(0x9CA3AFu32)))];
+    const radio = [box(bordered(rounded(quad(750.0f32, y + 6.0f32, 28.0f32, 28.0f32, white), 14.0f32), 2.0f32, blue())), box(rounded(quad(758.0f32, y + 14.0f32, 12.0f32, 12.0f32, blue()), 6.0f32))];
+    const slider = concat([box(rounded(quad(810.0f32, y + 17.0f32, 200.0f32, 6.0f32, gray), 3.0f32)), box(rounded(quad(810.0f32, y + 17.0f32, 130.0f32, 6.0f32, blue()), 3.0f32))], knob(927.0f32, y + 7.0f32, 26.0f32));
+    const progress = [box(rounded(quad(1040.0f32, y + 14.0f32, 200.0f32, 12.0f32, rgb(0xE5E7EBu32)), 6.0f32)), box(rounded(quad(1040.0f32, y + 14.0f32, 72.0f32, 12.0f32, green), 6.0f32))];
+    // avatars over each other, each ringed with white; a badge
+    const avatars = map(iota(5), (i) => box(bordered(rounded(quad(40.0f32 + f32(i) * 34.0f32, y + 60.0f32, 48.0f32, 48.0f32, rgb([0xF87171u32, 0xFBBF24u32, 0x34D399u32, 0x60A5FAu32, 0xA78BFAu32][i])), 24.0f32), 3.0f32, white)));
+    const badge = [box(rounded(quad(230.0f32, y + 60.0f32, 48.0f32, 48.0f32, rgb(0x6B7280u32)), 12.0f32)), box(bordered(rounded(quad(266.0f32, y + 54.0f32, 20.0f32, 20.0f32, rgb(0xEF4444u32)), 10.0f32), 2.0f32, rgb(0xF3F4F6u32)))];
+    // an input field, empty and with the focus (a ring of colour)
+    const field = [box(bordered(rounded(quad(320.0f32, y + 64.0f32, 200.0f32, 40.0f32, white), 8.0f32), 1.0f32, gray))];
+    const focused = [box(bordered(rounded(quad(546.0f32, y + 60.0f32, 208.0f32, 48.0f32, rgba(0.23f32, 0.51f32, 0.96f32, 0.25f32)), 12.0f32), 0.0f32, transparent())), box(bordered(rounded(quad(550.0f32, y + 64.0f32, 200.0f32, 40.0f32, white), 8.0f32), 1.5f32, blue()))];
+    // a segmented control
+    const segments = [box(rounded(quad(790.0f32, y + 62.0f32, 240.0f32, 44.0f32, rgb(0xE5E7EBu32)), 10.0f32)), shadow(872.0f32, y + 66.0f32, 76.0f32, 36.0f32, 8.0f32, 0.0f32, 1.0f32, 2.0f32, rgba(0.0f32, 0.0f32, 0.0f32, 0.2f32)), box(rounded(quad(872.0f32, y + 66.0f32, 76.0f32, 36.0f32, white), 8.0f32))];
+    // a tooltip: a dark bubble and its arrow (a small square under it)
+    const tip = [box(rounded(quad(1060.0f32, y + 60.0f32, 140.0f32, 36.0f32, rgb(0x111827u32)), 8.0f32)), box(corners(quad(1122.0f32, y + 90.0f32, 16.0f32, 16.0f32, rgb(0x111827u32)), 0.0f32, 0.0f32, 8.0f32, 0.0f32))];
+    return concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(button, pressed), outlined), toggleOn), toggleOff), checked), unchecked), radio), slider), progress), avatars), badge), concat(field, focused)), segments), tip);
+}
+
+// row 6: a card of an interface: a header with its upper corners rounded,
+// rows separated by lines of one pixel, a selected row, a footer
+function panel(): Primitive[] {
+    const x = 40.0f32;
+    const y = 750.0f32;
+    const w = 560.0f32;
+    const shell = card(x, y, w, 250.0f32, 14.0f32);
+    const header = [box(corners(quad(x, y, w, 44.0f32, rgb(0x1E3A8Au32)), 14.0f32, 14.0f32, 0.0f32, 0.0f32))];
+    const rows = map(iota(4), (i) => box(quad(x, y + 44.0f32 + f32(i + 1) * 40.0f32, w, 1.0f32, rgb(0xE5E7EBu32))));
+    const selected = [box(quad(x, y + 85.0f32, w, 39.0f32, rgb(0xEFF6FFu32))), box(quad(x, y + 85.0f32, 4.0f32, 39.0f32, blue()))];
+    const dots = map(iota(4), (i) => box(rounded(quad(x + 20.0f32, y + 58.0f32 + f32(i) * 40.0f32, 14.0f32, 14.0f32, rgb([0x10B981u32, 0x3B82F6u32, 0xF59E0Bu32, 0xEF4444u32][i])), 7.0f32)));
+    const bars = map(iota(4), (i) => box(rounded(quad(x + 50.0f32, y + 60.0f32 + f32(i) * 40.0f32, 180.0f32 + f32(i * 37 % 100), 10.0f32, rgb(0xD1D5DBu32)), 5.0f32)));
+    const footer = [box(corners(quad(x, y + 210.0f32, w, 40.0f32, rgb(0xF9FAFBu32)), 0.0f32, 0.0f32, 14.0f32, 14.0f32)), box(rounded(quad(x + w - 110.0f32, y + 218.0f32, 96.0f32, 26.0f32, blue()), 13.0f32))];
+    return concat(concat(concat(concat(concat(concat(shell, header), selected), rows), dots), bars), footer);
+}
+
+// row 6, right: places and sizes that are not whole pixels: lines of 0.25,
+// 0.5, 1 and 1.5 pixels; squares moved by quarters of a pixel; circles of
+// 2 to 12 pixels
+function fractions(): Primitive[] {
+    const x = 660.0f32;
+    const y = 760.0f32;
+    const ink = rgb(0x111827u32);
+    const widths = [0.25f32, 0.5f32, 1.0f32, 1.5f32, 2.0f32, 3.0f32];
+    const lines = map(iota(6), (i) => box(quad(x + f32(i) * 20.0f32 + 0.5f32 * f32(i % 2), y, widths[i], 90.0f32, ink)));
+    const squares = map(iota(8), (i) => box(quad(x + 140.0f32 + f32(i) * 14.25f32, y + f32(i) * 0.25f32, 8.0f32, 8.0f32, ink)));
+    const circles = map(iota(6), (i) => box(rounded(quad(x + 140.0f32 + f32(i) * 24.0f32, y + 40.0f32, 2.0f32 + f32(i) * 2.0f32, 2.0f32 + f32(i) * 2.0f32, ink), 1.0f32 + f32(i))));
+    const thin = map(iota(5), (i) => box(bordered(rounded(quad(x + 300.0f32 + f32(i) * 56.0f32, y, 46.0f32, 46.0f32, transparent()), 10.0f32), 0.5f32 + f32(i) * 0.5f32, ink)));
+    // a slanted edge made of thin steps
+    const stairs = map(iota(40), (i) => box(quad(x + 300.0f32 + f32(i) * 7.0f32, y + 60.0f32 + f32(i) * 0.4f32, 7.0f32, 0.75f32, blue())));
+    return concat(concat(concat(concat(lines, squares), circles), thin), stairs);
+}
+
+action main(args: string[k]): i32 {
+    const w = 1280;
+    const h = 1040;
+    const ps = concat(concat(concat(concat(concat(concat(radii(), borders()), alphas()), shadows()), widgets()), panel()), fractions());
+    const t0 = clock();
+    const px = render(w, h, rgb(0xF3F4F6u32), ps);
+    const t1 = clock();
+    print(`${ps.length} primitives, ${w}x${h}, drawn in ${f64(t1 - t0) / 1e6} ms`);
+    writeBytes(args[0], encode(w, h, px));
+    return 0;
+}
