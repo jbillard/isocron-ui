@@ -1,0 +1,25 @@
+// The tables of DejaVu Sans read: its metrics, glyphs of characters, their
+// advances, a kerning, outlines.
+import { parse, glyphOf, advance, kerning, outline, points } from "../src/font";
+
+action main(args: string[k]): i32 {
+    return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => {
+            print([f.unitsPerEm, f.ascender, f.descender, f.lineGap, f.glyphs, f.cmapFormat, f.kernPairs] as const);
+            const cs = [65, 86, 97, 0xE9, 0x20AC, 0x1F600, 32];
+            const gs = map(cs, (c) => glyphOf(f, c));
+            print(gs);
+            print(map(gs, (g) => advance(f, g)));
+            print([kerning(f, glyphOf(f, 65), glyphOf(f, 86)), kerning(f, glyphOf(f, 86), glyphOf(f, 97)), kerning(f, glyphOf(f, 97), glyphOf(f, 97))] as const);
+            print(map(gs, (g) => points(f, g, 0).length));
+            const o = outline(f, glyphOf(f, 0xE9), 4);
+            print(o.length);
+            print(o[0]);
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

@@ -5,6 +5,8 @@
 # look at before committing them). ISCC: the compiler (default: `iscc`).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
+# (the programs read their files from the root of the repository)
+cd "$here/.."
 iscc="${ISCC:-iscc}"
 out="$(mktemp -d)"
 trap 'rm -r -- "$out"' EXIT

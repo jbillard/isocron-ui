@@ -1,0 +1,318 @@
+// Fonts of TrueType (the outlines of `glyf`): the tables a line of text
+// needs, read from the bytes of the file: the glyph of a character (`cmap`,
+// formats 4 and 12), its advance (`hmtx`), the kerning of a pair (`kern`,
+// format 0), its outline (`glyf`, simple and composite glyphs) as line
+// segments in units of the font, the curves cut in straight parts.
+
+// the numbers of the file, the most significant byte first
+function u16(b: u8[n], at: i64): i64 {
+    return i64(b[at]) * 256 + i64(b[at + 1]);
+}
+
+function s16(b: u8[n], at: i64): i64 {
+    const v = u16(b, at);
+    return v >= 32768 ? v - 65536 : v;
+}
+
+function u32(b: u8[n], at: i64): i64 {
+    return u16(b, at) * 65536 + u16(b, at + 2);
+}
+
+// the place and the length of the table `tag` (0 and 0: none)
+function table(b: u8[n], tag: string): [i64, i64] {
+    const t = bytes(tag);
+    const count = u16(b, 4);
+    const i = findIndex(iota(count), (k) => b[12 + 16 * k] == t[0] && b[13 + 16 * k] == t[1] && b[14 + 16 * k] == t[2] && b[15 + 16 * k] == t[3]);
+    return i < 0 ? [0, 0] as const : [u32(b, 12 + 16 * i + 8), u32(b, 12 + 16 * i + 12)] as const;
+}
+
+export type Font = {
+    data: u8[],
+    unitsPerEm: i64,
+    ascender: i64,
+    descender: i64,
+    lineGap: i64,
+    glyphs: i64,
+    longLoca: boolean,
+    metrics: i64,
+    hmtx: i64,
+    loca: i64,
+    glyf: i64,
+    // the subtable of `cmap` used, and its format (4 or 12)
+    cmap: i64,
+    cmapFormat: i64,
+    // the pairs of `kern` (its first subtable, format 0) and their count
+    kern: i64,
+    kernPairs: i64,
+};
+
+// the subtable of `cmap` for Unicode: (3, 10) of format 12 first, then
+// (3, 1) or (0, any) of format 4: its place and format (0: none)
+function cmapOf(b: u8[n], at: i64): [i64, i64] {
+    const count = u16(b, at + 2);
+    const records = map(iota(count), (k) => {
+        const platform = u16(b, at + 4 + 8 * k);
+        const encoding = u16(b, at + 6 + 8 * k);
+        const sub = at + u32(b, at + 8 + 8 * k);
+        const format = u16(b, sub);
+        const rank = format == 12 && (platform == 3 && encoding == 10 || platform == 0) ? 2 : (format == 4 && (platform == 3 && encoding == 1 || platform == 0) ? 1 : 0);
+        return [rank, sub] as const;
+    });
+    const best = fold(iota(count), -1, (acc, k) => {
+        const [r, s] = records[k];
+        if (r == 0) {
+            return acc;
+        }
+        if (acc < 0) {
+            return k;
+        }
+        const [ra, sa] = records[acc];
+        return r > ra ? k : acc;
+    });
+    if (best < 0) {
+        return [0, 0] as const;
+    }
+    const [r, s] = records[best];
+    return [s, u16(b, s)] as const;
+}
+
+// the font of the bytes `b` of a file of TrueType, or why not
+export function parse(b: u8[]): Result<Font, string> {
+    if (b.length < 12 || !(u32(b, 0) == 0x00010000 || u32(b, 0) == 0x74727565)) {
+        return Err("not a font of TrueType outlines");
+    }
+    const [head, hl] = table(b, "head");
+    const [hhea, hhl] = table(b, "hhea");
+    const [maxp, ml] = table(b, "maxp");
+    const [hmtx, hml] = table(b, "hmtx");
+    const [loca, ll] = table(b, "loca");
+    const [glyf, gl] = table(b, "glyf");
+    const [cmap, cl] = table(b, "cmap");
+    const [kern, kl] = table(b, "kern");
+    if (head == 0 || hhea == 0 || maxp == 0 || hmtx == 0 || loca == 0 || glyf == 0 || cmap == 0) {
+        return Err("a table it needs is missing (head, hhea, maxp, hmtx, loca, glyf, cmap)");
+    }
+    const [sub, format] = cmapOf(b, cmap);
+    if (format == 0) {
+        return Err("no table of characters for Unicode");
+    }
+    // the first subtable of `kern` when it is of format 0 and horizontal
+    const kernOk = kern != 0 && u16(b, kern) == 0 && u16(b, kern + 2) > 0 && (u16(b, kern + 8) & 0xFF01) == 1;
+    return Ok({
+        data: b,
+        unitsPerEm: u16(b, head + 18),
+        ascender: s16(b, hhea + 4),
+        descender: s16(b, hhea + 6),
+        lineGap: s16(b, hhea + 8),
+        glyphs: u16(b, maxp + 4),
+        longLoca: s16(b, head + 50) == 1,
+        metrics: u16(b, hhea + 34),
+        hmtx: hmtx,
+        loca: loca,
+        glyf: glyf,
+        cmap: sub,
+        cmapFormat: format,
+        kern: kernOk ? kern + 18 : 0,
+        kernPairs: kernOk ? u16(b, kern + 10) : 0,
+    });
+}
+
+// the glyph of the character `c` (0: the font has none)
+export function glyphOf(f: Font, c: i64): i64 {
+    const b = f.data;
+    const at = f.cmap;
+    if (f.cmapFormat == 12) {
+        const groups = u32(b, at + 12);
+        const g = findIndex(iota(groups), (k) => u32(b, at + 16 + 12 * k + 4) >= c);
+        if (g < 0 || u32(b, at + 16 + 12 * g) > c) {
+            return 0;
+        }
+        return u32(b, at + 16 + 12 * g + 8) + c - u32(b, at + 16 + 12 * g);
+    }
+    if (c > 0xFFFF) {
+        return 0;
+    }
+    const segs = u16(b, at + 6) / 2;
+    const ends = at + 14;
+    const starts = ends + 2 * segs + 2;
+    const deltas = starts + 2 * segs;
+    const ranges = deltas + 2 * segs;
+    const s = findIndex(iota(segs), (k) => u16(b, ends + 2 * k) >= c);
+    if (s < 0 || u16(b, starts + 2 * s) > c) {
+        return 0;
+    }
+    const delta = u16(b, deltas + 2 * s);
+    const range = u16(b, ranges + 2 * s);
+    if (range == 0) {
+        return (c + delta) % 65536;
+    }
+    const g = u16(b, ranges + 2 * s + range + 2 * (c - u16(b, starts + 2 * s)));
+    return g == 0 ? 0 : (g + delta) % 65536;
+}
+
+// the advance of the glyph `g`, in units of the font
+export function advance(f: Font, g: i64): i64 {
+    const k = g < f.metrics ? g : f.metrics - 1;
+    return u16(f.data, f.hmtx + 4 * k);
+}
+
+// the kerning of the pair (`left`, `right`), in units of the font: the
+// pairs sorted by their key, found by halves
+export function kerning(f: Font, left: i64, right: i64): i64 {
+    if (f.kernPairs == 0) {
+        return 0;
+    }
+    return kernFrom(f.data, f.kern, left * 65536 + right, 0, f.kernPairs);
+}
+
+function kernFrom(b: u8[n], at: i64, key: i64, lo: i64, hi: i64): i64 {
+    if (lo >= hi) {
+        return 0;
+    }
+    const mid = (lo + hi) / 2;
+    const k = u32(b, at + 6 * mid);
+    if (k == key) {
+        return s16(b, at + 6 * mid + 4);
+    }
+    return k < key ? kernFrom(b, at, key, mid + 1, hi) : kernFrom(b, at, key, lo, mid);
+}
+
+// ----- outlines --------------------------------------------------------
+
+// a straight part of an outline, from (x0, y0) to (x1, y1), in units of the
+// font (y upwards)
+export type Segment = { x0: f32, y0: f32, x1: f32, y1: f32 };
+
+// the place and length of the outline of `g` in `glyf` (length 0: a glyph
+// without outline, a space)
+function glyphRange(f: Font, g: i64): [i64, i64] {
+    const b = f.data;
+    const a = f.longLoca ? u32(b, f.loca + 4 * g) : 2 * u16(b, f.loca + 2 * g);
+    const z = f.longLoca ? u32(b, f.loca + 4 * g + 4) : 2 * u16(b, f.loca + 2 * g + 2);
+    return [f.glyf + a, z - a] as const;
+}
+
+// the flags of the `n` points of a simple glyph from `at`, a flag repeated
+// as the next byte says (bit 3), and the place after them
+function flagsFrom(b: u8[m], at: i64, n: i64, acc: u8[]): [u8[], i64] {
+    if (acc.length >= n) {
+        return [acc.slice(0, n), at] as const;
+    }
+    const fl = b[at];
+    const times = (fl & 8u8) != 0u8 ? 1 + i64(b[at + 1]) : 1;
+    return flagsFrom(b, at + ((fl & 8u8) != 0u8 ? 2 : 1), n, concat(acc, fill(times, fl)));
+}
+
+// the coordinates of the points of their flags `fl` from `at`: `short` the
+// bit of a coordinate of one byte, `same` the bit of a repeated one (or of
+// a positive one of one byte); and the place after them
+function coordsFrom(b: u8[m], at: i64, fl: u8[n], short: u8, same: u8): [i64[n], i64] {
+    const sizes = map(fl, (f) => (f & short) != 0u8 ? 1 : ((f & same) != 0u8 ? 0 : 2));
+    const ends = scan(sizes, (x, y) => x + y, 0);
+    const deltas = map(iota(n), (i) => {
+        const p = at + ends[i] - sizes[i];
+        const f = fl[i];
+        return (f & short) != 0u8 ? ((f & same) != 0u8 ? i64(b[p]) : -i64(b[p])) : ((f & same) != 0u8 ? 0 : s16(b, p));
+    });
+    return [scan(deltas, (x, y) => x + y, 0), at + (n == 0 ? 0 : ends[n - 1])] as const;
+}
+
+// a point of an outline: its place, whether it is on the curve, the last
+// point of its contour
+type Point = { x: f32, y: f32, on: boolean, last: boolean };
+
+// the points of the simple glyph at `at` with `contours` contours
+function simplePoints(b: u8[m], at: i64, contours: i64): Point[] {
+    const ends = map(iota(contours), (k) => u16(b, at + 10 + 2 * k));
+    const n = contours == 0 ? 0 : ends[contours - 1] + 1;
+    const code = at + 10 + 2 * contours;
+    const [fl, afterFlags] = flagsFrom(b, code + 2 + u16(b, code), n, []);
+    const [xs, afterX] = coordsFrom(b, afterFlags, fl, 2u8, 16u8);
+    const [ys, afterY] = coordsFrom(b, afterX, fl, 4u8, 32u8);
+    return map(iota(n), (i) => ({ x: f32(xs[i]), y: f32(ys[i]), on: (fl[i] & 1u8) != 0u8, last: count(ends, (e) => e == i) > 0 }));
+}
+
+// the points of the glyph `g`, its components placed for a composite one
+// (`depth`: components of components, at most 8)
+export function points(f: Font, g: i64, depth: i64): Point[] {
+    const [at, len] = glyphRange(f, g);
+    if (len == 0 || depth > 8) {
+        return [];
+    }
+    const contours = s16(f.data, at);
+    return contours >= 0 ? simplePoints(f.data, at, contours) : componentsFrom(f, at + 10, depth, []);
+}
+
+// the components of a composite glyph from `at`, each moved and scaled
+function componentsFrom(f: Font, at: i64, depth: i64, acc: Point[]): Point[] {
+    const b = f.data;
+    const flags = u16(b, at);
+    const g = u16(b, at + 2);
+    const words = (flags & 1) != 0;
+    const dx = words ? s16(b, at + 4) : i64(i8(b[at + 4]));
+    const dy = words ? s16(b, at + 6) : i64(i8(b[at + 5]));
+    const after = at + (words ? 8 : 6);
+    // a scale (F2DOT14): one, one for each axis, or a matrix of 2 by 2
+    const f2 = (p: i64) => f32(s16(b, p)) / 16384.0f32;
+    const one = (flags & 8) != 0;
+    const two = (flags & 64) != 0;
+    const four = (flags & 128) != 0;
+    const xx = one ? f2(after) : (two || four ? f2(after) : 1.0f32);
+    const xy = four ? f2(after + 2) : 0.0f32;
+    const yx = four ? f2(after + 4) : 0.0f32;
+    const yy = one ? f2(after) : (two ? f2(after + 2) : (four ? f2(after + 6) : 1.0f32));
+    const next = after + (one ? 2 : (two ? 4 : (four ? 8 : 0)));
+    // (the arguments are offsets: bit 1; points matched otherwise, left out)
+    const offsets = (flags & 2) != 0;
+    const ps = map(points(f, g, depth + 1), (p) => ({ ...p, x: xx * p.x + yx * p.y + (offsets ? f32(dx) : 0.0f32), y: xy * p.x + yy * p.y + (offsets ? f32(dy) : 0.0f32) }));
+    const all = concat(acc, ps);
+    return (flags & 32) != 0 ? componentsFrom(f, next, depth, all) : all;
+}
+
+// the outline of the glyph `g`: its contours cut in straight parts, each
+// quadratic curve in `steps` parts
+export function outline(f: Font, g: i64, steps: i64): Segment[] {
+    const ps = points(f, g, 0);
+    const n = ps.length;
+    if (n == 0) {
+        return [];
+    }
+    // the first and last point of the contour of each point
+    const lasts = map(iota(n), (i) => ps[i].last ? 1 : 0);
+    const contour = scan(lasts, (x, y) => x + y, 0);
+    const firstOf = map(iota(n), (i) => {
+        const k = contour[i] - lasts[i];
+        return findIndex(iota(n), (j) => contour[j] - lasts[j] == k);
+    });
+    const lastOf = map(iota(n), (i) => ps[i].last ? i : findIndex(iota(n - i), (j) => ps[i + j].last) + i);
+    const nextOf = (i: i64) => ps[i].last ? firstOf[i] : i + 1;
+    const prevOf = (i: i64) => i == firstOf[i] ? lastOf[i] : i - 1;
+    // each point starts one piece: a line to the next point when both are
+    // on the curve, a curve whose control is an off point (from the point
+    // before it, or the middle of the two, to the next, or the middle)
+    const pieces = filter(iota(n), (i) => !ps[i].on || ps[nextOf(i)].on);
+    return map(iota(pieces.length * steps), (k) => {
+        const i = pieces[k / steps];
+        const s = k % steps;
+        const p = ps[i];
+        const nx = ps[nextOf(i)];
+        const pv = ps[prevOf(i)];
+        // a line: its piece `s` of `steps`
+        if (p.on) {
+            const t0 = f32(s) / f32(steps);
+            const t1 = f32(s + 1) / f32(steps);
+            return { x0: p.x + (nx.x - p.x) * t0, y0: p.y + (nx.y - p.y) * t0, x1: p.x + (nx.x - p.x) * t1, y1: p.y + (nx.y - p.y) * t1 };
+        }
+        const ax = pv.on ? pv.x : (pv.x + p.x) * 0.5f32;
+        const ay = pv.on ? pv.y : (pv.y + p.y) * 0.5f32;
+        const bx = nx.on ? nx.x : (nx.x + p.x) * 0.5f32;
+        const by = nx.on ? nx.y : (nx.y + p.y) * 0.5f32;
+        const at = (t: f32) => {
+            const u = 1.0f32 - t;
+            return [u * u * ax + 2.0f32 * u * t * p.x + t * t * bx, u * u * ay + 2.0f32 * u * t * p.y + t * t * by] as const;
+        };
+        const [x0, y0] = at(f32(s) / f32(steps));
+        const [x1, y1] = at(f32(s + 1) / f32(steps));
+        return { x0: x0, y0: y0, x1: x1, y1: y1 };
+    });
+}
