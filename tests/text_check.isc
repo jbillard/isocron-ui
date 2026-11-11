@@ -2,14 +2,25 @@
 // a line with its kerning, and the coverage of glyphs exact: the sum of the
 // coverage of their pixels is the area inside their outline (its straight
 // parts), for glyphs whose contours do not cross (`l`, `o`, `e`, `A`, `8`)
-// at several sizes and pens.
-import { parse, glyphOf, advance, kerning, Segment } from "../src/font";
-import { codePoints, rasterize, lineWidth, scaledOutline } from "../src/text";
+// at several sizes and pens; the lines a text is cut in (after spaces, at
+// line feeds, inside a word wider than the width).
+import { parse, glyphOf, advance, kerning, Segment, Font } from "../src/font";
+import { codePoints, rasterize, lineWidth, scaledOutline, breaks } from "../src/text";
 
 // the area inside the parts `ss` (the formula of the shoelace), positive
 // for the turn of TrueType
 function area(ss: Segment[n]): f64 {
     return abs(fold(ss, 0.0, (a, s) => a + (f64(s.x0) * f64(s.y1) - f64(s.x1) * f64(s.y0)) * 0.5));
+}
+
+// the first character of each line of `s` at `em` in `width` pixels
+function starts(f: Font, s: string, em: f32, width: f32): i64[] {
+    const cps = codePoints(s);
+    const gs = map(cps, (c) => glyphOf(f, c));
+    const k = em / f32(f.unitsPerEm);
+    const steps = map(iota(gs.length), (i) => f32(advance(f, gs[i]) + (i + 1 < gs.length ? kerning(f, gs[i], gs[i + 1]) : 0)) * k);
+    const [all, count] = breaks(cps, steps, width);
+    return all.slice(0, count);
 }
 
 action main(args: string[k]): i32 {
@@ -30,6 +41,9 @@ action main(args: string[k]): i32 {
                 return abs(covered - exact) < 1e-3 * exact;
             });
             print(cases);
+            print(starts(f, "Une ligne de texte, comme dans une interface dense", 14.0f32, 120.0f32));
+            print(starts(f, "ab\ncd\n", 14.0f32, 500.0f32));
+            print(starts(f, "anticonstitutionnellement court", 14.0f32, 60.0f32));
             return 0;
         },
         Err(e) => {

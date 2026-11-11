@@ -178,3 +178,80 @@ export function line(f: Font, em: f32, s: string, x: f32, y: f32, c: Color): Pri
         return Glyph({ x: i64(whole) + left, y: base + top, w: w, h: h, color: c, mask: mask });
     });
 }
+
+// how the lines of a paragraph are placed in its width
+export type Align = Start | Center | End;
+
+// the first character of each line of the characters `cps` (their
+// advances, kerning included, in `steps`) in `width` pixels, then the
+// number of lines: a line ends after the spaces that follow its last word
+// that fits, after a line feed, or, in a word wider than the width,
+// before its first character that does not fit (a line holds one
+// character at least)
+export function breaks(cps: i64[n], steps: f32[n], width: f32): [i64[], i64] {
+    const [starts, count, first, x, after, xa] = fold(iota(n), [fill(n + 1, 0), 1, 0, 0.0f32, -1, 0.0f32] as const, (acc, i) => {
+        const [ls, cnt, st, xx, bk, xbk] = acc;
+        const c = cps[i];
+        if (c == 10) {
+            return [requireUnique(ls.with(cnt, i + 1)), cnt + 1, i + 1, 0.0f32, -1, 0.0f32] as const;
+        }
+        // a space: a line may end after it; it never overflows
+        if (c == 32) {
+            return [ls, cnt, st, xx + steps[i], i + 1, xx + steps[i]] as const;
+        }
+        if (xx + steps[i] <= width || i == st) {
+            return [ls, cnt, st, xx + steps[i], bk, xbk] as const;
+        }
+        // after the last spaces of the line, or before this character
+        const ns = bk > st ? bk : i;
+        const nx = bk > st ? xx - xbk : 0.0f32;
+        return [requireUnique(ls.with(cnt, ns)), cnt + 1, ns, nx + steps[i], -1, 0.0f32] as const;
+    });
+    return [starts, count] as const;
+}
+
+// the text `s` at `em` pixels a em in lines of at most `width` pixels
+// (`breaks`), the baseline of the first at `y`, each line `lineHeight`
+// below the one before, placed in [x, x + width] by `align` (a line's
+// width ends at its last character that is neither a space nor a line
+// feed), in the colour `c`: its glyphs, made by one `map` (none copied)
+export function paragraph(f: Font, em: f32, s: string, x: f32, y: f32, width: f32, lineHeight: f32, align: Align, c: Color): Primitive[] {
+    const cps = codePoints(s);
+    const gs = map(cps, (cp) => glyphOf(f, cp));
+    const n = gs.length;
+    const k = em / f32(f.unitsPerEm);
+    const steps = map(iota(n), (i) => f32(advance(f, gs[i]) + (i + 1 < n ? kerning(f, gs[i], gs[i + 1]) : 0)) * k);
+    const ends = scan(steps, (a, b) => a + b, 0.0f32);
+    const [all, count] = breaks(cps, steps, width);
+    const starts = all.slice(0, count);
+    // the line of each character (a line after a final line feed holds
+    // none)
+    const firsts = filter(iota(count), (j) => starts[j] < n);
+    const lineOf = scan(scatter(fill(n, 0), map(firsts, (j) => starts[j]), firsts, (a, z) => z), max, 0);
+    // the pen of the start of each line, and its width up to its last ink
+    const ink = map(cps, (cp) => cp != 32 && cp != 10);
+    const lastInk = scan(map(iota(n), (i) => ink[i] ? i : -1), max, -1);
+    const shift = map(iota(count), (j) => {
+        const a = starts[j];
+        const z = j + 1 < count ? starts[j + 1] : n;
+        const last = z > a ? lastInk[z - 1] : -1;
+        const origin = a < n ? ends[a] - steps[a] : 0.0f32;
+        const w = last >= a ? ends[last] - origin : 0.0f32;
+        const free = width - w;
+        const offset = match (align) {
+            Start => 0.0f32,
+            Center => free * 0.5f32,
+            End => free,
+        };
+        return offset - origin;
+    });
+    const drawn = filter(iota(n), (i) => cps[i] != 10 && hasOutline(f, gs[i]));
+    return map(drawn, (i) => {
+        const j = lineOf[i];
+        const pen = floor((x + shift[j] + ends[i] - steps[i]) * 4.0f32 + 0.5f32) * 0.25f32;
+        const whole = floor(pen);
+        const base = i64(floor(y + f32(j) * lineHeight + 0.5f32));
+        const [left, top, w, h, mask] = rasterize(f, gs[i], em, pen - whole);
+        return Glyph({ x: i64(whole) + left, y: base + top, w: w, h: h, color: c, mask: mask });
+    });
+}

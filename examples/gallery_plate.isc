@@ -5,7 +5,7 @@
 // sizes that are not whole pixels; their texts last, over them.
 import { Primitive, Box, Blur, Color, Quad, quad, rounded, bordered, rgb, rgba, transparent, render } from "../src/paint";
 import { Font } from "../src/font";
-import { line, lineWidth } from "../src/text";
+import { line, lineWidth, paragraph, Start, Center, End } from "../src/text";
 
 // a quad with a radius for each corner
 function corners(q: Quad, tl: f32, tr: f32, br: f32, bl: f32): Quad {
@@ -251,9 +251,10 @@ function labels(f: Font): Primitive[] {
     const t30 = concat(t29, line(f, 12.0f32, "traits de 0,25 à 3 px", 660.0f32, 872.0f32, gray));
     const t31 = concat(t30, line(f, 12.0f32, "quarts de pixel, disques", 800.0f32, 835.0f32, gray));
     const t32 = concat(t31, line(f, 12.0f32, "contours de 0,5 à 2,5 px, pente", 960.0f32, 862.0f32, gray));
-    const t33 = concat(t32, line(f, 22.0f32, "isocron-ui", 660.0f32, 960.0f32, ink));
-    const t34 = concat(t33, line(f, 13.0f32, "Tout est dessiné par la bibliothèque, texte compris.", 660.0f32, 985.0f32, gray));
-    return t34;
+    const t33 = concat(t32, line(f, 22.0f32, "isocron-ui", 660.0f32, 915.0f32, ink));
+    const t34 = concat(t33, paragraph(f, 13.0f32, "Tout est dessiné par la bibliothèque, texte compris : chaque glyphe est tracé depuis le fichier de la police, placé au quart de pixel, et ce paragraphe est coupé en lignes de 300 pixels.", 660.0f32, 942.0f32, 300.0f32, 17.0f32, Start, gray));
+    const t35 = concat(t34, paragraph(f, 12.0f32, "Centré dans 220 pixels : chaque ligne est placée au milieu de sa largeur, et la dernière, plus courte, aussi.", 1000.0f32, 942.0f32, 220.0f32, 16.0f32, Center, gray));
+    return t35;
 }
 
 // every primitive of the plate, in their order, the texts last
