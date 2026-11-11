@@ -1,0 +1,157 @@
+// The counter (examples/counter.isc) in a window of Wayland: its view laid
+// out at the size the compositor gives, drawn into memory shared with it
+// and shown; the pointer and the keyboard of the seat asked with the
+// window. A press of the left button on a button gives its
+// message; the up and down arrows give + and −, R the reset, S the step,
+// Escape ends. Each model drawn again into a new memory, the old buffer
+// destroyed. Prints `ready` and the centre of each button when first
+// shown, then the model at the end.
+import * as unix from "unix";
+import * as net from "net";
+import * as sys from "sys";
+import * as wl from "../src/wayland";
+import { rgb, render } from "../src/paint";
+import { parse, Font } from "../src/font";
+import { place, hitTest, Hit } from "../src/ui";
+import { Model, initial, update, view, INCREMENT, DECREMENT, RESET, STEP } from "./counter";
+
+// what the loop keeps from one read to the next: the bytes of an event cut
+// by a read, the size of the window, the model and the places of its
+// buttons, the pointer, the images made (their objects), the end
+type State = { pending: u8[], w: i64, h: i64, shown: boolean, model: Model, hits: Hit[], x: f64, y: f64, images: i64, done: boolean, failed: string };
+
+// the objects of the `k`-th image: its pool and its buffer (ids from
+// `wl.POOL` on, in the order they are made; none taken again)
+function poolOf(k: i64): u32 {
+    return wl.POOL + u32(2 * k);
+}
+
+function bufferOf(k: i64): u32 {
+    return wl.POOL + u32(2 * k + 1);
+}
+
+action globals(c: net.Conn, pending: u8[], g: wl.Globals): wl.Globals {
+    return match (unix.receiveWithFds(c, 65536, 8)) {
+        Ok(r) => {
+            const [evs, rest] = wl.events(concat(pending, r.bytes));
+            const g2 = wl.globalsOf(evs, g);
+            return count(evs, (e) => e.obj == wl.SYNC) > 0 || r.bytes.length == 0 ? g2 : globals(c, rest, g2);
+        },
+        Err(e) => g,
+    };
+}
+
+// the model drawn and shown as the `images`-th image; the previous one
+// destroyed; its places
+action draw(c: net.Conn, f: Font, st: State): State {
+    const [ps, hits] = place(f, view(st.model), 0.0f32, 0.0f32, f32(st.w), f32(st.h));
+    const k = st.images;
+    return match (unix.shared(st.w * st.h * 4)) {
+        Ok(m) => {
+            const written = unix.writeSharedU32(m, 0, render(st.w, st.h, rgb(0xF3F4F6u32), ps));
+            const sent = unix.sendWithFds(c, wl.imageRequests(poolOf(k), bufferOf(k), st.w * st.h * 4, st.w, st.h), [unix.sharedFd(m)]);
+            unix.closeShared(m);
+            const old = k > 0 ? net.write(c, wl.destroyRequests(poolOf(k - 1), bufferOf(k - 1))) : Ok(());
+            return written == Ok(()) && sent == Ok(()) ? { ...st, hits: hits, images: k + 1 } : { ...st, done: true, failed: "an image not sent" };
+        },
+        Err(e) => ({ ...st, done: true, failed: sys.message(e) }),
+    };
+}
+
+// the model after the message `msg`, drawn again when it changes
+action apply(c: net.Conn, f: Font, st: State, msg: i64): State {
+    if (msg < 0) {
+        return st;
+    }
+    const next = update(st.model, msg);
+    return next == st.model ? st : draw(c, f, { ...st, model: next });
+}
+
+// the message of a key (codes of evdev): the arrows up and down, R, S
+function keyMessage(code: u32): i64 {
+    return code == 103u32 ? INCREMENT : (code == 108u32 ? DECREMENT : (code == 19u32 ? RESET : (code == 31u32 ? STEP : -1)));
+}
+
+// the events `evs` from the `i`-th, answered in their order
+action handle(c: net.Conn, f: Font, evs: wl.Event[n], i: i64, st: State): State {
+    if (i >= evs.length || st.done) {
+        return st;
+    }
+    const next = match (wl.input(evs[i])) {
+        wl.Size(w, h) => w > 0 && h > 0 ? { ...st, w: w, h: h } : st,
+        wl.Configure(serial) => {
+            const acked = net.write(c, wl.request(wl.XDG_SURFACE, 4u32, wl.le32(serial)));
+            if (st.shown) {
+                return st;
+            }
+            const drawn = draw(c, f, { ...st, shown: true });
+            print(`ready ${drawn.w}x${drawn.h}`);
+            print(map(drawn.hits, (h) => [h.id, i64(h.x + h.w * 0.5f32), i64(h.y + h.h * 0.5f32)] as const));
+            return drawn;
+        },
+        wl.Ping(serial) => {
+            const pong = net.write(c, wl.request(wl.WM_BASE, 3u32, wl.le32(serial)));
+            return st;
+        },
+        wl.Pointer(x, y) => ({ ...st, x: x, y: y }),
+        // the left button (BTN_LEFT) pressed
+        wl.Button(b, down) => down && b == 272u32 ? apply(c, f, st, hitTest(st.hits, f32(st.x), f32(st.y))) : st,
+        wl.Key(code, down) => !down ? st : (code == 1u32 ? { ...st, done: true } : apply(c, f, st, keyMessage(code))),
+        wl.Close => ({ ...st, done: true }),
+        wl.Failure(m) => ({ ...st, done: true, failed: m }),
+        _ => st,
+    };
+    return handle(c, f, evs, i + 1, next);
+}
+
+action loop(c: net.Conn, f: Font, st: State): State {
+    if (st.done) {
+        return st;
+    }
+    const r = match (unix.receiveWithFds(c, 65536, 8)) {
+        Ok(got) => got,
+        Err(e) => ({ bytes: [], fds: [] }),
+    };
+    if (r.bytes.length == 0) {
+        return { ...st, done: true, failed: "the compositor closed the connection" };
+    }
+    // the table of the keyboard (a descriptor): not read, the codes of the
+    // keys are enough here
+    const closed = map(r.fds, (fd) => unix.closeFd(fd) == Ok(()) ? 1 : 0);
+    const [evs, rest] = wl.events(concat(st.pending, r.bytes));
+    return loop(c, f, handle(c, f, evs, 0, { ...st, pending: rest }));
+}
+
+action main(args: string[k]): i32 {
+    const path = wl.socketPath(sys.env("WAYLAND_DISPLAY") ?? "", sys.env("XDG_RUNTIME_DIR") ?? "/tmp");
+    return match (parse(readBytes(args.length > 0 ? args[0] : "tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => match (unix.connect(path)) {
+            Ok(c) => {
+                const asked = net.write(c, concat(wl.request(wl.DISPLAY, 1u32, wl.le32(wl.REGISTRY)), wl.request(wl.DISPLAY, 0u32, wl.le32(wl.SYNC))));
+                const g = globals(c, [], { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32 });
+                if (g.compositor == 0u32 || g.shm == 0u32 || g.wmBase == 0u32) {
+                    print("the compositor lacks wl_compositor, wl_shm or xdg_wm_base");
+                    net.close(c);
+                    return 1;
+                }
+                const made = net.write(c, wl.windowRequests(g, "Isocron : un compteur"));
+                const st = loop(c, f, { pending: [], w: 480, h: 320, shown: false, model: initial(), hits: [], x: 0.0, y: 0.0, images: 0, done: false, failed: "" });
+                net.close(c);
+                print([st.model.count, st.model.step] as const);
+                if (st.failed != "") {
+                    print(`failed: ${st.failed}`);
+                    return 1;
+                }
+                return 0;
+            },
+            Err(e) => {
+                print(`no compositor at ${path}: ${sys.message(e)}`);
+                return 1;
+            },
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

@@ -1,12 +1,15 @@
 // The counter (examples/counter.isc) in a window of Windows: its view laid
 // out at the size of the window, drawn and shown; a click of the left
 // button on a button gives its message, and the model it makes is drawn
-// again. With `play`, the program posts to its window the messages a hand
-// would make (the pointer moved to a button, the button pressed, then
-// released: +, +, +, −, the step, +), read back through the procedure of
-// the window, and prints the model they make; then what the window shows
-// is captured into the PNG file of the first argument.
-// usage: counter_window <capture.png> [play|wait] [seconds] [font]
+// again; the up and down arrows give + and −. Without arguments, the
+// window stays until it is closed. With `play`, the program posts to its
+// window the messages a hand would make (the pointer moved to a button, the
+// button pressed, then released: +, +, +, −, the step, +), read back
+// through the procedure of the window, and prints the model they make;
+// with a PNG file, what the window shows is captured into it at the end;
+// with a number, the window closes after that many seconds. The font is
+// `DejaVuSans.ttf` beside the program, or the file of `--font=`.
+// usage: counter_window [play] [capture.png] [seconds] [--font=file]
 import * as win from "win32";
 import * as sys from "sys";
 import { rgb, render } from "../src/paint";
@@ -35,6 +38,11 @@ action run(w: win.Window, f: Font, m: Model, hits: Hit[], x: i64, y: i64, width:
                 const [mm, px, py, redraw, cl] = acc;
                 return match (e) {
                     win.Pointer(a, b) => [mm, a, b, redraw, cl] as const,
+                    // the arrows up and down (virtual keys 0x26, 0x28)
+                    win.Key(k, down, s) => {
+                        const msg = !down ? -1 : (k == 38 ? INCREMENT : (k == 40 ? DECREMENT : -1));
+                        return [msg >= 0 ? update(mm, msg) : mm, px, py, redraw || msg >= 0, cl] as const;
+                    },
                     win.Button(b, down) => {
                         const msg = b == 0 && down ? hitTest(hits, f32(px) + 0.5f32, f32(py) + 0.5f32) : -1;
                         return [msg >= 0 ? update(mm, msg) : mm, px, py, redraw || msg >= 0, cl] as const;
@@ -66,18 +74,27 @@ action post(w: win.Window, hits: Hit[n], id: i64): void {
     const up = win.post(w, 514, 0, at);
 }
 
+// the value of the argument `--name=value`, or `d`
+function option(args: string[k], name: string, d: string): string {
+    const at = findIndex(args, (a) => a.startsWith(`--${name}=`));
+    return at < 0 ? d : args[at].slice(name.length + 3, args[at].length);
+}
+
 action main(args: string[k]): i32 {
     if (sys.platform() != "windows") {
         print("Windows only");
         return 1;
     }
-    return match (parse(readBytes(args.length > 3 ? args[3] : "DejaVuSans.ttf"))) {
+    const play = findIndex(args, (a) => a == "play") >= 0;
+    const capture = findIndex(args, (a) => a.endsWith(".png"));
+    const timed = findIndex(args, (a) => a.length > 0 && findIndex(bytes(a), (b) => b < 48u8 || b > 57u8) < 0);
+    return match (parse(readBytes(option(args, "font", "DejaVuSans.ttf")))) {
         Ok(f) => match (win.open("Isocron : un compteur", 480, 320)) {
             Ok(w) => {
                 const [width, height] = win.clientSize(w);
                 const m0 = initial();
                 const hits = draw(w, f, m0, width, height);
-                if (args.length > 1 && args[1] == "play") {
+                if (play) {
                     post(w, hits, INCREMENT);
                     post(w, hits, INCREMENT);
                     post(w, hits, INCREMENT);
@@ -85,13 +102,16 @@ action main(args: string[k]): i32 {
                     post(w, hits, STEP);
                     post(w, hits, INCREMENT);
                 }
-                const seconds = args.length > 2 ? parseI64(args[2]) : 3;
-                const m = run(w, f, m0, hits, 0, 0, width, height, clock() + u64(seconds) * 1000000000u64);
+                // until closed, or for the seconds given
+                const until = timed >= 0 ? clock() + u64(parseI64(args[timed])) * 1000000000u64 : 18446744073709551615u64;
+                const m = run(w, f, m0, hits, 0, 0, width, height, until);
                 print([m.count, m.step] as const);
-                match (win.capture(w)) {
-                    Ok(shot) => writeBytes(args[0], encode(width, height, shot)),
-                    Err(e) => print(sys.message(e)),
-                };
+                if (capture >= 0) {
+                    match (win.capture(w)) {
+                        Ok(shot) => writeBytes(args[capture], encode(width, height, shot)),
+                        Err(e) => print(sys.message(e)),
+                    };
+                }
                 win.close(w);
                 return 0;
             },

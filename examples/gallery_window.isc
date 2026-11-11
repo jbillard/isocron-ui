@@ -1,8 +1,10 @@
 // The plate of the gallery in a window of the system: under Windows by the
-// module `win32` (the image drawn by the library, shown, then what the
-// window shows captured into the PNG file of the first argument after a
-// the seconds of the second argument, 6 by default); under Linux,
-// `examples/window.isc` shows a scene by Wayland.
+// module `win32`, the image drawn by the library and shown until the window
+// is closed (or for the seconds of a number given; with a PNG file, what
+// the window shows is captured into it at the end); the font
+// `DejaVuSans.ttf` beside the program, or the file of `--font=`. Under
+// Linux, `examples/window.isc` shows a scene by Wayland.
+// usage: gallery_window [capture.png] [seconds] [--font=file]
 import * as win from "win32";
 import * as sys from "sys";
 import { Primitive, rgb, render } from "../src/paint";
@@ -16,10 +18,13 @@ action keep(w: win.Window, px: u32[n], width: i64, height: i64, until: u64): voi
     if (clock() >= until) {
         return;
     }
-    const again = match (win.events(w, 100)) {
-        Ok(evs) => count(evs, (e) => e == win.Paint) > 0,
-        Err(e) => false,
+    const [again, closed] = match (win.events(w, 100)) {
+        Ok(evs) => [count(evs, (e) => e == win.Paint) > 0, count(evs, (e) => e == win.Close) > 0] as const,
+        Err(e) => [false, true] as const,
     };
+    if (closed) {
+        return;
+    }
     if (again) {
         const shown = win.show(w, px, width, height);
     }
@@ -35,7 +40,8 @@ action main(args: string[k]): i32 {
         Ok(w) => {
             const [width, height] = win.clientSize(w);
             const t0 = clock();
-            const font = readBytes(args.length > 2 ? args[2] : "DejaVuSans.ttf");
+            const at = findIndex(args, (a) => a.startsWith("--font="));
+            const font = readBytes(at < 0 ? "DejaVuSans.ttf" : args[at].slice(7, args[at].length));
             const px = render(width, height, rgb(0xF3F4F6u32), match (parse(font)) {
                 Ok(f) => plate(f),
                 Err(e) => [],
@@ -43,12 +49,15 @@ action main(args: string[k]): i32 {
             const t1 = clock();
             print(`${width}x${height} drawn in ${f64(t1 - t0) / 1e6} ms`);
             print(win.show(w, px, width, height));
-            const seconds = args.length > 1 ? parseI64(args[1]) : 6;
-            keep(w, px, width, height, clock() + u64(seconds) * 1000000000u64);
-            match (win.capture(w)) {
-                Ok(shot) => writeBytes(args[0], encode(width, height, shot)),
-                Err(e) => print(sys.message(e)),
-            };
+            const timed = findIndex(args, (a) => a.length > 0 && findIndex(bytes(a), (b) => b < 48u8 || b > 57u8) < 0);
+            keep(w, px, width, height, timed >= 0 ? clock() + u64(parseI64(args[timed])) * 1000000000u64 : 18446744073709551615u64);
+            const capture = findIndex(args, (a) => a.endsWith(".png"));
+            if (capture >= 0) {
+                match (win.capture(w)) {
+                    Ok(shot) => writeBytes(args[capture], encode(width, height, shot)),
+                    Err(e) => print(sys.message(e)),
+                };
+            }
             win.close(w);
             return 0;
         },

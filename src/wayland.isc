@@ -77,10 +77,12 @@ export type Globals = { compositor: u32, shm: u32, wmBase: u32, seat: u32 };
 
 // the ids the client gives its objects (the display is 1). A compositor
 // takes a new id only when it is the next one or one it has freed
-// (libwayland: `wl_map_insert_at`): the ids follow the order of creation,
-// those of the seat last (a compositor may have none); the callback of a
-// frame is freed by the compositor once done (`delete_id`), its id taken
-// again for the next frame.
+// (libwayland: `wl_map_insert_at`): the ids follow the order of creation.
+// The seat, its pointer and its keyboard come with the window (10 to 12;
+// three callbacks of `wl_display.sync` hold these ids when the compositor
+// has no seat), the images after them; the callback of a frame is freed by
+// the compositor once done (`delete_id`), its id taken again for the next
+// frame.
 export const DISPLAY: u32 = 1u32;
 export const REGISTRY: u32 = 2u32;
 export const SYNC: u32 = 3u32;
@@ -90,12 +92,12 @@ export const WM_BASE: u32 = 6u32;
 export const SURFACE: u32 = 7u32;
 export const XDG_SURFACE: u32 = 8u32;
 export const TOPLEVEL: u32 = 9u32;
-export const POOL: u32 = 10u32;
-export const BUFFER: u32 = 11u32;
-export const FRAME: u32 = 12u32;
-export const SEAT: u32 = 13u32;
-export const POINTER: u32 = 14u32;
-export const KEYBOARD: u32 = 15u32;
+export const SEAT: u32 = 10u32;
+export const POINTER: u32 = 11u32;
+export const KEYBOARD: u32 = 12u32;
+export const POOL: u32 = 13u32;
+export const BUFFER: u32 = 14u32;
+export const FRAME: u32 = 15u32;
 
 // `wl_registry.bind`: the global `name` of `iface` at `version`, as the
 // object `id`
@@ -120,7 +122,9 @@ export function globalsOf(evs: Event[n], g: Globals): Globals {
 
 // the requests that bind the globals and make a toplevel window titled
 // `title`: its surface, its role, its title, the first commit (without an
-// image: the compositor answers with `configure`)
+// image: the compositor answers with `configure`); then the seat (version
+// 4: its pointer and its keyboard asked whatever its capabilities, inert
+// when it has none; no `frame` of the pointer) and its devices
 export function windowRequests(g: Globals, title: string): u8[] {
     const binds = concat(concat(bind(g.compositor, "wl_compositor", 4u32, COMPOSITOR), bind(g.shm, "wl_shm", 1u32, SHM)), bind(g.wmBase, "xdg_wm_base", 1u32, WM_BASE));
     const surface = request(COMPOSITOR, 0u32, le32(SURFACE));
@@ -128,7 +132,10 @@ export function windowRequests(g: Globals, title: string): u8[] {
     const toplevel = request(XDG_SURFACE, 1u32, le32(TOPLEVEL));
     const named = request(TOPLEVEL, 2u32, str(title));
     const commit = request(SURFACE, 6u32, []);
-    return concat(concat(concat(concat(concat(binds, surface), role), toplevel), named), commit);
+    const seat = g.seat != 0u32
+        ? concat(concat(bind(g.seat, "wl_seat", 4u32, SEAT), request(SEAT, 0u32, le32(POINTER))), request(SEAT, 1u32, le32(KEYBOARD)))
+        : concat(concat(request(DISPLAY, 0u32, le32(SEAT)), request(DISPLAY, 0u32, le32(POINTER))), request(DISPLAY, 0u32, le32(KEYBOARD)));
+    return concat(concat(concat(concat(concat(concat(binds, surface), role), toplevel), named), commit), seat);
 }
 
 // `wl_shm.create_pool` of `bytes` bytes (its descriptor sent beside it),
@@ -147,6 +154,26 @@ export function showRequests(w: i64, h: i64): u8[] {
     const callback = request(SURFACE, 3u32, le32(FRAME));
     const commit = request(SURFACE, 6u32, []);
     return concat(concat(concat(attach, damage), callback), commit);
+}
+
+// `wl_shm.create_pool` of `bytes` bytes as the object `pool` (its
+// descriptor sent beside it), a buffer `buffer` of `w` by `h` pixels
+// `XRGB8888` at its start, attached to the surface, damaged whole and
+// committed (an image drawn again: new objects, the old ones destroyed
+// after, `destroyRequests`)
+export function imageRequests(pool: u32, buffer: u32, bytes: i64, w: i64, h: i64): u8[] {
+    const made = request(SHM, 0u32, concat(le32(pool), i32le(i32(bytes))));
+    const buf = request(pool, 0u32, concat(concat(concat(concat(concat(le32(buffer), i32le(0i32)), i32le(i32(w))), i32le(i32(h))), i32le(i32(4 * w))), le32(1u32)));
+    const attach = request(SURFACE, 1u32, concat(concat(le32(buffer), i32le(0i32)), i32le(0i32)));
+    const damage = request(SURFACE, 9u32, concat(concat(concat(i32le(0i32), i32le(0i32)), i32le(i32(w))), i32le(i32(h))));
+    const commit = request(SURFACE, 6u32, []);
+    return concat(concat(concat(concat(made, buf), attach), damage), commit);
+}
+
+// the buffer and the pool of an image no longer shown destroyed
+// (`wl_buffer.destroy`, `wl_shm_pool.destroy`)
+export function destroyRequests(pool: u32, buffer: u32): u8[] {
+    return concat(request(buffer, 0u32, []), request(pool, 1u32, []));
 }
 
 // ----- what happened ---------------------------------------------------
@@ -172,7 +199,9 @@ function fixed(v: u32): f64 {
     return f64(i32(v)) / 256.0;
 }
 
-// the meaning of an event
+// the meaning of an event (its arguments of the length it has: the
+// callbacks that hold the ids of the seat when the compositor has none
+// send 4 bytes, read as nothing else)
 export function input(e: Event): Input {
     if (e.obj == DISPLAY && e.op == 0u32) {
         const [m, after] = strAt(e.args, 8);
@@ -199,18 +228,18 @@ export function input(e: Event): Input {
     if (e.obj == SEAT && e.op == 0u32) {
         return Capabilities(word(e.args, 0));
     }
-    if (e.obj == POINTER && (e.op == 0u32 || e.op == 2u32)) {
+    if (e.obj == POINTER && ((e.op == 0u32 && e.args.length >= 16) || (e.op == 2u32 && e.args.length >= 12))) {
         // enter: serial, surface, x, y; motion: time, x, y
         const at = e.op == 0u32 ? 8 : 4;
         return Pointer(fixed(word(e.args, at)), fixed(word(e.args, at + 4)));
     }
-    if (e.obj == POINTER && e.op == 3u32) {
+    if (e.obj == POINTER && e.op == 3u32 && e.args.length >= 16) {
         return Button(word(e.args, 8), word(e.args, 12) == 1u32);
     }
-    if (e.obj == KEYBOARD && e.op == 0u32) {
+    if (e.obj == KEYBOARD && e.op == 0u32 && e.args.length >= 12) {
         return Keymap(word(e.args, 4));
     }
-    if (e.obj == KEYBOARD && e.op == 3u32) {
+    if (e.obj == KEYBOARD && e.op == 3u32 && e.args.length >= 16) {
         return Key(word(e.args, 8), word(e.args, 12) == 1u32);
     }
     return Other(e.obj, e.op);
