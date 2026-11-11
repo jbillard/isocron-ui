@@ -11,7 +11,10 @@ The program (run on the host) prints a line starting with `ready` when it
 is first shown, then the centres of its buttons as `[(id, x, y), ...]`.
 The actions, in their order:
   click:ID     the pointer moved to the centre of the button ID, the left
-               button pressed and released
+               button pressed and released (the program prints the centres)
+  clickat:X,Y  the same at a point of the window
+  type:TEXT    the keys of TEXT typed (xdotool type)
+  endserver    Weston stopped: the program sees its connection closed
   key:NAME     a key of xdotool pressed and released (Up, Down, r, Escape)
   shot:FILE    the screen of Weston written to FILE (PNG)
   wait:SECONDS
@@ -59,7 +62,10 @@ def main():
         env = dict(os.environ, WAYLAND_DISPLAY="wayland-test", XDG_RUNTIME_DIR=run_dir)
         prog = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, text=True)
         centres = {}
-        for line in prog.stdout:
+        lines = prog.stdout if any(a.startswith("click:") for a in actions) else []
+        if not lines:
+            time.sleep(2)
+        for line in lines:
             print(line, end="")
             if line.startswith("ready"):
                 buttons = prog.stdout.readline()
@@ -74,6 +80,13 @@ def main():
                 xdo("mousemove", str(x), str(y))
                 time.sleep(0.15)
                 xdo("click", "1")
+            elif kind == "clickat":
+                x, y = arg.split(",")
+                xdo("mousemove", x, y)
+                time.sleep(0.15)
+                xdo("click", "1")
+            elif kind == "type":
+                xdo("type", "--delay", "60", arg)
             elif kind == "key":
                 xdo("key", arg)
             elif kind == "shot":
@@ -88,6 +101,8 @@ def main():
                     os.replace(os.path.join(run_dir, shots[0]), arg)
                 else:
                     print("no screenshot")
+            elif kind == "endserver":
+                subprocess.run(["docker", "exec", name, "sh", "-c", "kill $(pidof weston)"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             elif kind == "wait":
                 time.sleep(float(arg))
             time.sleep(0.15)

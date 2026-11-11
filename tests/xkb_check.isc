@@ -1,0 +1,21 @@
+// The keyboard as characters: the keymap of a US layout read (letters with
+// Shift and Caps Lock, digits and their symbols, space, the keys that edit
+// text), and a part of a French one written here (AltGr, accented letters,
+// a key whose symbols the table names by `Uxxxx`).
+import { parseKeymap, charOf, SHIFT, CAPS, ALTGR, LEFT, DELETE } from "../src/xkb";
+
+action main(args: string[k]): i32 {
+    const us = parseKeymap(stringOf(readBytes("tests/keymaps/us.xkb")));
+    // a, A (Shift), A (Caps Lock), a (both); 1, !; space; Backspace,
+    // Return, Escape, Tab; the left arrow, Delete; ; and :
+    print([charOf(us, 30u32, 0u32), charOf(us, 30u32, SHIFT), charOf(us, 30u32, CAPS), charOf(us, 30u32, SHIFT | CAPS)] as const);
+    print([charOf(us, 2u32, 0u32), charOf(us, 2u32, SHIFT), charOf(us, 57u32, 0u32)] as const);
+    print([charOf(us, 14u32, 0u32), charOf(us, 28u32, 0u32), charOf(us, 1u32, 0u32), charOf(us, 15u32, 0u32)] as const);
+    print([charOf(us, 105u32, 0u32) == LEFT, charOf(us, 111u32, 0u32) == DELETE, charOf(us, 39u32, 0u32), charOf(us, 39u32, SHIFT)] as const);
+    const fr = parseKeymap("xkb_keymap { xkb_keycodes { <AE02> = 11; <AD03> = 26; <AB09> = 60; alias <LSGT> = <AB09>; }; xkb_symbols { key <AE02> { [ eacute, 2, asciitilde ] }; key <AD03> { type= \"FOUR_LEVEL\", symbols[Group1]= [ e, E, EuroSign, cent ] }; key <LSGT> { [ U2026, U00B7 ] }; }; };");
+    // é, 2 (Shift), ~ (AltGr); e, E, €, ¢; …, · (an alias)
+    print([charOf(fr, 3u32, 0u32), charOf(fr, 3u32, SHIFT), charOf(fr, 3u32, ALTGR)] as const);
+    print([charOf(fr, 18u32, 0u32), charOf(fr, 18u32, SHIFT), charOf(fr, 18u32, ALTGR), charOf(fr, 18u32, ALTGR | SHIFT)] as const);
+    print([charOf(fr, 52u32, 0u32), charOf(fr, 52u32, SHIFT), charOf(fr, 200u32, 0u32)] as const);
+    return 0;
+}

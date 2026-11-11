@@ -1,0 +1,197 @@
+// A list of tasks in the manner of Elm: a field that takes the focus on a
+// click and the characters typed (a caret after its text, Backspace,
+// Enter adds the task), tasks ticked or removed by a click, the button
+// under the pointer lit; its model, the messages of its clicks, how they
+// and the characters change the model, and its view.
+import { rgb, rgba, Color } from "../src/paint";
+import { Element, Div, Label, Length, Px, Fill, Auto, Row, Column, Packed, Between, style, textStyle } from "../src/ui";
+import { Start, Center, End } from "../src/text";
+
+export type Item = { text: string, done: boolean };
+
+export type Model = { items: Item[], draft: string, focused: boolean, hover: i64 };
+
+// the messages of the clicks: the field, the button that adds, the button
+// that clears the tasks done, a click on nothing; a task ticked or
+// removed (its index added)
+export const FIELD: i64 = 1;
+export const ADD: i64 = 2;
+export const CLEAR: i64 = 3;
+export const NOTHING: i64 = 4;
+export const TICK: i64 = 1000;
+export const REMOVE: i64 = 2000;
+
+export function initial(): Model {
+    return { items: [{ text: "Écrire la bibliothèque", done: true }, { text: "Taper du texte dans un champ", done: false }], draft: "", focused: false, hover: -1 };
+}
+
+// the model with the draft added as a task (an empty draft adds nothing)
+function added(m: Model): Model {
+    return m.draft == "" ? m : { ...m, items: concat(m.items, [{ text: m.draft, done: false }]), draft: "" };
+}
+
+export function update(m: Model, msg: i64): Model {
+    if (msg == FIELD) {
+        return { ...m, focused: true };
+    }
+    if (msg == ADD) {
+        return added(m);
+    }
+    if (msg == CLEAR) {
+        return { ...m, items: filter(m.items, (it) => !it.done) };
+    }
+    if (msg == NOTHING) {
+        return { ...m, focused: false };
+    }
+    if (msg >= REMOVE && msg - REMOVE < m.items.length) {
+        const k = msg - REMOVE;
+        return { ...m, items: map(filter(iota(m.items.length), (i) => i != k), (i) => m.items[i]) };
+    }
+    if (msg >= TICK && msg - TICK < m.items.length) {
+        const k = msg - TICK;
+        return { ...m, items: map(iota(m.items.length), (i) => i == k ? { ...m.items[i], done: !m.items[i].done } : m.items[i]) };
+    }
+    return m;
+}
+
+// the bytes of UTF-8 of the character `c`
+export function utf8(c: i64): u8[] {
+    return c < 0x80 ? [u8(c)]
+        : (c < 0x800 ? [u8(0xC0 | (c >> 6)), u8(0x80 | (c & 63))]
+        : (c < 0x10000 ? [u8(0xE0 | (c >> 12)), u8(0x80 | ((c >> 6) & 63)), u8(0x80 | (c & 63))]
+        : [u8(0xF0 | (c >> 18)), u8(0x80 | ((c >> 12) & 63)), u8(0x80 | ((c >> 6) & 63)), u8(0x80 | (c & 63))]));
+}
+
+// `s` without its last character
+export function withoutLast(s: string): string {
+    const b = bytes(s);
+    const starts = filter(iota(b.length), (i) => (b[i] & 0xC0u8) != 0x80u8);
+    return starts.length == 0 ? "" : stringOf(b.slice(0, starts[starts.length - 1]));
+}
+
+// the model after the character `c` typed (a code point): into the field
+// when it has the focus; Backspace (8) removes the last character, Enter
+// (13) adds the task, the others below a space nothing
+export function typed(m: Model, c: i64): Model {
+    if (!m.focused) {
+        return m;
+    }
+    return c == 8 ? { ...m, draft: withoutLast(m.draft) }
+        : (c == 13 ? added(m)
+        : (c < 32 || c == 127 ? m : { ...m, draft: m.draft + stringOf(utf8(c)) }));
+}
+
+// the button under the pointer (its message, -1 for none)
+export function hovered(m: Model, msg: i64): Model {
+    return { ...m, hover: msg };
+}
+
+function button(label: string, id: i64, primary: boolean, lit: boolean, width: Length): Element {
+    const blue = lit ? rgb(0x1D4ED8u32) : rgb(0x2563EBu32);
+    const white = lit ? rgb(0xF3F4F6u32) : rgb(0xFFFFFFu32);
+    return Div({
+        ...style(),
+        width: width,
+        height: Px(36.0f32),
+        padding: 0.0f32,
+        justify: Packed(Center),
+        align: Center,
+        stretch: false,
+        background: primary ? blue : white,
+        border: primary ? 0.0f32 : 1.0f32,
+        borderColor: rgb(0xD1D5DBu32),
+        radius: 8.0f32,
+        onClick: id,
+    }, [Label({ ...textStyle(14.0f32, primary ? rgb(0xFFFFFFu32) : rgb(0x111827u32)), align: Center }, label)]);
+}
+
+// a task: its box to tick, its text, its button to remove it
+function row(it: Item, k: i64, hover: i64): Element {
+    const blue = rgb(0x2563EBu32);
+    const tick = Div({
+        ...style(),
+        width: Px(20.0f32),
+        height: Px(20.0f32),
+        justify: Packed(Center),
+        align: Center,
+        stretch: false,
+        background: it.done ? blue : rgb(0xFFFFFFu32),
+        border: it.done ? 0.0f32 : 2.0f32,
+        borderColor: hover == TICK + k ? blue : rgb(0x9CA3AFu32),
+        radius: 5.0f32,
+        onClick: TICK + k,
+    }, it.done ? [Div({ ...style(), width: Px(8.0f32), height: Px(8.0f32), background: rgb(0xFFFFFFu32), radius: 2.0f32 }, [])] : []);
+    const text = Label(textStyle(15.0f32, it.done ? rgb(0x9CA3AFu32) : rgb(0x111827u32)), it.text);
+    const remove = Div({
+        ...style(),
+        width: Px(28.0f32),
+        height: Px(28.0f32),
+        justify: Packed(Center),
+        align: Center,
+        stretch: false,
+        background: hover == REMOVE + k ? rgb(0xFEE2E2u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32),
+        radius: 6.0f32,
+        onClick: REMOVE + k,
+    }, [Label({ ...textStyle(16.0f32, hover == REMOVE + k ? rgb(0xDC2626u32) : rgb(0x9CA3AFu32)), align: Center }, "×")]);
+    return Div({ ...style(), direction: Row, gap: 12.0f32, align: Center, stretch: false, padding: 6.0f32, radius: 8.0f32, background: hover == TICK + k ? rgb(0xF9FAFBu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32) }, [
+        tick,
+        Div({ ...style(), width: Fill(1.0f32) }, [text]),
+        remove,
+    ]);
+}
+
+// the field: its text (or a hint when empty) and, with the focus, a caret
+// right after it (the text and the caret laid out in a row: the caret
+// follows the text)
+function field(m: Model): Element {
+    const blue = rgb(0x2563EBu32);
+    const text = m.draft == "" && !m.focused
+        ? Label(textStyle(15.0f32, rgb(0x9CA3AFu32)), "Nouvelle tâche")
+        : Label(textStyle(15.0f32, rgb(0x111827u32)), m.draft);
+    const caret: Element[] = m.focused ? [Div({ ...style(), width: Px(1.5f32), height: Px(20.0f32), background: blue }, [])] : [];
+    return Div({
+        ...style(),
+        width: Fill(1.0f32),
+        height: Px(36.0f32),
+        direction: Row,
+        align: Center,
+        stretch: false,
+        padding: 8.0f32,
+        background: rgb(0xFFFFFFu32),
+        border: m.focused ? 2.0f32 : 1.0f32,
+        borderColor: m.focused ? blue : rgb(0xD1D5DBu32),
+        radius: 8.0f32,
+        onClick: FIELD,
+    }, concat([text], caret));
+}
+
+export function view(m: Model): Element {
+    const gray = rgb(0x6B7280u32);
+    const left = count(m.items, (it) => !it.done);
+    const header: Element[] = [
+        Label(textStyle(22.0f32, rgb(0x111827u32)), "Tâches"),
+        Div({ ...style(), direction: Row, gap: 8.0f32, align: Center, stretch: false }, [field(m), button("Ajouter", ADD, true, m.hover == ADD, Px(90.0f32))]),
+    ];
+    const rows = map(iota(m.items.length), (k) => row(m.items[k], k, m.hover));
+    const footer: Element[] = [
+        Div({ ...style(), direction: Row, justify: Between, align: Center, stretch: false }, [
+            Label(textStyle(13.0f32, gray), left <= 1 ? `${left} tâche à faire` : `${left} tâches à faire`),
+            button("Effacer les terminées", CLEAR, false, m.hover == CLEAR, Px(170.0f32)),
+        ]),
+    ];
+    const card = Div({
+        ...style(),
+        width: Px(440.0f32),
+        padding: 24.0f32,
+        gap: 12.0f32,
+        background: rgb(0xFFFFFFu32),
+        radius: 16.0f32,
+        shadowBlur: 12.0f32,
+        shadowY: 6.0f32,
+        shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.18f32),
+    }, concat(concat(header, rows), footer));
+    // the card at the top, in the middle across (it grows downwards: the
+    // places above do not move); a click on the ground gives NOTHING (the
+    // field loses the focus)
+    return Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), padding: 40.0f32, justify: Packed(Start), align: Center, stretch: false, background: rgb(0xF3F4F6u32), onClick: NOTHING }, [card]);
+}

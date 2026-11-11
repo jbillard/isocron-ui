@@ -1,0 +1,56 @@
+// The list of tasks (examples/todo.isc) laid out in 520 by 420 pixels:
+// clicks played at the centres of their places, characters typed (a word,
+// a Backspace, Enter, an accented letter, a character of four bytes), a
+// task ticked, one removed, the tasks done cleared; the model at each
+// step.
+import { parse, Font } from "../src/font";
+import { place, hitTest, Hit } from "../src/ui";
+import { Model, initial, update, typed, view, FIELD, ADD, CLEAR, NOTHING, TICK, REMOVE } from "../examples/todo";
+
+function centre(hits: Hit[n], id: i64): [f32, f32] {
+    const k = findIndex(hits, (h) => h.id == id);
+    return [hits[k].x + hits[k].w * 0.5f32, hits[k].y + hits[k].h * 0.5f32] as const;
+}
+
+// the model after a click on the place of `id`, laid out from `m`
+function click(f: Font, m: Model, id: i64): Model {
+    const [ps, hits] = place(f, view(m), 0.0f32, 0.0f32, 520.0f32, 420.0f32);
+    const [x, y] = centre(hits, id);
+    return update(m, hitTest(hits, x, y));
+}
+
+// the model after the characters of `s` typed, one after the other
+function typeAll(m: Model, cs: i64[n], i: i64): Model {
+    return i >= n ? m : typeAll(typed(m, cs[i]), cs, i + 1);
+}
+
+function show(m: Model): string {
+    return `${join(map(m.items, (it) => (it.done ? "[x] " : "[ ] ") + it.text), " | ")} / draft "${m.draft}" focused ${m.focused}`;
+}
+
+action main(args: string[k]): i32 {
+    return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => {
+            const m0 = initial();
+            print(show(m0));
+            // typed without the focus: nothing
+            const m1 = typeAll(m0, [76, 97], 0);
+            print(show(m1));
+            const m2 = typeAll(click(f, m1, FIELD), [76, 97, 105, 116, 120, 8], 0);
+            print(show(m2));
+            const m3 = typed(m2, 13);
+            print(show(m3));
+            const m4 = click(f, typeAll(m3, [67, 97, 102, 233, 32, 128512], 0), ADD);
+            print(show(m4));
+            const m5 = click(f, click(f, m4, TICK + 2), REMOVE + 1);
+            print(show(m5));
+            const m6 = click(f, click(f, m5, CLEAR), NOTHING);
+            print(show(m6));
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

@@ -1,0 +1,22 @@
+// The list of tasks (examples/todo.isc) as an application of the library:
+// in a window of Windows or of Wayland, the same program. Prints its tasks
+// when its window is closed.
+// usage: todo_app [--font=file]
+import { parse } from "../src/font";
+import { run } from "../src/app";
+import { initial, update, typed, hovered, view } from "./todo";
+
+action main(args: string[k]): i32 {
+    const at = findIndex(args, (a) => a.startsWith("--font="));
+    return match (parse(readBytes(at < 0 ? "DejaVuSans.ttf" : args[at].slice(7, args[at].length)))) {
+        Ok(f) => {
+            const end = run("Isocron : tâches", 520, 420, f, initial(), view, update, typed, hovered);
+            print(map(end.items, (it) => (it.done ? "[x] " : "[ ] ") + it.text));
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

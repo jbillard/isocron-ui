@@ -1,0 +1,251 @@
+// An application in the manner of Elm in a window of the system: its model
+// (of any type), its view laid out at the size of the window, the message
+// of a click on a place, the characters typed, the place under the
+// pointer. Under Windows, a window of `win32`; under Linux, a window of
+// Wayland (the module `unix`, the protocol spoken by `wayland.isc`, the
+// keyboard read by `xkb.isc`): the same application. The model drawn
+// again after each change; a window resized, laid out again.
+import * as sys from "sys";
+import * as win from "win32";
+import * as unix from "unix";
+import * as net from "net";
+import * as wl from "./wayland";
+import { rgb, render } from "./paint";
+import { Font } from "./font";
+import { Element, place, hitTest, Hit } from "./ui";
+import { Keymap, parseKeymap, charOf, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./xkb";
+
+// the application titled `title` in a window of `width` by `height` pixels
+// (its first size), its model `m` at the start, until the window is
+// closed: its model then. `view` gives the elements of a model; `update`
+// the model after the message of a place clicked; `typed` the model after
+// a character typed (a code point; Backspace 8, Tab 9, Enter 13, Escape
+// 27; the arrows, Delete, Home and End as the codes of `xkb.isc`);
+// `hovered` the model when the pointer goes over the place of another
+// message (-1: none)
+export action run<M>(title: string, width: i64, height: i64, f: Font, m: M, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): M {
+    if (sys.platform() == "windows") {
+        return runWindows(title, width, height, f, m, view, update, typed, hovered);
+    } else {
+        return runWayland(title, width, height, f, m, view, update, typed, hovered);
+    }
+}
+
+// ----- Windows ---------------------------------------------------------
+
+// the view of `m` laid out in the window, drawn and shown; its places
+action frame<M>(w: win.Window, f: Font, m: M, view: (M) => Element, width: i64, height: i64): Hit[] {
+    const [ps, hits] = place(f, view(m), 0.0f32, 0.0f32, f32(width), f32(height));
+    const shown = win.show(w, render(width, height, rgb(0xFFFFFFu32), ps), width, height);
+    return hits;
+}
+
+action runWindows<M>(title: string, width: i64, height: i64, f: Font, m: M, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): M {
+    return match (win.open(title, width, height)) {
+        Ok(w) => {
+            const [cw, ch] = win.clientSize(w);
+            const hits = frame(w, f, m, view, cw, ch);
+            const end = loopWindows(w, f, m, hits, 0, 0, -1, 0, cw, ch, view, update, typed, hovered);
+            win.close(w);
+            return end;
+        },
+        Err(e) => m,
+    };
+}
+
+// the code of the virtual key `k` among the keys that edit text (0: none)
+function editKey(k: i64): i64 {
+    return k == 37 ? LEFT : (k == 38 ? UP : (k == 39 ? RIGHT : (k == 40 ? DOWN : (k == 46 ? DELETE : (k == 36 ? HOME : (k == 35 ? END : 0))))));
+}
+
+// the events of the window until it is closed: the pointer followed (the
+// place under it), a press of the left button on a place gives its
+// message, the characters typed (a pair of units of UTF-16 joined), the
+// keys that edit text; the size followed; the model drawn again after a
+// change
+action loopWindows<M>(w: win.Window, f: Font, m: M, hits: Hit[], x: i64, y: i64, hover: i64, high: i64, width: i64, height: i64, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): M {
+    return match (win.events(w, -1)) {
+        Ok(evs) => {
+            const [next, nx, ny, nhover, nhigh, again, closed, nw, nh] = fold(evs, [m, x, y, hover, high, false, false, width, height] as const, (acc, e) => {
+                const [mm, px, py, hv, hs, redraw, cl, ww, hh] = acc;
+                return match (e) {
+                    win.Resize(a, b) => [mm, px, py, hv, hs, true, cl, a, b] as const,
+                    win.Pointer(a, b) => {
+                        const now = hitTest(hits, f32(a) + 0.5f32, f32(b) + 0.5f32);
+                        return now == hv ? [mm, a, b, hv, hs, redraw, cl, ww, hh] as const : [hovered(mm, now), a, b, now, hs, true, cl, ww, hh] as const;
+                    },
+                    win.Button(b, down) => {
+                        const msg = b == 0 && down ? hitTest(hits, f32(px) + 0.5f32, f32(py) + 0.5f32) : -1;
+                        return msg >= 0 ? [update(mm, msg), px, py, hv, hs, true, cl, ww, hh] as const : acc;
+                    },
+                    win.Char(u) => {
+                        if (u >= 0xD800 && u < 0xDC00) {
+                            return [mm, px, py, hv, u, redraw, cl, ww, hh] as const;
+                        }
+                        const c = u >= 0xDC00 && u < 0xE000 && hs > 0 ? 0x10000 + (hs - 0xD800) * 1024 + (u - 0xDC00) : u;
+                        return [typed(mm, c), px, py, hv, 0, true, cl, ww, hh] as const;
+                    },
+                    win.Key(k, down, s) => {
+                        const c = down ? editKey(k) : 0;
+                        return c != 0 ? [typed(mm, c), px, py, hv, hs, true, cl, ww, hh] as const : acc;
+                    },
+                    win.Close => [mm, px, py, hv, hs, redraw, true, ww, hh] as const,
+                    _ => acc,
+                };
+            });
+            if (closed) {
+                return next;
+            }
+            if (again && nw > 0 && nh > 0) {
+                return loopWindows(w, f, next, frame(w, f, next, view, nw, nh), nx, ny, nhover, nhigh, nw, nh, view, update, typed, hovered);
+            }
+            return loopWindows(w, f, next, hits, nx, ny, nhover, nhigh, nw, nh, view, update, typed, hovered);
+        },
+        Err(e) => m,
+    };
+}
+
+// ----- Wayland ---------------------------------------------------------
+
+// what the loop keeps from one read to the next: the bytes of an event cut
+// by a read, the size of the window, whether it is shown, the places of
+// the view, the pointer and the place under it, the images made (their
+// objects), the keyboard (its table, its modifiers), the end
+type State = { pending: u8[], w: i64, h: i64, shown: boolean, hits: Hit[], x: f64, y: f64, hover: i64, images: i64, keymap: Keymap, mods: u32, done: boolean, failed: string };
+
+// the objects of the `k`-th image: its pool and its buffer (ids from
+// `wl.POOL` on, in the order they are made)
+function poolOf(k: i64): u32 {
+    return wl.POOL + u32(2 * k);
+}
+
+function bufferOf(k: i64): u32 {
+    return wl.POOL + u32(2 * k + 1);
+}
+
+action globals(c: net.Conn, pending: u8[], g: wl.Globals): wl.Globals {
+    return match (unix.receiveWithFds(c, 65536, 8)) {
+        Ok(r) => {
+            const [evs, rest] = wl.events(concat(pending, r.bytes));
+            const g2 = wl.globalsOf(evs, g);
+            return count(evs, (e) => e.obj == wl.SYNC) > 0 || r.bytes.length == 0 ? g2 : globals(c, rest, g2);
+        },
+        Err(e) => g,
+    };
+}
+
+// the view of `m` drawn into a new memory shared with the compositor and
+// shown as the `images`-th image, the previous one destroyed; its places
+action drawWayland<M>(c: net.Conn, f: Font, m: M, view: (M) => Element, st: State): State {
+    const [ps, hits] = place(f, view(m), 0.0f32, 0.0f32, f32(st.w), f32(st.h));
+    const k = st.images;
+    return match (unix.shared(st.w * st.h * 4)) {
+        Ok(mem) => {
+            const written = unix.writeSharedU32(mem, 0, render(st.w, st.h, rgb(0xFFFFFFu32), ps));
+            const sent = unix.sendWithFds(c, wl.imageRequests(poolOf(k), bufferOf(k), st.w * st.h * 4, st.w, st.h), [unix.sharedFd(mem)]);
+            unix.closeShared(mem);
+            const old = k > 0 ? net.write(c, wl.destroyRequests(poolOf(k - 1), bufferOf(k - 1))) : Ok(());
+            return written == Ok(()) && sent == Ok(()) ? { ...st, hits: hits, images: k + 1 } : { ...st, done: true, failed: "an image not sent" };
+        },
+        Err(e) => ({ ...st, done: true, failed: sys.message(e) }),
+    };
+}
+
+// the table of the keyboard, from its descriptor (`bytes` bytes, ended by a
+// zero)
+action keymapOf(fd: i32, bytes: i64): Keymap {
+    const km = match (unix.mapShared(fd, bytes, false)) {
+        Ok(mem) => {
+            const text = match (unix.readShared(mem, 0, bytes)) {
+                Ok(b) => stringOf(b.slice(0, findIndex(b, (x) => x == 0u8) < 0 ? b.length : findIndex(b, (x) => x == 0u8))),
+                Err(e) => "",
+            };
+            unix.closeShared(mem);
+            return parseKeymap(text);
+        },
+        Err(e) => parseKeymap(""),
+    };
+    return km;
+}
+
+action runWayland<M>(title: string, width: i64, height: i64, f: Font, m: M, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): M {
+    const path = wl.socketPath(sys.env("WAYLAND_DISPLAY") ?? "", sys.env("XDG_RUNTIME_DIR") ?? "/tmp");
+    return match (unix.connect(path)) {
+        Ok(c) => {
+            const asked = net.write(c, concat(wl.request(wl.DISPLAY, 1u32, wl.le32(wl.REGISTRY)), wl.request(wl.DISPLAY, 0u32, wl.le32(wl.SYNC))));
+            const g = globals(c, [], { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32 });
+            if (g.compositor == 0u32 || g.shm == 0u32 || g.wmBase == 0u32) {
+                net.close(c);
+                return m;
+            }
+            const made = net.write(c, wl.windowRequests(g, title));
+            const st = { pending: [], w: width, h: height, shown: false, hits: [], x: 0.0, y: 0.0, hover: -1, images: 0, keymap: parseKeymap(""), mods: 0u32, done: false, failed: "" };
+            const end = loopWayland(c, f, m, st, view, update, typed, hovered);
+            net.close(c);
+            return end;
+        },
+        Err(e) => m,
+    };
+}
+
+// the events of the window until it is closed (or its compositor gone)
+action loopWayland<M>(c: net.Conn, f: Font, m: M, st: State, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): M {
+    if (st.done) {
+        return m;
+    }
+    const r = match (unix.receiveWithFds(c, 65536, 8)) {
+        Ok(got) => got,
+        Err(e) => ({ bytes: [], fds: [] }),
+    };
+    if (r.bytes.length == 0) {
+        return m;
+    }
+    const [evs, rest] = wl.events(concat(st.pending, r.bytes));
+    // the table of the keyboard: the descriptor sent with its event
+    const k = findIndex(evs, (e) => e.obj == wl.KEYBOARD && e.op == 0u32);
+    const km = k >= 0 && r.fds.length > 0 ? keymapOf(r.fds[0], i64(wl.word(evs[k].args, 4))) : st.keymap;
+    const closed = map(r.fds, (fd) => unix.closeFd(fd) == Ok(()) ? 1 : 0);
+    const [next, ns] = handle(c, f, m, evs, 0, { ...st, pending: rest, keymap: km }, view, update, typed, hovered);
+    return loopWayland(c, f, next, ns, view, update, typed, hovered);
+}
+
+// the events `evs` from the `i`-th, answered in their order
+action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, st: State, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): [M, State] {
+    if (i >= evs.length || st.done) {
+        return [m, st] as const;
+    }
+    const [nm, ns] = match (wl.input(evs[i])) {
+        wl.Size(w, h) => [m, w > 0 && h > 0 ? { ...st, w: w, h: h } : st] as const,
+        wl.Configure(serial) => {
+            const acked = net.write(c, wl.request(wl.XDG_SURFACE, 4u32, wl.le32(serial)));
+            return [m, drawWayland(c, f, m, view, { ...st, shown: true })] as const;
+        },
+        wl.Ping(serial) => {
+            const pong = net.write(c, wl.request(wl.WM_BASE, 3u32, wl.le32(serial)));
+            return [m, st] as const;
+        },
+        wl.Pointer(x, y) => {
+            const now = hitTest(st.hits, f32(x), f32(y));
+            return now == st.hover ? [m, { ...st, x: x, y: y }] as const : changed(c, f, hovered(m, now), view, { ...st, x: x, y: y, hover: now });
+        },
+        // the left button (BTN_LEFT) pressed
+        wl.Button(b, down) => {
+            const msg = down && b == 272u32 ? hitTest(st.hits, f32(st.x), f32(st.y)) : -1;
+            return msg >= 0 ? changed(c, f, update(m, msg), view, st) : [m, st] as const;
+        },
+        wl.Modifiers(mods) => [m, { ...st, mods: mods }] as const,
+        wl.Key(code, down) => {
+            const ch = down ? charOf(st.keymap, code, st.mods) : 0;
+            return ch != 0 ? changed(c, f, typed(m, ch), view, st) : [m, st] as const;
+        },
+        wl.Close => [m, { ...st, done: true }] as const,
+        wl.Failure(msg) => [m, { ...st, done: true, failed: msg }] as const,
+        _ => [m, st] as const,
+    };
+    return handle(c, f, nm, evs, i + 1, ns, view, update, typed, hovered);
+}
+
+// the model `m` drawn when the window is shown
+action changed<M>(c: net.Conn, f: Font, m: M, view: (M) => Element, st: State): [M, State] {
+    return [m, st.shown ? drawWayland(c, f, m, view, st) : st] as const;
+}

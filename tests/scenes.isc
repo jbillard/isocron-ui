@@ -7,6 +7,7 @@ import { parse } from "../src/font";
 import { line } from "../src/text";
 import { place } from "../src/ui";
 import { view, initial, update, INCREMENT, STEP } from "../examples/counter";
+import * as todo from "../examples/todo";
 
 function corners(x: f32, y: f32, w: f32, h: f32, blur: f32, c: Color, r: f32): Primitive {
     return Blur({ x: x, y: y, w: w, h: h, blur: blur, color: c, topLeft: r, topRight: r, bottomRight: r, bottomLeft: r });
@@ -50,6 +51,11 @@ action main(args: string[k]): i32 {
             // after two messages
             const [ps, hits] = place(f, view(update(update(initial(), STEP), INCREMENT)), 0.0f32, 0.0f32, 480.0f32, 320.0f32);
             scene(args[0], "counter", 480, 320, white, ps);
+            // the list of tasks: a draft typed in the field that has the
+            // focus (its caret after it), the button that adds lit
+            const t = { ...todo.typed(todo.typed(todo.typed(todo.typed(todo.update(todo.initial(), todo.FIELD), 80), 97), 105), 110), hover: todo.ADD };
+            const [tp, th] = place(f, todo.view(t), 0.0f32, 0.0f32, 520.0f32, 420.0f32);
+            scene(args[0], "todo", 520, 420, white, tp);
         },
         Err(e) => print(e),
     };

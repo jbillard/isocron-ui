@@ -1,0 +1,156 @@
+// The keyboard of Wayland as characters: the table the compositor sends
+// (`wl_keyboard.keymap`, the text format of XKB) read for what a key gives
+// at each level (its code of evdev, the level chosen by Shift, Caps Lock and
+// AltGr), the names of the symbols turned into code points: ASCII, Latin-1,
+// the euro, `Uxxxx`; the keys that edit text (Backspace, Return, Tab,
+// Escape, Delete, the arrows, Home, End) as the codes of `keys`.
+
+// the keys that edit text, as typed: below a space, as their ASCII codes;
+// the others past the last code point
+export const BACKSPACE: i64 = 8;
+export const TAB: i64 = 9;
+export const ENTER: i64 = 13;
+export const ESCAPE: i64 = 27;
+export const LEFT: i64 = 0x110001;
+export const UP: i64 = 0x110002;
+export const RIGHT: i64 = 0x110003;
+export const DOWN: i64 = 0x110004;
+export const DELETE: i64 = 0x110005;
+export const HOME: i64 = 0x110006;
+export const END: i64 = 0x110007;
+
+// what each key gives: four levels (none, Shift, AltGr, Shift and AltGr)
+// for each code of evdev below 256, 0 for nothing
+export type Keymap = { levels: i64[] };
+
+// the bits of the modifiers of Wayland in a map of the usual tables
+export const SHIFT: u32 = 1u32;
+export const CAPS: u32 = 2u32;
+export const ALTGR: u32 = 128u32;
+
+// the names of symbols of more than one character, and their code points
+const NAMES: string[] = [
+    "space", "exclam", "quotedbl", "numbersign", "dollar", "percent", "ampersand", "apostrophe",
+    "parenleft", "parenright", "asterisk", "plus", "comma", "minus", "period", "slash",
+    "colon", "semicolon", "less", "equal", "greater", "question", "at", "bracketleft",
+    "backslash", "bracketright", "asciicircum", "underscore", "grave", "braceleft", "bar", "braceright",
+    "asciitilde", "nobreakspace", "exclamdown", "cent", "sterling", "currency", "yen", "brokenbar",
+    "section", "diaeresis", "copyright", "ordfeminine", "guillemotleft", "notsign", "hyphen", "registered",
+    "macron", "degree", "plusminus", "twosuperior", "threesuperior", "acute", "mu", "paragraph",
+    "periodcentered", "cedilla", "onesuperior", "masculine", "guillemotright", "onequarter", "onehalf", "threequarters",
+    "questiondown", "Agrave", "Aacute", "Acircumflex", "Atilde", "Adiaeresis", "Aring", "AE",
+    "Ccedilla", "Egrave", "Eacute", "Ecircumflex", "Ediaeresis", "Igrave", "Iacute", "Icircumflex",
+    "Idiaeresis", "ETH", "Ntilde", "Ograve", "Oacute", "Ocircumflex", "Otilde", "Odiaeresis",
+    "multiply", "Oslash", "Ugrave", "Uacute", "Ucircumflex", "Udiaeresis", "Yacute", "THORN",
+    "ssharp", "agrave", "aacute", "acircumflex", "atilde", "adiaeresis", "aring", "ae",
+    "ccedilla", "egrave", "eacute", "ecircumflex", "ediaeresis", "igrave", "iacute", "icircumflex",
+    "idiaeresis", "eth", "ntilde", "ograve", "oacute", "ocircumflex", "otilde", "odiaeresis",
+    "division", "oslash", "ugrave", "uacute", "ucircumflex", "udiaeresis", "yacute", "thorn",
+    "ydiaeresis", "EuroSign", "oe", "OE",
+    "BackSpace", "Tab", "Return", "KP_Enter", "Escape", "Delete", "Left", "Up",
+    "Right", "Down", "Home", "End", "KP_Space",
+];
+
+const CODES: i64[] = [
+    32, 33, 34, 35, 36, 37, 38, 39,
+    40, 41, 42, 43, 44, 45, 46, 47,
+    58, 59, 60, 61, 62, 63, 64, 91,
+    92, 93, 94, 95, 96, 123, 124, 125,
+    126, 160, 161, 162, 163, 164, 165, 166,
+    167, 168, 169, 170, 171, 172, 173, 174,
+    175, 176, 177, 178, 179, 180, 181, 182,
+    183, 184, 185, 186, 187, 188, 189, 190,
+    191, 192, 193, 194, 195, 196, 197, 198,
+    199, 200, 201, 202, 203, 204, 205, 206,
+    207, 208, 209, 210, 211, 212, 213, 214,
+    215, 216, 217, 218, 219, 220, 221, 222,
+    223, 224, 225, 226, 227, 228, 229, 230,
+    231, 232, 233, 234, 235, 236, 237, 238,
+    239, 240, 241, 242, 243, 244, 245, 246,
+    247, 248, 249, 250, 251, 252, 253, 254,
+    255, 0x20AC, 0x153, 0x152,
+    8, 9, 13, 13, 27, 0x110005, 0x110001, 0x110002,
+    0x110003, 0x110004, 0x110006, 0x110007, 32,
+];
+
+// the value of the hexadecimal digits of `s` (-1: not all digits)
+function hex(s: string): i64 {
+    const b = bytes(s);
+    return b.length == 0 ? -1 : fold(b, 0, (v, c) => {
+        const d = c >= 48u8 && c <= 57u8 ? i64(c) - 48 : (c >= 65u8 && c <= 70u8 ? i64(c) - 55 : (c >= 97u8 && c <= 102u8 ? i64(c) - 87 : -1));
+        return v < 0 || d < 0 ? -1 : v * 16 + d;
+    });
+}
+
+// the code point of the symbol named `name` (0: none known, a dead key)
+export function symbolChar(name: string): i64 {
+    const b = bytes(name);
+    if (b.length == 1) {
+        return i64(b[0]);
+    }
+    if (b.length >= 5 && b[0] == 85u8) {
+        const v = hex(name.slice(1, name.length));
+        if (v > 0) {
+            return v;
+        }
+    }
+    const k = findIndex(NAMES, (n) => n == name);
+    return k < 0 ? 0 : CODES[k];
+}
+
+// the text of the group 1 of `re` in `s`
+function group(s: string, re: RegExp): string {
+    return s.replace(re, "$1");
+}
+
+// the key named `name` and its code of X (`<AE01> = 10;`), or an alias of
+// it (`alias <AC12> = <BKSL>;`: the code of the key it names)
+function codeOf(names: string[n], codes: i64[n], name: string): i64 {
+    const k = findIndex(names, (x) => x == name);
+    return k < 0 ? -1 : codes[k];
+}
+
+// the table of the text of a keymap of XKB
+export function parseKeymap(text: string): Keymap {
+    // the codes of the keys (X: evdev + 8) and their aliases
+    const decls = matches(text, /<[A-Za-z0-9+_-]+>\s*=\s*\d+\s*;/g);
+    const names = map(decls, (d) => group(d, /^<([^>]+)>.*$/s));
+    const codes = map(decls, (d) => parseI64(group(d, /^[^=]*=\s*(\d+).*$/s)));
+    const aliasDecls = matches(text, /alias\s+<[^>]+>\s*=\s*<[^>]+>\s*;/g);
+    const aliasNames = map(aliasDecls, (d) => group(d, /^alias\s+<([^>]+)>.*$/s));
+    const aliasCodes = map(aliasDecls, (d) => codeOf(names, codes, group(d, /^[^=]*=\s*<([^>]+)>.*$/s)));
+    const allNames = concat(names, aliasNames);
+    const allCodes = concat(codes, aliasCodes);
+    // the symbols of each key: its first list in brackets
+    const keys = matches(text, /key\s+<[^>]+>\s*\{[^}]*\}/g);
+    return { levels: fold(keys, fill(1024, 0), (levels, k) => {
+        const code = codeOf(allNames, allCodes, group(k, /^key\s+<([^>]+)>.*$/s)) - 8;
+        // (after `symbols[Group1]=` when it is written: other lists may
+        // follow, `actions[Group1]`)
+        const at = k.indexOf("symbols[Group1]");
+        const rest = at >= 0 ? k.slice(at + 15, k.length) : k;
+        const has = rest.search(/\[/) >= 0;
+        const list = has ? group(rest, /^[^\[]*\[([^\]]*)\].*$/s) : "";
+        const syms = map(list.split(","), (x) => x.trim());
+        return code < 0 || code > 255 || !has ? levels : fold(iota(min(4, syms.length)), levels, (l, j) => requireUnique(l.with(code * 4 + j, symbolChar(syms[j]))));
+    }) };
+}
+
+// a letter of the alphabet of Latin (Caps Lock shifts those alone)
+function letter(c: i64): boolean {
+    return (c >= 97 && c <= 122) || (c >= 224 && c <= 254 && c != 247);
+}
+
+// what the key of evdev `code` gives with the modifiers `mods` (0: nothing)
+export function charOf(km: Keymap, code: u32, mods: u32): i64 {
+    const k = i64(code);
+    if (k < 0 || k > 255) {
+        return 0;
+    }
+    const base = (mods & ALTGR) != 0u32 ? 2 : 0;
+    const plain = km.levels[k * 4 + base];
+    const caps = (mods & CAPS) != 0u32 && letter(plain);
+    const shifted = ((mods & SHIFT) != 0u32) != caps;
+    const c = km.levels[k * 4 + base + (shifted ? 1 : 0)];
+    return c != 0 ? c : (km.levels[k * 4 + base] != 0 ? km.levels[k * 4 + base] : km.levels[k * 4]);
+}

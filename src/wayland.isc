@@ -190,6 +190,7 @@ export type Input =
     | Button(u32, boolean)
     | Key(u32, boolean)
     | Keymap(u32)
+    | Modifiers(u32)
     | Capabilities(u32)
     | Failure(string)
     | Other(u32, u32);
@@ -238,6 +239,10 @@ export function input(e: Event): Input {
     }
     if (e.obj == KEYBOARD && e.op == 0u32 && e.args.length >= 12) {
         return Keymap(word(e.args, 4));
+    }
+    // the modifiers in effect: held, latched or locked
+    if (e.obj == KEYBOARD && e.op == 4u32 && e.args.length >= 20) {
+        return Modifiers(word(e.args, 4) | word(e.args, 8) | word(e.args, 12));
     }
     if (e.obj == KEYBOARD && e.op == 3u32 && e.args.length >= 16) {
         return Key(word(e.args, 8), word(e.args, 12) == 1u32);
