@@ -1,0 +1,240 @@
+// The elements of an interface and their layout: boxes laid out in a row
+// or a column (a part of flexbox: a gap between children, a padding,
+// sizes fixed, as their content or sharing the room left, children packed
+// at the start, the centre or the end, or spread; aligned across or
+// stretched), and texts cut in lines; the primitives that draw them, and
+// the places a click reaches, the last drawn first.
+import { Primitive, Box, Blur, Color, quad, rounded, bordered, transparent } from "./paint";
+import { Font } from "./font";
+import { Align, Start, Center, End, paragraph, measureParagraph } from "./text";
+
+// a size along an axis: as its content, a number of pixels, or a share of
+// the room its siblings leave (`Fill(1.0)` and `Fill(2.0)`: a third and two)
+export type Length = Auto | Px(f32) | Fill(f32);
+
+export type Direction = Row | Column;
+
+// where the children sit along the main axis: packed at the start, the
+// centre or the end, or spread (the room left between them)
+export type Justify = Packed(Align) | Between;
+
+// how a box looks and lays out its children
+export type Style = {
+    width: Length,
+    height: Length,
+    direction: Direction,
+    gap: f32,
+    padding: f32,
+    justify: Justify,
+    // across the main axis: each child at the start, the centre or the end
+    // of the room, or as large as it (`stretch`, a child of an automatic
+    // size)
+    align: Align,
+    stretch: boolean,
+    background: Color,
+    border: f32,
+    borderColor: Color,
+    radius: f32,
+    // a shadow under the box (a blur of 0: none)
+    shadowBlur: f32,
+    shadowY: f32,
+    shadowColor: Color,
+    // the message a click on the box gives (-1: none)
+    onClick: i64,
+};
+
+// how a text looks: its size (`em`, pixels a em), its colour, how its lines are
+// placed in its width, the height of a line
+export type TextStyle = { em: f32, color: Color, align: Align, lineHeight: f32 };
+
+// an element: a box and its children, or a text
+export type Element = Div(Style, Element[k]) | Label(TextStyle, string);
+
+// a place a click reaches: a box and its message
+export type Hit = { x: f32, y: f32, w: f32, h: f32, id: i64 };
+
+// a box that draws nothing and lays out a column
+export function style(): Style {
+    return {
+        width: Auto,
+        height: Auto,
+        direction: Column,
+        gap: 0.0f32,
+        padding: 0.0f32,
+        justify: Packed(Start),
+        align: Start,
+        stretch: true,
+        background: transparent(),
+        border: 0.0f32,
+        borderColor: transparent(),
+        radius: 0.0f32,
+        shadowBlur: 0.0f32,
+        shadowY: 0.0f32,
+        shadowColor: transparent(),
+        onClick: -1,
+    };
+}
+
+// a text of `em` pixels a em in the colour `c`, its lines at the start
+// of its width, 1.4 em apart
+export function textStyle(em: f32, c: Color): TextStyle {
+    return { em: em, color: c, align: Start, lineHeight: em * 1.4f32 };
+}
+
+function isRow(d: Direction): boolean {
+    return match (d) {
+        Row => true,
+        Column => false,
+    };
+}
+
+// the length of an element along the width or the height
+function lengthOf(e: Element, wide: boolean): Length {
+    return match (e) {
+        Div(st, cs) => wide ? st.width : st.height,
+        Label(ts, s) => Auto,
+    };
+}
+
+function share(l: Length): f32 {
+    return match (l) {
+        Fill(k) => k,
+        _ => 0.0f32,
+    };
+}
+
+// the size `l` gives, `content` when it gives none
+function sized(l: Length, content: f32): f32 {
+    return match (l) {
+        Px(v) => v,
+        _ => content,
+    };
+}
+
+// the size of the element `e` (its width, its height) when it has `room`
+// pixels of width: a text cut in lines of that width, a box around its
+// children (their sizes along its main axis added with the gaps, the
+// largest across) and its padding, or the sizes its style fixes
+function measure(f: Font, e: Element, room: f32): [f32, f32] {
+    return match (e) {
+        Label(ts, s) => measureParagraph(f, ts.em, s, room, ts.lineHeight),
+        Div(st, cs) => {
+            const row = isRow(st.direction);
+            const inner = sized(st.width, room) - 2.0f32 * st.padding;
+            const sizes = map(cs, (c) => measure(f, c, inner));
+            const gaps = cs.length > 1 ? f32(cs.length - 1) * st.gap : 0.0f32;
+            const along = fold(sizes, gaps, (a, s) => {
+                const [w, h] = s;
+                return a + (row ? w : h);
+            });
+            const across = fold(sizes, 0.0f32, (a, s) => {
+                const [w, h] = s;
+                return max(a, row ? h : w);
+            });
+            const w = (row ? along : across) + 2.0f32 * st.padding;
+            const h = (row ? across : along) + 2.0f32 * st.padding;
+            return [sized(st.width, w), sized(st.height, h)] as const;
+        },
+    };
+}
+
+// the baseline of the first line of a text in a box at `y`: the line's
+// leading shared above and below the font's height (as CSS places it)
+function baseline(f: Font, ts: TextStyle, y: f32): f32 {
+    const k = ts.em / f32(f.unitsPerEm);
+    const height = f32(f.ascender - f.descender) * k;
+    return y + (ts.lineHeight - height) * 0.5f32 + f32(f.ascender) * k;
+}
+
+// what draws the box of the style `st` at (x, y, w, h): its shadow, its
+// background and border
+function decoration(st: Style, x: f32, y: f32, w: f32, h: f32): Primitive[] {
+    const shadow: Primitive[] = st.shadowBlur > 0.0f32 || st.shadowY != 0.0f32
+        ? [Blur({ x: x, y: y + st.shadowY, w: w, h: h, blur: st.shadowBlur, color: st.shadowColor, topLeft: st.radius, topRight: st.radius, bottomRight: st.radius, bottomLeft: st.radius })]
+        : [];
+    const visible = st.background.a > 0.0f32 || (st.border > 0.0f32 && st.borderColor.a > 0.0f32);
+    const body: Primitive[] = visible ? [Box(bordered(rounded(quad(x, y, w, h, st.background), st.radius), st.border, st.borderColor))] : [];
+    return concat(shadow, body);
+}
+
+// the element `e` laid out in the box (x, y, w, h): what draws it, in the
+// order it is drawn, and the places a click on it reaches
+export function place(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32): [Primitive[], Hit[]] {
+    return match (e) {
+        Label(ts, s) => [paragraph(f, ts.em, s, x, baseline(f, ts, y), w, ts.lineHeight, ts.align, ts.color), []] as const,
+        Div(st, cs) => {
+            const deco = decoration(st, x, y, w, h);
+            const hits: Hit[] = st.onClick >= 0 ? [{ x: x, y: y, w: w, h: h, id: st.onClick }] : [];
+            const row = isRow(st.direction);
+            const n = cs.length;
+            const ix = x + st.padding;
+            const iy = y + st.padding;
+            const iw = max(0.0f32, w - 2.0f32 * st.padding);
+            const ih = max(0.0f32, h - 2.0f32 * st.padding);
+            const mainRoom = row ? iw : ih;
+            const crossRoom = row ? ih : iw;
+            const sizes = map(cs, (c) => measure(f, c, iw));
+            // along the main axis: a share of the room left, or the size
+            // the child has
+            const grows = map(cs, (c) => share(lengthOf(c, row)));
+            const base = map(iota(n), (i) => {
+                const [cw, ch] = sizes[i];
+                return grows[i] > 0.0f32 ? 0.0f32 : (row ? cw : ch);
+            });
+            const gaps = n > 1 ? f32(n - 1) * st.gap : 0.0f32;
+            const used = fold(base, gaps, (a, b) => a + b);
+            const shares = fold(grows, 0.0f32, (a, g) => a + g);
+            const room = max(0.0f32, mainRoom - used);
+            const mains = map(iota(n), (i) => grows[i] > 0.0f32 ? room * grows[i] / shares : base[i]);
+            const left = shares > 0.0f32 ? 0.0f32 : room;
+            const [first, extra] = match (st.justify) {
+                Packed(a) => match (a) {
+                    Start => [0.0f32, 0.0f32] as const,
+                    Center => [left * 0.5f32, 0.0f32] as const,
+                    End => [left, 0.0f32] as const,
+                },
+                Between => [0.0f32, n > 1 ? left / f32(n - 1) : 0.0f32] as const,
+            };
+            const ends = scan(map(iota(n), (i) => mains[i] + st.gap + extra), (a, b) => a + b, 0.0f32);
+            // the frame of each child: across, the room, a size fixed or
+            // the content's, placed by `align`
+            const frames = map(iota(n), (i) => {
+                const c = cs[i];
+                const [cw, ch] = sizes[i];
+                const fixed = match (lengthOf(c, !row)) {
+                    Px(v) => true,
+                    _ => false,
+                };
+                const content = row ? ch : cw;
+                const cross = st.stretch && !fixed ? crossRoom : content;
+                const at = match (st.align) {
+                    Start => 0.0f32,
+                    Center => (crossRoom - cross) * 0.5f32,
+                    End => crossRoom - cross,
+                };
+                const along = first + ends[i] - (mains[i] + st.gap + extra);
+                return row
+                    ? [ix + along, iy + at, mains[i], cross] as const
+                    : [ix + at, iy + along, cross, mains[i]] as const;
+            });
+            return placeFrom(f, cs, frames, 0, deco, hits);
+        },
+    };
+}
+
+// the children `cs` from the `i`-th, each laid out in its frame, after
+// what draws those before (`ps`) and their places (`hs`)
+function placeFrom(f: Font, cs: Element[n], frames: [f32, f32, f32, f32][n], i: i64, ps: Primitive[], hs: Hit[]): [Primitive[], Hit[]] {
+    if (i >= n) {
+        return [ps, hs] as const;
+    }
+    const [x, y, w, h] = frames[i];
+    const [cp, ch] = place(f, cs[i], x, y, w, h);
+    return placeFrom(f, cs, frames, i + 1, concat(ps, cp), concat(hs, ch));
+}
+
+// the message of a click at (px, py): that of the last place drawn that
+// holds it, -1 for none
+export function hitTest(hits: Hit[n], px: f32, py: f32): i64 {
+    return fold(hits, -1, (found, h) => px >= h.x && px < h.x + h.w && py >= h.y && py < h.y + h.h ? h.id : found);
+}

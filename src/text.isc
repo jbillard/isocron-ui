@@ -210,12 +210,12 @@ export function breaks(cps: i64[n], steps: f32[n], width: f32): [i64[], i64] {
     return [starts, count] as const;
 }
 
-// the text `s` at `em` pixels a em in lines of at most `width` pixels
-// (`breaks`), the baseline of the first at `y`, each line `lineHeight`
-// below the one before, placed in [x, x + width] by `align` (a line's
-// width ends at its last character that is neither a space nor a line
-// feed), in the colour `c`: its glyphs, made by one `map` (none copied)
-export function paragraph(f: Font, em: f32, s: string, x: f32, y: f32, width: f32, lineHeight: f32, align: Align, c: Color): Primitive[] {
+// the characters of `s` at `em` pixels a em, their glyphs, their advances
+// (kerning included) and the end of each from the start of the text, and
+// its lines in `width` pixels: the first character of each (`breaks`) and
+// its width (up to its last character that is neither a space nor a line
+// feed)
+function laidOut(f: Font, em: f32, s: string, width: f32): [i64[], i64[], f32[], f32[], i64[], f32[]] {
     const cps = codePoints(s);
     const gs = map(cps, (cp) => glyphOf(f, cp));
     const n = gs.length;
@@ -224,20 +224,41 @@ export function paragraph(f: Font, em: f32, s: string, x: f32, y: f32, width: f3
     const ends = scan(steps, (a, b) => a + b, 0.0f32);
     const [all, count] = breaks(cps, steps, width);
     const starts = all.slice(0, count);
+    const lastInk = scan(map(iota(n), (i) => cps[i] != 32 && cps[i] != 10 ? i : -1), max, -1);
+    const widths = map(iota(count), (j) => {
+        const a = starts[j];
+        const z = j + 1 < count ? starts[j + 1] : n;
+        const last = z > a ? lastInk[z - 1] : -1;
+        return last >= a ? ends[last] - (ends[a] - steps[a]) : 0.0f32;
+    });
+    return [cps, gs, steps, ends, starts, widths] as const;
+}
+
+// the size of the paragraph of `s` (`paragraph`) in `width`: its widest
+// line, and its lines times `lineHeight`
+export function measureParagraph(f: Font, em: f32, s: string, width: f32, lineHeight: f32): [f32, f32] {
+    const [cps, gs, steps, ends, starts, widths] = laidOut(f, em, s, width);
+    return [fold(widths, 0.0f32, (m, w) => more(m, w)), f32(widths.length) * lineHeight] as const;
+}
+
+// the text `s` at `em` pixels a em in lines of at most `width` pixels
+// (`breaks`), the baseline of the first at `y`, each line `lineHeight`
+// below the one before, placed in [x, x + width] by `align` (a line's
+// width ends at its last character that is neither a space nor a line
+// feed), in the colour `c`: its glyphs, made by one `map` (none copied)
+export function paragraph(f: Font, em: f32, s: string, x: f32, y: f32, width: f32, lineHeight: f32, align: Align, c: Color): Primitive[] {
+    const [cps, gs, steps, ends, starts, widths] = laidOut(f, em, s, width);
+    const n = gs.length;
+    const count = starts.length;
     // the line of each character (a line after a final line feed holds
     // none)
     const firsts = filter(iota(count), (j) => starts[j] < n);
     const lineOf = scan(scatter(fill(n, 0), map(firsts, (j) => starts[j]), firsts, (a, z) => z), max, 0);
-    // the pen of the start of each line, and its width up to its last ink
-    const ink = map(cps, (cp) => cp != 32 && cp != 10);
-    const lastInk = scan(map(iota(n), (i) => ink[i] ? i : -1), max, -1);
+    // the pen of the start of each line, placed by `align`
     const shift = map(iota(count), (j) => {
         const a = starts[j];
-        const z = j + 1 < count ? starts[j + 1] : n;
-        const last = z > a ? lastInk[z - 1] : -1;
         const origin = a < n ? ends[a] - steps[a] : 0.0f32;
-        const w = last >= a ? ends[last] - origin : 0.0f32;
-        const free = width - w;
+        const free = width - widths[j];
         const offset = match (align) {
             Start => 0.0f32,
             Center => free * 0.5f32,

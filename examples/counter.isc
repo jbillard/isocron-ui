@@ -1,0 +1,77 @@
+// A counter in the manner of Elm: its model, the messages its buttons
+// give, how a message changes the model, and its view (an element of the
+// library), drawn the same under Linux and Windows.
+import { rgb, rgba, Color } from "../src/paint";
+import { Element, Div, Label, Px, Fill, Auto, Row, Column, Packed, Between, style, textStyle } from "../src/ui";
+import { Start, Center, End } from "../src/text";
+
+export type Model = { count: i64, step: i64 };
+
+// the messages
+export const INCREMENT: i64 = 1;
+export const DECREMENT: i64 = 2;
+export const RESET: i64 = 3;
+export const STEP: i64 = 4;
+
+export function initial(): Model {
+    return { count: 0, step: 1 };
+}
+
+export function update(m: Model, msg: i64): Model {
+    return msg == INCREMENT ? { ...m, count: m.count + m.step }
+        : (msg == DECREMENT ? { ...m, count: m.count - m.step }
+        : (msg == RESET ? { ...m, count: 0 }
+        : (msg == STEP ? { ...m, step: m.step == 1 ? 10 : 1 } : m)));
+}
+
+function button(label: string, id: i64, primary: boolean, width: f32): Element {
+    const blue = rgb(0x2563EBu32);
+    const ink = rgb(0x111827u32);
+    return Div({
+        ...style(),
+        width: Px(width),
+        height: Px(40.0f32),
+        justify: Packed(Center),
+        align: Center,
+        stretch: false,
+        background: primary ? blue : rgb(0xFFFFFFu32),
+        border: primary ? 0.0f32 : 1.0f32,
+        borderColor: rgb(0xD1D5DBu32),
+        radius: 10.0f32,
+        shadowBlur: primary ? 4.0f32 : 0.0f32,
+        shadowY: primary ? 2.0f32 : 0.0f32,
+        shadowColor: rgba(0.15f32, 0.39f32, 0.92f32, 0.35f32),
+        onClick: id,
+    }, [Label({ ...textStyle(label.length <= 3 ? 20.0f32 : 15.0f32, primary ? rgb(0xFFFFFFu32) : ink), align: Center }, label)]);
+}
+
+export function view(m: Model): Element {
+    const ink = rgb(0x111827u32);
+    const gray = rgb(0x6B7280u32);
+    const card = Div({
+        ...style(),
+        width: Px(360.0f32),
+        padding: 24.0f32,
+        gap: 16.0f32,
+        background: rgb(0xFFFFFFu32),
+        radius: 16.0f32,
+        shadowBlur: 12.0f32,
+        shadowY: 6.0f32,
+        shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.18f32),
+    }, [
+        Label(textStyle(14.0f32, gray), "Compteur"),
+        Label({ ...textStyle(44.0f32, ink), lineHeight: 52.0f32 }, `${m.count}`),
+        Div({ ...style(), direction: Row, gap: 10.0f32 }, [
+            button("−", DECREMENT, false, 56.0f32),
+            button("+", INCREMENT, true, 56.0f32),
+            Div({ ...style(), width: Fill(1.0f32) }, []),
+            button("Remettre à zéro", RESET, false, 150.0f32),
+        ]),
+        Div({ ...style(), direction: Row, justify: Between, align: Center, stretch: false }, [
+            Label(textStyle(13.0f32, gray), `Pas de ${m.step}`),
+            button(m.step == 1 ? "Passer à 10" : "Passer à 1", STEP, false, 120.0f32),
+        ]),
+    ]);
+    // the card in the middle of the window
+    return Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), justify: Packed(Center), align: Center, stretch: false, background: rgb(0xF3F4F6u32) }, [card]);
+}

@@ -1,0 +1,42 @@
+// The layout of the counter (examples/counter.isc) in 480 by 320 pixels:
+// the places its clicks reach, then clicks played at their centres and
+// the model they make; a click outside every button gives nothing.
+import { parse } from "../src/font";
+import { place, hitTest, Hit } from "../src/ui";
+import { Model, initial, update, view, INCREMENT, DECREMENT, RESET, STEP } from "../examples/counter";
+import { Font } from "../src/font";
+
+// the centre of the place of the message `id`
+function centre(hits: Hit[n], id: i64): [f32, f32] {
+    const k = findIndex(hits, (h) => h.id == id);
+    return [hits[k].x + hits[k].w * 0.5f32, hits[k].y + hits[k].h * 0.5f32] as const;
+}
+
+// the model after a click on the button of `id`, laid out from `m`
+function click(f: Font, m: Model, id: i64): Model {
+    const [ps, hits] = place(f, view(m), 0.0f32, 0.0f32, 480.0f32, 320.0f32);
+    const [x, y] = centre(hits, id);
+    return update(m, hitTest(hits, x, y));
+}
+
+action main(args: string[k]): i32 {
+    return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => {
+            const m0 = initial();
+            const [ps, hits] = place(f, view(m0), 0.0f32, 0.0f32, 480.0f32, 320.0f32);
+            print(ps.length);
+            print(map(hits, (h) => [h.id, i64(h.x), i64(h.y), i64(h.w), i64(h.h)] as const));
+            const m1 = click(f, click(f, click(f, m0, INCREMENT), INCREMENT), INCREMENT);
+            const m2 = click(f, m1, DECREMENT);
+            const m3 = click(f, click(f, m2, STEP), INCREMENT);
+            print([m1.count, m2.count, m3.count, m3.step] as const);
+            print(update(m3, hitTest(hits, 5.0f32, 5.0f32)).count);
+            print(click(f, m3, RESET).count);
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

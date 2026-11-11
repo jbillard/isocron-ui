@@ -5,6 +5,8 @@ import { Primitive, Box, Blur, Color, quad, rounded, bordered, rgb, rgba, render
 import { encode, crc32 } from "../src/png";
 import { parse } from "../src/font";
 import { line } from "../src/text";
+import { place } from "../src/ui";
+import { view, initial, update, INCREMENT, STEP } from "../examples/counter";
 
 function corners(x: f32, y: f32, w: f32, h: f32, blur: f32, c: Color, r: f32): Primitive {
     return Blur({ x: x, y: y, w: w, h: h, blur: blur, color: c, topLeft: r, topRight: r, bottomRight: r, bottomLeft: r });
@@ -42,7 +44,13 @@ action main(args: string[k]): i32 {
     ]);
     // text: two sizes, accents, kerning (AV), a fraction of a pixel
     match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
-        Ok(f) => scene(args[0], "text", 96, 40, white, concat(line(f, 16.0f32, "AVé€", 4.25f32, 17.0f32, rgb(0x111827u32)), line(f, 11.0f32, "Isocron 0,5", 4.0f32, 33.0f32, rgb(0x2563EBu32)))),
+        Ok(f) => {
+            scene(args[0], "text", 96, 40, white, concat(line(f, 16.0f32, "AVé€", 4.25f32, 17.0f32, rgb(0x111827u32)), line(f, 11.0f32, "Isocron 0,5", 4.0f32, 33.0f32, rgb(0x2563EBu32))));
+            // the layout of the counter (examples/counter.isc), its model
+            // after two messages
+            const [ps, hits] = place(f, view(update(update(initial(), STEP), INCREMENT)), 0.0f32, 0.0f32, 480.0f32, 320.0f32);
+            scene(args[0], "counter", 480, 320, white, ps);
+        },
         Err(e) => print(e),
     };
     return 0;
