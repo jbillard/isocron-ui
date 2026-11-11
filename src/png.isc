@@ -1,0 +1,87 @@
+// PNG files of the images of the library: 8 bits a channel, red, green, blue
+// and alpha (colour type 6), the pixels stored without compression (deflate
+// blocks of type 0): what the tests compare and what a person opens.
+// A pixel is a `u32` `0xAARRGGBB`.
+
+// the table of the CRC-32 of PNG (ISO 3309, the polynomial reversed)
+function crcTable(): u32[256] {
+    return map(iota(256), (n) => fold(iota(8), u32(n), (c, k) => (c & 1u32) != 0u32 ? (0xEDB88320u32 ^ (c >> 1u32)) : c >> 1u32));
+}
+
+// the CRC-32 of `x`
+export function crc32(x: u8[n]): u32 {
+    const t = crcTable();
+    // (`~` missing from Isocron: noted, to add)
+    return fold(x, 0xFFFFFFFFu32, (c, b) => t[i64((c ^ u32(b)) & 0xFFu32)] ^ (c >> 8u32)) ^ 0xFFFFFFFFu32;
+}
+
+// the Adler-32 of `x` (the checksum of zlib), in parts of 5552 bytes: the
+// sums of one part never pass 2^32 before their remainder is taken
+export function adler32(x: u8[n]): u32 {
+    const parts = (x.length + 5551) / 5552;
+    const ab = fold(iota(parts), [1u64, 0u64] as const, (s, p) => {
+        const part = x.slice(p * 5552, min(x.length, p * 5552 + 5552));
+        const [a0, b0] = s;
+        const r = fold(part, [a0, b0] as const, (t, v) => {
+            const [a, b] = t;
+            const a2 = a + u64(v);
+            return [a2, b + a2] as const;
+        });
+        const [a1, b1] = r;
+        return [a1 % 65521u64, b1 % 65521u64] as const;
+    });
+    const [a, b] = ab;
+    return u32((b << 16u64) | a);
+}
+
+// the 4 bytes of `v`, the most significant first
+function be32(v: u32): u8[4] {
+    return [u8(v >> 24u32), u8((v >> 16u32) & 0xFFu32), u8((v >> 8u32) & 0xFFu32), u8(v & 0xFFu32)];
+}
+
+// a chunk: its length, its type, its data, the CRC of the type and the data
+function chunk(kind: string, data: u8[n]): u8[] {
+    const body = concat(bytes(kind), data);
+    return concat(concat(be32(u32(data.length)), body), be32(crc32(body)));
+}
+
+// `x` in the format of zlib, its blocks stored (at most 65535 bytes each)
+export function zlibStored(x: u8[n]): u8[] {
+    const blocks = max(1, (x.length + 65534) / 65535);
+    const total = 2 + 5 * blocks + x.length;
+    const body = map(iota(total), (j) => {
+        if (j < 2) {
+            return j == 0 ? 0x78u8 : 0x01u8;
+        }
+        const k = (j - 2) / 65540;
+        const at = (j - 2) % 65540;
+        const len = min(65535, x.length - k * 65535);
+        if (at == 0) {
+            return k == blocks - 1 ? 1u8 : 0u8;
+        }
+        if (at < 5) {
+            const v = at < 3 ? len : 65535 - len;
+            return (at % 2) == 1 ? u8(v & 255) : u8(v >> 8);
+        }
+        return x[k * 65535 + at - 5];
+    });
+    return concat(body, be32(adler32(x)));
+}
+
+// the PNG file of the `width` by `height` pixels `px` (rows from the top)
+export function encode(width: i64, height: i64, px: u32[n]): u8[] {
+    const row = 1 + 4 * width;
+    // each row after its filter (0: none), each pixel red, green, blue, alpha
+    const raw = map(iota(height * row), (i) => {
+        const x = i % row;
+        if (x == 0) {
+            return 0u8;
+        }
+        const p = px[(i / row) * width + (x - 1) / 4];
+        const c = (x - 1) % 4;
+        return c == 0 ? u8((p >> 16u32) & 0xFFu32) : (c == 1 ? u8((p >> 8u32) & 0xFFu32) : (c == 2 ? u8(p & 0xFFu32) : u8(p >> 24u32)));
+    });
+    const header = concat(concat(be32(u32(width)), be32(u32(height))), [8u8, 6u8, 0u8, 0u8, 0u8]);
+    const signature = [0x89u8, 0x50u8, 0x4Eu8, 0x47u8, 0x0Du8, 0x0Au8, 0x1Au8, 0x0Au8];
+    return concat(concat(concat(signature, chunk("IHDR", header)), chunk("IDAT", zlibStored(raw))), chunk("IEND", []));
+}

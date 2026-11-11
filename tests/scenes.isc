@@ -1,0 +1,42 @@
+// The scenes of the tests: each drawn small (the interpreter draws them
+// too), written as a PNG file into the folder of the first argument; its
+// CRC-32 printed.
+import { Primitive, Box, Blur, Color, quad, rounded, bordered, rgb, rgba, render } from "../src/paint";
+import { encode, crc32 } from "../src/png";
+
+function corners(x: f32, y: f32, w: f32, h: f32, blur: f32, c: Color, r: f32): Primitive {
+    return Blur({ x: x, y: y, w: w, h: h, blur: blur, color: c, topLeft: r, topRight: r, bottomRight: r, bottomLeft: r });
+}
+
+action scene(dir: string, name: string, w: i64, h: i64, base: Color, ps: Primitive[n]): void {
+    const f = encode(w, h, render(w, h, base, ps));
+    writeBytes(`${dir}/${name}.png`, f);
+    print(`${name} ${crc32(f)}`);
+}
+
+action main(args: string[k]): i32 {
+    const white = rgb(0xFFFFFFu32);
+    // a square, a rounded rectangle, a pill, at fractional places
+    scene(args[0], "quads", 64, 48, white, [
+        Box(quad(4.0f32, 4.0f32, 16.0f32, 16.0f32, rgb(0xEF4444u32))),
+        Box(rounded(quad(24.5f32, 4.25f32, 30.0f32, 20.0f32, rgb(0x3B82F6u32)), 6.0f32)),
+        Box(rounded(quad(6.0f32, 30.0f32, 50.0f32, 12.0f32, rgb(0x10B981u32)), 6.0f32)),
+    ]);
+    // borders of different widths, a radius larger than the border
+    scene(args[0], "borders", 64, 48, rgb(0xF3F4F6u32), [
+        Box(bordered(rounded(quad(4.0f32, 4.0f32, 56.0f32, 40.0f32, white), 10.0f32), 3.0f32, rgb(0x111827u32))),
+        Box({ ...quad(14.0f32, 14.0f32, 36.0f32, 20.0f32, rgb(0xFDE68Au32)), borderColor: rgb(0xD97706u32), top: 1.0f32, right: 4.0f32, bottom: 2.0f32, left: 0.0f32, topLeft: 0.0f32, topRight: 8.0f32, bottomRight: 3.0f32, bottomLeft: 0.0f32 }),
+    ]);
+    // colours with alpha over each other, on a transparent base
+    scene(args[0], "alpha", 64, 48, rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32), [
+        Box(rounded(quad(4.0f32, 4.0f32, 36.0f32, 30.0f32, rgba(1.0f32, 0.0f32, 0.0f32, 0.5f32)), 8.0f32)),
+        Box(rounded(quad(24.0f32, 14.0f32, 36.0f32, 30.0f32, rgba(0.0f32, 0.0f32, 1.0f32, 0.5f32)), 8.0f32)),
+    ]);
+    // shadows: sharp, blurred, then their card
+    scene(args[0], "shadows", 64, 48, rgb(0xE5E7EBu32), [
+        corners(10.0f32, 10.0f32, 40.0f32, 24.0f32, 4.0f32, rgba(0.0f32, 0.0f32, 0.0f32, 0.5f32), 6.0f32),
+        Box(rounded(quad(8.0f32, 7.0f32, 40.0f32, 24.0f32, white), 6.0f32)),
+        corners(14.0f32, 38.0f32, 30.0f32, 6.0f32, 0.0f32, rgba(0.2f32, 0.2f32, 0.6f32, 0.7f32), 3.0f32),
+    ]);
+    return 0;
+}

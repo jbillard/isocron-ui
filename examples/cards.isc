@@ -1,0 +1,23 @@
+// Cards on a grey background: shadows, rounded corners, borders, colours
+// with alpha over each other; written to the PNG file of the first argument.
+import { Primitive, Box, Blur, quad, rounded, bordered, rgb, rgba, render } from "../src/paint";
+import { encode } from "../src/png";
+
+action main(args: string[k]): i32 {
+    const shadowColor = rgba(0.0f32, 0.0f32, 0.0f32, 0.35f32);
+    const ps: Primitive[] = [
+        Blur({ x: 44.0f32, y: 48.0f32, w: 300.0f32, h: 180.0f32, blur: 8.0f32, color: shadowColor, topLeft: 16.0f32, topRight: 16.0f32, bottomRight: 16.0f32, bottomLeft: 16.0f32 }),
+        Box(bordered(rounded(quad(40.0f32, 40.0f32, 300.0f32, 180.0f32, rgb(0xFFFFFFu32)), 16.0f32), 2.0f32, rgb(0x3B82F6u32))),
+        Box(rounded(quad(80.0f32, 90.0f32, 120.0f32, 40.0f32, rgb(0x3B82F6u32)), 20.0f32)),
+        Blur({ x: 226.0f32, y: 160.0f32, w: 220.0f32, h: 140.0f32, blur: 12.0f32, color: shadowColor, topLeft: 40.0f32, topRight: 40.0f32, bottomRight: 40.0f32, bottomLeft: 40.0f32 }),
+        Box(bordered(rounded(quad(220.0f32, 150.0f32, 220.0f32, 140.0f32, rgba(0.9f32, 0.2f32, 0.3f32, 0.6f32)), 40.0f32), 6.0f32, rgba(0.1f32, 0.1f32, 0.1f32, 0.8f32))),
+        Blur({ x: 60.0f32, y: 252.0f32, w: 140.0f32, h: 30.0f32, blur: 0.0f32, color: shadowColor, topLeft: 15.0f32, topRight: 15.0f32, bottomRight: 15.0f32, bottomLeft: 15.0f32 }),
+        Box(rounded(quad(60.0f32, 248.0f32, 140.0f32, 30.0f32, rgb(0x10B981u32)), 15.0f32)),
+    ];
+    const t0 = clock();
+    const px = render(480, 320, rgb(0xE5E7EBu32), ps);
+    const t1 = clock();
+    print(`render ${f64(t1 - t0) / 1e6} ms`);
+    writeBytes(args[0], encode(480, 320, px));
+    return 0;
+}

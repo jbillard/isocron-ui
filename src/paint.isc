@@ -1,0 +1,205 @@
+// The primitives of a scene drawn on the processor: rectangles with rounded
+// corners and borders (the quads of GPUI) and their shadows, each pixel the
+// composition of the primitives that cover it, in their order. The formulas are those of the
+// fragment shader of the quads of GPUI (the signed distance to a rounded
+// rectangle, the antialiasing of half a pixel), in `f32`: the same bits on
+// every target and for any number of threads.
+
+// a colour in the space of sRGB, not premultiplied, each channel in [0, 1]
+export type Color = { r: f32, g: f32, b: f32, a: f32 };
+
+// a rectangle of the scene, in pixels: its place and size, its colour, its
+// border (a width for each side, its colour) and the radius of each corner
+export type Quad = {
+    x: f32, y: f32, w: f32, h: f32,
+    background: Color,
+    borderColor: Color,
+    top: f32, right: f32, bottom: f32, left: f32,
+    topLeft: f32, topRight: f32, bottomRight: f32, bottomLeft: f32,
+};
+
+// a shadow: the rectangle it is the shadow of (placed where the shadow
+// falls), the radius of its corners, its blur (the deviation of the
+// gaussian, in pixels; 0: sharp) and its colour
+export type Shadow = {
+    x: f32, y: f32, w: f32, h: f32,
+    blur: f32,
+    color: Color,
+    topLeft: f32, topRight: f32, bottomRight: f32, bottomLeft: f32,
+};
+
+// what a scene holds, drawn in its order
+export type Primitive = Box(Quad) | Blur(Shadow);
+
+export function rgba(r: f32, g: f32, b: f32, a: f32): Color {
+    return { r: r, g: g, b: b, a: a };
+}
+
+// a colour of the form 0xRRGGBB, opaque
+export function rgb(hex: u32): Color {
+    return {
+        r: f32((hex >> 16u32) & 255u32) / 255.0f32,
+        g: f32((hex >> 8u32) & 255u32) / 255.0f32,
+        b: f32(hex & 255u32) / 255.0f32,
+        a: 1.0f32,
+    };
+}
+
+export function transparent(): Color {
+    return { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 };
+}
+
+// a rectangle filled with `c`, without border nor radius
+export function quad(x: f32, y: f32, w: f32, h: f32, c: Color): Quad {
+    return {
+        x: x, y: y, w: w, h: h, background: c, borderColor: transparent(),
+        top: 0.0f32, right: 0.0f32, bottom: 0.0f32, left: 0.0f32,
+        topLeft: 0.0f32, topRight: 0.0f32, bottomRight: 0.0f32, bottomLeft: 0.0f32,
+    };
+}
+
+// `q` with the radius `r` at each corner
+export function rounded(q: Quad, r: f32): Quad {
+    return { ...q, topLeft: r, topRight: r, bottomRight: r, bottomLeft: r };
+}
+
+// `q` with a border of `width` on each side, of colour `c`
+export function bordered(q: Quad, width: f32, c: Color): Quad {
+    return { ...q, borderColor: c, top: width, right: width, bottom: width, left: width };
+}
+
+function clamp01(v: f32): f32 {
+    return min(1.0f32, max(0.0f32, v));
+}
+
+// the signed distance from (px, py) to the rectangle of centre (cx, cy), of
+// half sizes (hw, hh), whose corners have the radius `r` (negative inside)
+function roundedDistance(px: f32, py: f32, cx: f32, cy: f32, hw: f32, hh: f32, r: f32): f32 {
+    const qx = abs(px - cx) - hw + r;
+    const qy = abs(py - cy) - hh + r;
+    const ox = max(qx, 0.0f32);
+    const oy = max(qy, 0.0f32);
+    return sqrt(ox * ox + oy * oy) + min(max(qx, qy), 0.0f32) - r;
+}
+
+// the colour of `q` at the centre (px, py) of a pixel, premultiplied by its
+// coverage: [r, g, b, a]
+function shade(q: Quad, px: f32, py: f32): [f32, f32, f32, f32] {
+    const cx = q.x + q.w * 0.5f32;
+    const cy = q.y + q.h * 0.5f32;
+    const left = px < cx;
+    const above = py < cy;
+    // the corner of the quarter of the pixel, its radius at most half the
+    // smaller side
+    const r0 = above ? (left ? q.topLeft : q.topRight) : (left ? q.bottomLeft : q.bottomRight);
+    const r = min(r0, min(q.w, q.h) * 0.5f32);
+    const outside = roundedDistance(px, py, cx, cy, q.w * 0.5f32, q.h * 0.5f32, r);
+    const cover = clamp01(0.5f32 - outside);
+    // the inner edge of the border: the rectangle less its widths, its
+    // corners less the wider of the two borders that meet there
+    const bx = left ? q.left : q.right;
+    const by = above ? q.top : q.bottom;
+    const ix = q.x + q.left;
+    const iy = q.y + q.top;
+    const iw = max(0.0f32, q.w - q.left - q.right);
+    const ih = max(0.0f32, q.h - q.top - q.bottom);
+    const ir = max(0.0f32, r - max(bx, by));
+    const noBorder = q.top == 0.0f32 && q.right == 0.0f32 && q.bottom == 0.0f32 && q.left == 0.0f32;
+    const inside = noBorder ? cover : min(cover, clamp01(0.5f32 - roundedDistance(px, py, ix + iw * 0.5f32, iy + ih * 0.5f32, iw * 0.5f32, ih * 0.5f32, min(ir, min(iw, ih) * 0.5f32))));
+    const fa = q.background.a * inside;
+    const ba = q.borderColor.a * (cover - inside);
+    return [
+        q.background.r * fa + q.borderColor.r * ba,
+        q.background.g * fa + q.borderColor.g * ba,
+        q.background.b * fa + q.borderColor.b * ba,
+        fa + ba,
+    ] as const;
+}
+
+// the error function, approximated as the shader of GPUI does (Abramowitz
+// and Stegun 7.1.27)
+function erf(v: f32): f32 {
+    const s = v < 0.0f32 ? -1.0f32 : (v > 0.0f32 ? 1.0f32 : 0.0f32);
+    const a = abs(v);
+    const r1 = 1.0f32 + (0.278393f32 + (0.230389f32 + (0.000972f32 + 0.078108f32 * a) * a) * a) * a;
+    const r2 = r1 * r1;
+    return s - s / (r2 * r2);
+}
+
+function gaussian(x: f32, sigma: f32): f32 {
+    return exp(-(x * x) / (2.0f32 * sigma * sigma)) / (sqrt(2.0f32 * f32(Math.PI)) * sigma);
+}
+
+// the blur of the rectangle along x at the height y of its centre (GPUI's
+// `blur_along_x`): the integral of the gaussian across its width there
+function blurAlongX(x: f32, y: f32, sigma: f32, corner: f32, hw: f32, hh: f32): f32 {
+    const delta = min(hh - corner - abs(y), 0.0f32);
+    const curved = hw - corner + sqrt(max(0.0f32, corner * corner - delta * delta));
+    const k = sqrt(0.5f32) / sigma;
+    return 0.5f32 * (erf((x + curved) * k) - erf((x - curved) * k));
+}
+
+// the coverage of a blurred rectangle at (dx, dy) from its centre: the
+// gaussian along y sampled four times where it is not zero
+function blurred(dx: f32, dy: f32, sigma: f32, r: f32, hw: f32, hh: f32): f32 {
+    const low = dy - hh;
+    const high = dy + hh;
+    const start = min(high, max(low, -3.0f32 * sigma));
+    const end = min(high, max(low, 3.0f32 * sigma));
+    const step = (end - start) / 4.0f32;
+    return fold(iota(4), 0.0f32, (acc, i) => {
+        const y = start + step * (f32(i) + 0.5f32);
+        return acc + blurAlongX(dx, dy - y, sigma, r, hw, hh) * gaussian(y, sigma) * step;
+    });
+}
+
+// the colour of the shadow `s` at (px, py), premultiplied by its coverage:
+// sharp, the coverage of its rounded rectangle; blurred, the gaussian
+// integrated along x exactly (`erf`) and along y in four samples, as GPUI
+function shadeShadow(s: Shadow, px: f32, py: f32): [f32, f32, f32, f32] {
+    const hw = s.w * 0.5f32;
+    const hh = s.h * 0.5f32;
+    const dx = px - (s.x + hw);
+    const dy = py - (s.y + hh);
+    const r0 = dy < 0.0f32 ? (dx < 0.0f32 ? s.topLeft : s.topRight) : (dx < 0.0f32 ? s.bottomLeft : s.bottomRight);
+    const r = min(r0, min(s.w, s.h) * 0.5f32);
+    const alpha = s.blur == 0.0f32 ? clamp01(0.5f32 - roundedDistance(px, py, s.x + hw, s.y + hh, hw, hh, r)) : blurred(dx, dy, s.blur, r, hw, hh);
+    const a = s.color.a * alpha;
+    return [s.color.r * a, s.color.g * a, s.color.b * a, a] as const;
+}
+
+// no colour
+const NONE: [f32, f32, f32, f32] = [0.0f32, 0.0f32, 0.0f32, 0.0f32] as const;
+
+// a channel in [0, 1] as a byte
+function byte(v: f32): u32 {
+    return u32(clamp01(v) * 255.0f32 + 0.5f32);
+}
+
+// the `width` by `height` pixels (`0xAARRGGBB`) of the primitives `ps`
+// drawn in their order over the colour `base`
+export function render(width: i64, height: i64, base: Color, ps: Primitive[n]): u32[] {
+    return map(iota(width * height), (i) => {
+        const px = f32(i % width) + 0.5f32;
+        const py = f32(i / width) + 0.5f32;
+        const start = [base.r * base.a, base.g * base.a, base.b * base.a, base.a] as const;
+        const c = fold(ps, start, (d, p) => {
+            const [sr, sg, sb, sa] = match (p) {
+                Box(q) => px > q.x - 1.0f32 && px < q.x + q.w + 1.0f32 && py > q.y - 1.0f32 && py < q.y + q.h + 1.0f32 ? shade(q, px, py) : NONE,
+                Blur(s) => {
+                    // a shadow is drawn in its rectangle grown by three
+                    // deviations, as GPUI draws it (zero beyond, to `f32`)
+                    const m = 3.0f32 * s.blur + 1.0f32;
+                    return px > s.x - m && px < s.x + s.w + m && py > s.y - m && py < s.y + s.h + m ? shadeShadow(s, px, py) : NONE;
+                },
+            };
+            const [dr, dg, db, da] = d;
+            const k = 1.0f32 - sa;
+            return [sr + dr * k, sg + dg * k, sb + db * k, sa + da * k] as const;
+        });
+        const [r, g, b, a] = c;
+        // back to colours not premultiplied
+        const inv = a > 0.0f32 ? 1.0f32 / a : 0.0f32;
+        return (byte(a) << 24u32) | (byte(r * inv) << 16u32) | (byte(g * inv) << 8u32) | byte(b * inv);
+    });
+}

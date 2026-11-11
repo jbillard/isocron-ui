@@ -1,0 +1,21 @@
+import { crc32, adler32, zlibStored, encode } from "../src/png";
+
+function hex(v: u32): string {
+    const d = "0123456789abcdef";
+    return join(map(iota(8), (i) => {
+        const k = i64((v >> u32(28 - 4 * i)) & 15u32);
+        return d.slice(k, k + 1);
+    }), "");
+}
+
+action main(args: string[k]): i32 {
+    print(hex(crc32(bytes("IEND"))));
+    print(hex(adler32(bytes("Wikipedia"))));
+    print(hex(adler32(map(iota(100000), (i) => u8(i % 251)))));
+    print(zlibStored(bytes("abc")));
+    const px = map(iota(6), (i) => i % 2 == 0 ? 0xFFFF0000u32 : 0x800000FFu32);
+    const f = encode(3, 2, px);
+    print(f.length);
+    writeBytes(args[0], f);
+    return 0;
+}
