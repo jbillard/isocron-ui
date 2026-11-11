@@ -126,8 +126,17 @@ function erf(v: f32): f32 {
     return s - s / (r2 * r2);
 }
 
+// e^x for x in [-4.5, 0], the exponents of the gaussian of a shadow (its
+// samples within three deviations): (1 + x/1024)^1024, ten squarings, less
+// than 1 % from e^x there, as precise as the `exp` of a GPU for a blur, and
+// computed for many pixels at once (the `exp` of the prelude is a call for
+// each)
+function expNear(x: f32): f32 {
+    return fold(iota(10), 1.0f32 + x / 1024.0f32, (v, i) => v * v);
+}
+
 function gaussian(x: f32, sigma: f32): f32 {
-    return exp(-(x * x) / (2.0f32 * sigma * sigma)) / (sqrt(2.0f32 * f32(Math.PI)) * sigma);
+    return expNear(-(x * x) / (2.0f32 * sigma * sigma)) / (sqrt(2.0f32 * f32(Math.PI)) * sigma);
 }
 
 // the blur of the rectangle along x at the height y of its centre (GPUI's
@@ -196,47 +205,139 @@ const TILE: i64 = 16;
 // the primitives that may colour a pixel of a tile, in their order
 type Bin = { ids: i64[] };
 
+// a colour premultiplied: red, green, blue, alpha
+type Px = [f32, f32, f32, f32];
+
+// `s` over `d`, both premultiplied
+function over(d: Px, s: Px): Px {
+    const [sr, sg, sb, sa] = s;
+    const [dr, dg, db, da] = d;
+    const k = 1.0f32 - sa;
+    return [sr + dr * k, sg + dg * k, sb + db * k, sa + da * k] as const;
+}
+
+// a colour premultiplied as a pixel `0xAARRGGBB`, not premultiplied
+function pack(c: Px): u32 {
+    const [r, g, b, a] = c;
+    const inv = a > 0.0f32 ? 1.0f32 / a : 0.0f32;
+    return (byte(a) << 24u32) | (byte(r * inv) << 16u32) | (byte(g * inv) << 8u32) | byte(b * inv);
+}
+
+// the coverage of `q` at the centre (px, py) of a pixel: the part of the
+// pixel inside its outer edge (`shade`'s `cover`)
+function coverOf(q: Quad, px: f32, py: f32): f32 {
+    const cx = q.x + q.w * 0.5f32;
+    const cy = q.y + q.h * 0.5f32;
+    const left = px < cx;
+    const above = py < cy;
+    const r0 = above ? (left ? q.topLeft : q.topRight) : (left ? q.bottomLeft : q.bottomRight);
+    const r = min(r0, min(q.w, q.h) * 0.5f32);
+    return clamp01(0.5f32 - roundedDistance(px, py, cx, cy, q.w * 0.5f32, q.h * 0.5f32, r));
+}
+
+// the part of the pixel inside the inner edge of the border of `q`, at
+// most `cover` (`shade`'s `inside`)
+function insideOf(q: Quad, px: f32, py: f32, cover: f32): f32 {
+    const cx = q.x + q.w * 0.5f32;
+    const cy = q.y + q.h * 0.5f32;
+    const left = px < cx;
+    const above = py < cy;
+    const r0 = above ? (left ? q.topLeft : q.topRight) : (left ? q.bottomLeft : q.bottomRight);
+    const r = min(r0, min(q.w, q.h) * 0.5f32);
+    const bx = left ? q.left : q.right;
+    const by = above ? q.top : q.bottom;
+    const ix = q.x + q.left;
+    const iy = q.y + q.top;
+    const iw = max(0.0f32, q.w - q.left - q.right);
+    const ih = max(0.0f32, q.h - q.top - q.bottom);
+    const ir = max(0.0f32, r - max(bx, by));
+    const noBorder = q.top == 0.0f32 && q.right == 0.0f32 && q.bottom == 0.0f32 && q.left == 0.0f32;
+    return noBorder ? cover : min(cover, clamp01(0.5f32 - roundedDistance(px, py, ix + iw * 0.5f32, iy + ih * 0.5f32, iw * 0.5f32, ih * 0.5f32, min(ir, min(iw, ih) * 0.5f32))));
+}
+
+// the alpha of the shadow `s` at (px, py) (`shadeShadow`'s)
+function shadowAlpha(s: Shadow, px: f32, py: f32): f32 {
+    const [r, g, b, a] = shadeShadow(s, px, py);
+    return a;
+}
+
+// the channels of the pixels of a tile, premultiplied
+type Channels = [f32[256], f32[256], f32[256], f32[256]];
+
+// the 256 pixels of the tile `t` (of `tx` tiles a row), row after row: the
+// primitives `ids` drawn over `base`, each over the 256 pixels at once, a
+// channel after the other (loops the compiler makes of vector
+// instructions), as a GPU draws
+function tile(t: i64, tx: i64, base: Color, ps: Primitive[n], boxes: [f32, f32, f32, f32][n], ids: i64[]): u32[256] {
+    const ox = f32((t % tx) * TILE) + 0.5f32;
+    const oy = f32((t / tx) * TILE) + 0.5f32;
+    const start: Channels = [fill(256, base.r * base.a), fill(256, base.g * base.a), fill(256, base.b * base.a), fill(256, base.a)] as const;
+    const c = fold(ids, start, (acc, k) => {
+        const [r, g, b, a] = acc;
+        const [x0, y0, x1, y1] = boxes[k];
+        return match (ps[k]) {
+            Box(q) => {
+                const cover = map(iota(256), (j) => {
+                    const px = ox + f32(j % TILE);
+                    const py = oy + f32(j / TILE);
+                    return px > x0 && px < x1 && py > y0 && py < y1 ? coverOf(q, px, py) : 0.0f32;
+                });
+                const inside = map(iota(256), (j) => {
+                    const px = ox + f32(j % TILE);
+                    const py = oy + f32(j / TILE);
+                    // (read before the condition: a branch that cannot fail
+                    // is computed for every pixel at once)
+                    const cj = cover[j];
+                    return px > x0 && px < x1 && py > y0 && py < y1 ? insideOf(q, px, py, cj) : 0.0f32;
+                });
+                // the fill and the border, then each channel over the tile
+                const fa = map(iota(256), (j) => q.background.a * inside[j]);
+                const ba = map(iota(256), (j) => q.borderColor.a * (cover[j] - inside[j]));
+                const over = (d: f32[256], fc: f32, bc: f32) => map(iota(256), (j) => (fc * fa[j] + bc * ba[j]) + d[j] * (1.0f32 - (fa[j] + ba[j])));
+                return [over(r, q.background.r, q.borderColor.r), over(g, q.background.g, q.borderColor.g), over(b, q.background.b, q.borderColor.b), map(iota(256), (j) => (fa[j] + ba[j]) + a[j] * (1.0f32 - (fa[j] + ba[j])))] as const;
+            },
+            Blur(sh) => {
+                const sa = map(iota(256), (j) => {
+                    const px = ox + f32(j % TILE);
+                    const py = oy + f32(j / TILE);
+                    return px > x0 && px < x1 && py > y0 && py < y1 ? shadowAlpha(sh, px, py) : 0.0f32;
+                });
+                const over = (d: f32[256], cc: f32) => map(iota(256), (j) => cc * sa[j] + d[j] * (1.0f32 - sa[j]));
+                return [over(r, sh.color.r), over(g, sh.color.g), over(b, sh.color.b), map(iota(256), (j) => sa[j] + a[j] * (1.0f32 - sa[j]))] as const;
+            },
+        };
+    });
+    const [r, g, b, a] = c;
+    return map(iota(256), (j) => pack([r[j], g[j], b[j], a[j]] as const));
+}
+
 // the `width` by `height` pixels (`0xAARRGGBB`) of the primitives `ps`
 // drawn in their order over the colour `base`. The image is cut in tiles
 // of 16 by 16 pixels, each with the primitives whose box reaches one of
 // its centres of pixels: a pixel is drawn with those alone, the others
 // colouring nothing there (the same test, so the same bits as drawing
-// every primitive at every pixel).
+// every primitive at every pixel). The tiles in parallel, the pixels of a
+// tile together.
 export function render(width: i64, height: i64, base: Color, ps: Primitive[n]): u32[] {
     const tx = (width + TILE - 1) / TILE;
     const ty = (height + TILE - 1) / TILE;
     const boxes = map(ps, (p) => reach(p));
-    const bins = map(iota(tx * ty), (t) => {
+    const tiles = map(iota(tx * ty), (t) => {
         // the centres of the first and last pixels of the tile
         const cx0 = f32((t % tx) * TILE) + 0.5f32;
         const cy0 = f32((t / tx) * TILE) + 0.5f32;
         const cx1 = cx0 + f32(TILE - 1);
         const cy1 = cy0 + f32(TILE - 1);
-        return { ids: filter(iota(ps.length), (k) => {
+        const ids = filter(iota(ps.length), (k) => {
             const [x0, y0, x1, y1] = boxes[k];
             return cx1 > x0 && cx0 < x1 && cy1 > y0 && cy0 < y1;
-        }) };
+        });
+        return tile(t, tx, base, ps, boxes, ids);
     });
+    // the tiles back to rows of the image
     return map(iota(width * height), (i) => {
         const x = i % width;
         const y = i / width;
-        const px = f32(x) + 0.5f32;
-        const py = f32(y) + 0.5f32;
-        const start = [base.r * base.a, base.g * base.a, base.b * base.a, base.a] as const;
-        const c = fold(bins[(y / TILE) * tx + x / TILE].ids, start, (d, k) => {
-            const p = ps[k];
-            const [x0, y0, x1, y1] = boxes[k];
-            const [sr, sg, sb, sa] = px > x0 && px < x1 && py > y0 && py < y1 ? match (p) {
-                Box(q) => shade(q, px, py),
-                Blur(s) => shadeShadow(s, px, py),
-            } : NONE;
-            const [dr, dg, db, da] = d;
-            const k1 = 1.0f32 - sa;
-            return [sr + dr * k1, sg + dg * k1, sb + db * k1, sa + da * k1] as const;
-        });
-        const [r, g, b, a] = c;
-        // back to colours not premultiplied
-        const inv = a > 0.0f32 ? 1.0f32 / a : 0.0f32;
-        return (byte(a) << 24u32) | (byte(r * inv) << 16u32) | (byte(g * inv) << 8u32) | byte(b * inv);
+        return tiles[(y / TILE) * tx + x / TILE][(y % TILE) * TILE + x % TILE];
     });
 }
