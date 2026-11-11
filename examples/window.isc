@@ -2,12 +2,14 @@
 // toplevel made, its configuration acknowledged, the scene drawn into memory
 // shared with the compositor, shown, the frames counted. Ends after
 // `frames` frames (the first argument, 1 by default) or when the window is
-// closed; prints what happened.
+// closed; prints what happened. With `plate` as second argument, the plate
+// of the gallery (1280 by 1040) instead of the small scene.
 import * as unix from "unix";
 import * as net from "net";
 import * as sys from "sys";
 import * as wl from "../src/wayland";
 import { Primitive, Box, Blur, quad, rounded, bordered, rgb, rgba, render } from "../src/paint";
+import { plate } from "./gallery_plate";
 
 // the scene of the window, `w` by `h` pixels
 function scene(w: i64, h: i64): Primitive[] {
@@ -24,7 +26,7 @@ function scene(w: i64, h: i64): Primitive[] {
 }
 
 // what the loop keeps from one read to the next
-type State = { pending: u8[], shown: boolean, frames: i64, w: i64, h: i64, done: boolean, failed: string };
+type State = { pending: u8[], shown: boolean, frames: i64, w: i64, h: i64, done: boolean, failed: string, plate: boolean };
 
 // the bytes received, until the reply of `wl_display.sync` (all the
 // globals have come before it): the globals
@@ -41,10 +43,10 @@ action globals(c: net.Conn, pending: u8[], g: wl.Globals): wl.Globals {
 }
 
 // the scene drawn into a new memory shared, given to the compositor, shown
-action show(c: net.Conn, w: i64, h: i64): boolean {
+action show(c: net.Conn, w: i64, h: i64, full: boolean): boolean {
     return match (unix.shared(w * h * 4)) {
         Ok(m) => {
-            const px = render(w, h, rgb(0xE5E7EBu32), scene(w, h));
+            const px = full ? render(w, h, rgb(0xF3F4F6u32), plate()) : render(w, h, rgb(0xE5E7EBu32), scene(w, h));
             const written = unix.writeSharedU32(m, 0, px);
             const sent = unix.sendWithFds(c, wl.bufferRequests(w * h * 4, w, h), [unix.sharedFd(m)]);
             const shown = net.write(c, wl.showRequests(w, h));
@@ -99,7 +101,7 @@ action configured(c: net.Conn, serial: u32, st: State): State {
         return st;
     }
     print(`configured ${st.w}x${st.h}`);
-    return { ...st, shown: show(c, st.w, st.h) };
+    return { ...st, shown: show(c, st.w, st.h, st.plate) };
 }
 
 // a frame shown: counted; the next one asked until `frames` of them
@@ -136,7 +138,8 @@ action main(args: string[k]): i32 {
                 return 1;
             }
             const made = net.write(c, wl.windowRequests(g, "isocron-ui"));
-            const s = loop(c, { pending: [], shown: false, frames: 0, w: 480, h: 320, done: false, failed: "" }, frames);
+            const full = args.length > 1 && args[1] == "plate";
+            const s = loop(c, { pending: [], shown: false, frames: 0, w: full ? 1280 : 480, h: full ? 1040 : 320, done: false, failed: "", plate: full }, frames);
             net.close(c);
             if (s.failed != "") {
                 print(`failed: ${s.failed}`);

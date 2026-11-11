@@ -4,7 +4,8 @@
 # tools/display`), then writes a screenshot of its output to SHOT (a PNG).
 #   tools/display/run.sh SHOT COMMAND...
 # The command sees WAYLAND_DISPLAY and XDG_RUNTIME_DIR; its exit code is
-# this script's. The compositor runs as the user of the host (its socket
+# this script's. WESTON_WIDTH and WESTON_HEIGHT: the size of the screen
+# (640 by 480 by default). The compositor runs as the user of the host (its socket
 # then belongs to it) and is stopped at the end.
 set -euo pipefail
 shot="$1"
@@ -15,7 +16,7 @@ name="isocron-ui-weston-$$"
 docker run -d --rm --name "$name" --user "$(id -u):$(id -g)" \
     -v "$dir:/run/display" -e XDG_RUNTIME_DIR=/run/display \
     isocron-ui-display weston --backend=headless-backend.so --use-pixman \
-    --socket=wayland-test --width=640 --height=480 --idle-time=0 --debug > /dev/null
+    --socket=wayland-test --width="${WESTON_WIDTH:-640}" --height="${WESTON_HEIGHT:-480}" --idle-time=0 --debug > /dev/null
 cleanup() {
     docker stop -t 2 "$name" > /dev/null 2>&1 || true
     rm -r -- "$dir"
