@@ -82,14 +82,14 @@ function hand(m: Model, id: i64): Hand {
 
 export function view(m: Model): Element {
     const fill = valueAt(m.fill, m.now);
-    const band = Div({ ...style(), direction: Row, gap: 20.0f32, align: Center, stretch: false, padding: 24.0f32, height: Px(96.0f32) }, [
-        withTip(button("Animer", ANIMATE, true, Px(120.0f32), hand(m, ANIMATE)), "Remplit la barre en une seconde"),
-        progress(fill, 240.0f32),
+    const band = Div({ ...style(), direction: Row, gap: 16.0f32, align: Center, stretch: false, padding: 16.0f32, height: Px(64.0f32) }, [
+        withTip(button("Animer", ANIMATE, true, Px(96.0f32), hand(m, ANIMATE)), "Remplit la barre en une seconde"),
+        progress(fill, 200.0f32),
         // (its width fixed: the components after it do not move with it)
-        Div({ ...style(), width: Px(44.0f32) }, [Label(textStyle(14.0f32, rgb(MUTED)), `${i64(fill * 100.0f32 + 0.5f32)} %`)]),
+        Div({ ...style(), width: Px(40.0f32) }, [Label(textStyle(13.0f32, rgb(MUTED)), `${i64(fill * 100.0f32 + 0.5f32)} %`)]),
         withTip(toggleAt(valueAt(m.knob, m.now), TOGGLE), "Le bouton glisse en 200 ms"),
         withTip(iconButton("?", HELP, false, hand(m, HELP)), "Une infobulle : le pointeur immobile une demi-seconde"),
-        Label(textStyle(14.0f32, rgb(INK)), "Survolez un bouton, cliquez « Animer » et l'interrupteur"),
+        Label(textStyle(13.0f32, rgb(INK)), "Survolez un bouton, cliquez « Animer » et l'interrupteur"),
     ]);
     return Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), scroll: 0, background: rgb(0xF3F4F6u32), cursor: ARROW }, [
         band,

@@ -23,8 +23,9 @@ export const TRACK: u32 = 0xE5E7EBu32;
 export const GREEN: u32 = 0x10B981u32;
 export const DANGER: u32 = 0xEF4444u32;
 
-// the height of a button and of a field
-export const HEIGHT: f32 = 40.0f32;
+// the height of a button and of a field: that of the applications of a
+// desktop (26 in VS Code, 32 in Windows 11), not of a page of the web
+export const HEIGHT: f32 = 28.0f32;
 
 // what a component shows of the hand: under the pointer, pressed
 export type Hand = { hovered: boolean, pressed: boolean };
@@ -43,55 +44,53 @@ function centred(em: f32, c: Color): TextStyle {
     return { ...textStyle(em, c), align: Center };
 }
 
-// a button: its label, its message, primary (filled with the accent, a
-// shadow of it under) or secondary (white, bordered with the accent), its
-// width (`Auto`: its label and 18 pixels each side); 40 pixels high, its
-// corners of 8 pixels; under the pointer darker, pressed darker still
+// a button: its label, its message, primary (filled with the accent) or
+// secondary (white, bordered with the accent), its width (`Auto`: its label
+// and 12 pixels each side); 28 pixels high, its corners of 8 pixels, its
+// label of 13; under the pointer darker, pressed darker still
 export function button(label: string, id: i64, primary: boolean, width: Length, h: Hand): Element {
     const fill = h.pressed ? ACCENT_PRESSED : (h.hovered ? ACCENT_HOVER : ACCENT);
     return Div({
         ...style(),
         width: width,
         height: Px(HEIGHT),
-        padX: 18.0f32,
+        padX: 12.0f32,
         padY: 0.0f32,
         justify: Packed(Center),
         align: Center,
         stretch: false,
         background: primary ? rgb(fill) : (h.hovered ? rgb(0xEFF6FFu32) : rgb(0xFFFFFFu32)),
-        border: primary ? 0.0f32 : 2.0f32,
+        border: primary ? 0.0f32 : 1.5f32,
         borderColor: rgb(h.pressed ? ACCENT_PRESSED : ACCENT),
         radius: 8.0f32,
-        shadowBlur: primary && !h.pressed ? 4.0f32 : 0.0f32,
-        shadowY: primary && !h.pressed ? 2.0f32 : 0.0f32,
-        shadowColor: rgba(0.23f32, 0.51f32, 0.96f32, 0.5f32),
         onClick: id,
         focusable: true,
-    }, [Label(centred(15.0f32, primary ? rgb(0xFFFFFFu32) : rgb(h.pressed ? ACCENT_PRESSED : ACCENT)), label)]);
+    }, [Label(centred(13.0f32, primary ? rgb(0xFFFFFFu32) : rgb(h.pressed ? ACCENT_PRESSED : ACCENT)), label)]);
 }
 
-// a small square button holding a symbol (`×`): clear, grey; under the
-// pointer, a ground of red and the symbol red when `danger`, else grey
+// a small square button holding a symbol (`×`), 22 pixels: clear, grey;
+// under the pointer, a ground of red and the symbol red when `danger`, else
+// grey
 export function iconButton(symbol: string, id: i64, danger: boolean, h: Hand): Element {
     const lit = h.hovered || h.pressed;
     return Div({
         ...style(),
-        width: Px(28.0f32),
-        height: Px(28.0f32),
+        width: Px(22.0f32),
+        height: Px(22.0f32),
         justify: Packed(Center),
         align: Center,
         stretch: false,
         background: lit ? (danger ? rgb(0xFEE2E2u32) : rgb(0xF3F4F6u32)) : clear(),
-        radius: 6.0f32,
+        radius: 5.0f32,
         onClick: id,
         focusable: true,
-    }, [Label(centred(16.0f32, lit ? (danger ? rgb(0xDC2626u32) : rgb(INK)) : rgb(HINT)), symbol)]);
+    }, [Label(centred(14.0f32, lit ? (danger ? rgb(0xDC2626u32) : rgb(INK)) : rgb(HINT)), symbol)]);
 }
 
 // a field of text: its text, caret and selection, its focus, its hint, its
-// message, its width; 40 pixels high, its corners of 8 pixels, its text of
-// 14 pixels 14 pixels from its left side; bordered with grey, with the
-// focus with the accent and a ring of it around (4 pixels, a quarter)
+// message, its width; 28 pixels high, its corners of 8 pixels, its text of
+// 13 pixels 8 pixels from its left side; bordered with grey, with the focus
+// with the accent and a ring of it around (3 pixels, a quarter)
 export function textField(ed: Editing, focused: boolean, hint: string, id: i64, width: Length): Element {
     return Div({
         ...style(),
@@ -100,88 +99,88 @@ export function textField(ed: Editing, focused: boolean, hint: string, id: i64, 
         direction: Row,
         align: Center,
         stretch: false,
-        padX: 14.0f32,
+        padX: 8.0f32,
         padY: 0.0f32,
         background: rgb(0xFFFFFFu32),
         border: focused ? 1.5f32 : 1.0f32,
         borderColor: focused ? rgb(ACCENT) : rgb(LINE),
         radius: 8.0f32,
-        outline: focused ? 4.0f32 : 0.0f32,
+        outline: focused ? 3.0f32 : 0.0f32,
         outlineColor: rgba(0.23f32, 0.51f32, 0.96f32, 0.25f32),
         onClick: id,
         focusable: true,
         cursor: TEXT,
-    }, [Div({ ...style(), width: Fill(1.0f32) }, [Input(textStyle(14.0f32, rgb(INK)), ed, focused, hint)])]);
+    }, [Div({ ...style(), width: Fill(1.0f32) }, [Input(textStyle(13.0f32, rgb(INK)), ed, focused, hint)])]);
 }
 
-// a box to tick: 28 pixels, its corners of 6; ticked, filled with the
+// a box to tick: 18 pixels, its corners of 4; ticked, filled with the
 // accent and a white square in it; else white, bordered with grey (with
 // the accent under the pointer)
 export function checkbox(ticked: boolean, id: i64, h: Hand): Element {
     return Div({
         ...style(),
-        width: Px(28.0f32),
-        height: Px(28.0f32),
+        width: Px(18.0f32),
+        height: Px(18.0f32),
         justify: Packed(Center),
         align: Center,
         stretch: false,
         background: ticked ? rgb(h.hovered ? ACCENT_HOVER : ACCENT) : rgb(0xFFFFFFu32),
-        border: ticked ? 0.0f32 : 2.0f32,
+        border: ticked ? 0.0f32 : 1.5f32,
         borderColor: h.hovered ? rgb(ACCENT) : rgb(HINT),
-        radius: 6.0f32,
+        radius: 4.0f32,
         onClick: id,
         focusable: true,
-    }, ticked ? [Div({ ...style(), width: Px(10.0f32), height: Px(10.0f32), background: rgb(0xFFFFFFu32), radius: 2.0f32 }, [])] : []);
+    }, ticked ? [Div({ ...style(), width: Px(7.0f32), height: Px(7.0f32), background: rgb(0xFFFFFFu32), radius: 1.5f32 }, [])] : []);
 }
 
-// a choice among several: a circle of 28 pixels bordered with the accent,
-// a dot of 12 in it when chosen (grey without it)
+// a choice among several: a circle of 18 pixels bordered with the accent,
+// a dot of 8 in it when chosen (grey without it)
 export function radio(chosen: boolean, id: i64, h: Hand): Element {
     return Div({
         ...style(),
-        width: Px(28.0f32),
-        height: Px(28.0f32),
+        width: Px(18.0f32),
+        height: Px(18.0f32),
         justify: Packed(Center),
         align: Center,
         stretch: false,
         background: rgb(0xFFFFFFu32),
-        border: 2.0f32,
+        border: 1.5f32,
         borderColor: chosen || h.hovered ? rgb(ACCENT) : rgb(HINT),
-        radius: 14.0f32,
+        radius: 9.0f32,
         onClick: id,
         focusable: true,
-    }, chosen ? [Div({ ...style(), width: Px(12.0f32), height: Px(12.0f32), background: rgb(ACCENT), radius: 6.0f32 }, [])] : []);
+    }, chosen ? [Div({ ...style(), width: Px(8.0f32), height: Px(8.0f32), background: rgb(ACCENT), radius: 4.0f32 }, [])] : []);
 }
 
-// the knob of a switch and of a slider: a white disc of 26 pixels, a small
+// the knob of a switch and of a slider: a white disc of 16 pixels, a small
 // shadow under it
 function knob(): Element {
     return Div({
         ...style(),
-        width: Px(26.0f32),
-        height: Px(26.0f32),
+        width: Px(16.0f32),
+        height: Px(16.0f32),
         background: rgb(0xFFFFFFu32),
-        radius: 13.0f32,
-        shadowBlur: 2.0f32,
-        shadowY: 1.0f32,
+        radius: 8.0f32,
+        shadowBlur: 1.0f32,
+        shadowY: 0.5f32,
         shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.35f32),
     }, []);
 }
 
-// a switch: 64 by 32 pixels, green with its knob at the right when on, grey
+// a switch: 36 by 20 pixels, green with its knob at the right when on, grey
 // with it at the left when off
 export function toggle(on: boolean, id: i64): Element {
     return Div({
         ...style(),
-        width: Px(64.0f32),
-        height: Px(32.0f32),
+        width: Px(36.0f32),
+        height: Px(20.0f32),
         direction: Row,
-        padding: 3.0f32,
+        padding: 2.0f32,
         justify: Packed(on ? End : Start),
         align: Center,
         stretch: false,
         background: on ? rgb(GREEN) : rgb(LINE),
-        radius: 16.0f32,
+        radius: 10.0f32,
         onClick: id,
         focusable: true,
     }, [knob()]);
@@ -196,18 +195,18 @@ export function toggleAt(at: f32, id: i64): Element {
     const c = { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: 1.0f32 };
     return Div({
         ...style(),
-        width: Px(64.0f32),
-        height: Px(32.0f32),
+        width: Px(36.0f32),
+        height: Px(20.0f32),
         direction: Row,
-        padding: 3.0f32,
+        padding: 2.0f32,
         justify: Packed(Start),
         align: Center,
         stretch: false,
         background: c,
-        radius: 16.0f32,
+        radius: 10.0f32,
         onClick: id,
         focusable: true,
-    }, [Div({ ...style(), width: Px(32.0f32 * t), height: Px(26.0f32) }, []), knob()]);
+    }, [Div({ ...style(), width: Px(16.0f32 * t), height: Px(16.0f32) }, []), knob()]);
 }
 
 // the element `e` (a box: a component) with its style changed by `f` (the
@@ -228,56 +227,56 @@ export function withTip(e: Element, text: string): Element {
     };
 }
 
-// a slider of `width` pixels at `value` (0 to 1): its track of 6 pixels,
-// the accent before its knob, grey after it
+// a slider of `width` pixels at `value` (0 to 1), 20 high: its track of 4
+// pixels, the accent before its knob, grey after it
 export function slider(value: f32, id: i64, width: f32): Element {
-    const room = width - 26.0f32;
+    const room = width - 16.0f32;
     const at = min(1.0f32, max(0.0f32, value)) * room;
     return Div({
         ...style(),
         width: Px(width),
-        height: Px(32.0f32),
+        height: Px(20.0f32),
         direction: Row,
         align: Center,
         stretch: false,
         onClick: id,
         focusable: true,
     }, [
-        Div({ ...style(), width: Px(at), height: Px(6.0f32), background: rgb(ACCENT), radius: 3.0f32 }, []),
+        Div({ ...style(), width: Px(at), height: Px(4.0f32), background: rgb(ACCENT), radius: 2.0f32 }, []),
         knob(),
-        Div({ ...style(), width: Px(room - at), height: Px(6.0f32), background: rgb(LINE), radius: 3.0f32 }, []),
+        Div({ ...style(), width: Px(room - at), height: Px(4.0f32), background: rgb(LINE), radius: 2.0f32 }, []),
     ]);
 }
 
-// a bar of progress of `width` pixels at `value` (0 to 1): 12 pixels high,
+// a bar of progress of `width` pixels at `value` (0 to 1): 8 pixels high,
 // green on grey
 export function progress(value: f32, width: f32): Element {
-    return Div({ ...style(), width: Px(width), height: Px(12.0f32), direction: Row, background: rgb(TRACK), radius: 6.0f32 }, [
-        Div({ ...style(), width: Px(min(1.0f32, max(0.0f32, value)) * width), height: Px(12.0f32), background: rgb(GREEN), radius: 6.0f32 }, []),
+    return Div({ ...style(), width: Px(width), height: Px(8.0f32), direction: Row, background: rgb(TRACK), radius: 4.0f32 }, [
+        Div({ ...style(), width: Px(min(1.0f32, max(0.0f32, value)) * width), height: Px(8.0f32), background: rgb(GREEN), radius: 4.0f32 }, []),
     ]);
 }
 
 // a control of segments: their labels, the one chosen, the message of the
 // first (each the next one), the width of a segment: grey, the one chosen
-// white and raised; 44 pixels high
+// white and raised; 30 pixels high
 export function segments(labels: string[n], chosen: i64, first: i64, each: f32): Element {
     return Div({
         ...style(),
         direction: Row,
-        padding: 4.0f32,
+        padding: 3.0f32,
         background: rgb(TRACK),
-        radius: 10.0f32,
+        radius: 8.0f32,
         align: Center,
         stretch: false,
     }, map(iota(n), (k) => Div({
         ...style(),
         width: Px(each),
-        height: Px(36.0f32),
+        height: Px(24.0f32),
         justify: Packed(Center),
         align: Center,
         stretch: false,
         background: k == chosen ? rgb(0xFFFFFFu32) : clear(),
-        radius: 8.0f32,
+        radius: 6.0f32,
         shadowBlur: k == chosen ? 2.0f32 : 0.0f32,
         shadowY: k == chosen ? 1.0f32 : 0.0f32,
         shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.2f32),
@@ -286,33 +285,33 @@ export function segments(labels: string[n], chosen: i64, first: i64, each: f32):
     }, [Label(centred(13.0f32, k == chosen ? rgb(INK) : rgb(MUTED)), labels[k])])));
 }
 
-// an avatar: a disc of 48 pixels of the colour `c`, ringed with white (3
+// an avatar: a disc of 32 pixels of the colour `c`, ringed with white (2
 // pixels)
 export function avatar(c: u32): Element {
-    return Div({ ...style(), width: Px(48.0f32), height: Px(48.0f32), background: rgb(c), border: 3.0f32, borderColor: rgb(0xFFFFFFu32), radius: 24.0f32 }, []);
+    return Div({ ...style(), width: Px(32.0f32), height: Px(32.0f32), background: rgb(c), border: 2.0f32, borderColor: rgb(0xFFFFFFu32), radius: 16.0f32 }, []);
 }
 
-// a badge: a red disc of 20 pixels holding a number, ringed with the
+// a badge: a red disc of 16 pixels holding a number, ringed with the
 // colour of the ground
 export function badge(count: string): Element {
     return Div({
         ...style(),
-        width: Px(20.0f32),
-        height: Px(20.0f32),
+        width: Px(16.0f32),
+        height: Px(16.0f32),
         justify: Packed(Center),
         align: Center,
         stretch: false,
         background: rgb(DANGER),
-        border: 2.0f32,
+        border: 1.5f32,
         borderColor: rgb(0xF3F4F6u32),
-        radius: 10.0f32,
-    }, [Label(centred(11.0f32, rgb(0xFFFFFFu32)), count)]);
+        radius: 8.0f32,
+    }, [Label(centred(10.0f32, rgb(0xFFFFFFu32)), count)]);
 }
 
-// a tooltip: a dark bubble with its text in white, 36 pixels high
+// a tooltip: a dark bubble with its text in white, 24 pixels high
 export function tooltip(text: string, width: f32): Element {
-    return Div({ ...style(), width: Px(width), height: Px(36.0f32), justify: Packed(Center), align: Center, stretch: false, background: rgb(INK), radius: 8.0f32 }, [
-        Label(centred(13.0f32, rgb(0xFFFFFFu32)), text),
+    return Div({ ...style(), width: Px(width), height: Px(24.0f32), justify: Packed(Center), align: Center, stretch: false, background: rgb(INK), radius: 5.0f32 }, [
+        Label(centred(12.0f32, rgb(0xFFFFFFu32)), text),
     ]);
 }
 

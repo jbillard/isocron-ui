@@ -7,8 +7,8 @@
       import="./todo: Model, FIELD, ADD, CLEAR, NOTHING, TICK, REMOVE, hand, leftText; ../src/widgets: INK, HINT, MUTED">
   <box class="ground" id="NOTHING">
     <column class="card">
-      <text size="22" color="#111827">Tâches</text>
-      <row class="line" gap="10">
+      <text size="18" color="#111827">Tâches</text>
+      <row class="line" gap="8">
         <field edit="{m.field}" focused="{m.focused}" hint="Nouvelle tâche" id="FIELD" width="fill"/>
         <button id="ADD" primary="true" width="auto" hand="{hand(m, ADD)}">Ajouter</button>
       </row>
@@ -19,14 +19,14 @@
           <row class="task" background="{m.hover == TICK + k ? rgb(0xF9FAFBu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)}">
             <checkbox checked="{it.done}" id="{TICK + k}" hand="{hand(m, TICK + k)}"/>
             <box width="fill">
-              <text size="15" color="{it.done ? rgb(HINT) : rgb(INK)}">{it.text}</text>
+              <text size="13" color="{it.done ? rgb(HINT) : rgb(INK)}">{it.text}</text>
             </box>
             <iconbutton id="{REMOVE + k}" danger="true" hand="{hand(m, REMOVE + k)}">×</iconbutton>
           </row>
         </each>
       </box>
       <row class="line" justify="between">
-        <text size="13" color="{rgb(MUTED)}">{leftText(m)}</text>
+        <text size="12" color="{rgb(MUTED)}">{leftText(m)}</text>
         <button id="CLEAR" primary="false" hand="{hand(m, CLEAR)}">Effacer les terminées</button>
       </row>
     </column>

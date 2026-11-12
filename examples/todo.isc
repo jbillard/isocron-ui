@@ -104,8 +104,8 @@ export function hand(m: Model, id: i64): Hand {
 
 // a task: its box to tick, its text, its button to remove it
 function row(it: Item, k: i64, m: Model): Element {
-    const text = Label(textStyle(15.0f32, it.done ? rgb(HINT) : rgb(INK)), it.text);
-    return Div({ ...style(), direction: Row, gap: 12.0f32, align: Center, stretch: false, padding: 6.0f32, radius: 8.0f32, background: m.hover == TICK + k ? rgb(0xF9FAFBu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32) }, [
+    const text = Label(textStyle(13.0f32, it.done ? rgb(HINT) : rgb(INK)), it.text);
+    return Div({ ...style(), direction: Row, gap: 8.0f32, align: Center, stretch: false, padding: 4.0f32, radius: 6.0f32, background: m.hover == TICK + k ? rgb(0xF9FAFBu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32) }, [
         checkbox(it.done, TICK + k, hand(m, TICK + k)),
         Div({ ...style(), width: Fill(1.0f32) }, [text]),
         iconButton("×", REMOVE + k, true, hand(m, REMOVE + k)),
@@ -121,13 +121,13 @@ export function leftText(m: Model): string {
 export function view(m: Model): Element {
     const left = count(m.items, (it) => !it.done);
     const header: Element[] = [
-        Label(textStyle(22.0f32, rgb(0x111827u32)), "Tâches"),
-        Div({ ...style(), direction: Row, gap: 10.0f32, align: Center, stretch: false }, [textField(m.field, m.focused, "Nouvelle tâche", FIELD, Fill(1.0f32)), button("Ajouter", ADD, true, Auto, hand(m, ADD))]),
+        Label(textStyle(18.0f32, rgb(0x111827u32)), "Tâches"),
+        Div({ ...style(), direction: Row, gap: 8.0f32, align: Center, stretch: false }, [textField(m.field, m.focused, "Nouvelle tâche", FIELD, Fill(1.0f32)), button("Ajouter", ADD, true, Auto, hand(m, ADD))]),
     ];
     const rows = map(iota(m.items.length), (k) => row(m.items[k], k, m));
     const footer: Element[] = [
         Div({ ...style(), direction: Row, justify: Between, align: Center, stretch: false }, [
-            Label(textStyle(13.0f32, rgb(MUTED)), left <= 1 ? `${left} tâche à faire` : `${left} tâches à faire`),
+            Label(textStyle(12.0f32, rgb(MUTED)), left <= 1 ? `${left} tâche à faire` : `${left} tâches à faire`),
             button("Effacer les terminées", CLEAR, false, Auto, hand(m, CLEAR)),
         ]),
     ];
@@ -136,18 +136,18 @@ export function view(m: Model): Element {
     const list = Div({ ...style(), height: Fill(1.0f32), scroll: 0 }, rows);
     const card = Div({
         ...style(),
-        width: Px(440.0f32),
+        width: Px(400.0f32),
         height: Fill(1.0f32),
-        padding: 24.0f32,
-        gap: 12.0f32,
+        padding: 16.0f32,
+        gap: 10.0f32,
         background: rgb(0xFFFFFFu32),
-        radius: 16.0f32,
-        shadowBlur: 12.0f32,
-        shadowY: 6.0f32,
+        radius: 12.0f32,
+        shadowBlur: 10.0f32,
+        shadowY: 4.0f32,
         shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.18f32),
     }, concat(concat(header, [list]), footer));
     // the card at the top, in the middle across (it grows downwards: the
     // places above do not move); a click on the ground gives NOTHING (the
     // field loses the focus), the pointer an arrow over it
-    return Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), padding: 40.0f32, justify: Packed(Start), align: Center, stretch: false, background: rgb(0xF3F4F6u32), onClick: NOTHING, cursor: ARROW }, [card]);
+    return Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), padding: 24.0f32, justify: Packed(Start), align: Center, stretch: false, background: rgb(0xF3F4F6u32), onClick: NOTHING, cursor: ARROW }, [card]);
 }

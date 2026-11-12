@@ -8,7 +8,7 @@ import { Model, FIELD, ADD, CLEAR, NOTHING, TICK, REMOVE, hand, leftText } from 
 import { INK, HINT, MUTED } from "../src/widgets";
 
 function cls_ground(s: Style): Style {
-    return { ...s, width: Fill(1.0f32), height: Fill(1.0f32), padding: 40.0f32, justify: Packed(Start), align: Center, stretch: false, background: rgb(0xF3F4F6u32), cursor: ARROW };
+    return { ...s, width: Fill(1.0f32), height: Fill(1.0f32), padding: 24.0f32, justify: Packed(Start), align: Center, stretch: false, background: rgb(0xF3F4F6u32), cursor: ARROW };
 }
 
 function text_ground(s: TextStyle): TextStyle {
@@ -16,7 +16,7 @@ function text_ground(s: TextStyle): TextStyle {
 }
 
 function cls_card(s: Style): Style {
-    return { ...s, width: Px(440.0f32), height: Fill(1.0f32), padding: 24.0f32, gap: 12.0f32, background: rgb(0xFFFFFFu32), radius: 16.0f32, shadowBlur: 12.0f32, shadowY: 6.0f32, shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.18f32) };
+    return { ...s, width: Px(400.0f32), height: Fill(1.0f32), padding: 16.0f32, gap: 10.0f32, background: rgb(0xFFFFFFu32), radius: 12.0f32, shadowBlur: 10.0f32, shadowY: 4.0f32, shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.18f32) };
 }
 
 function text_card(s: TextStyle): TextStyle {
@@ -32,7 +32,7 @@ function text_line(s: TextStyle): TextStyle {
 }
 
 function cls_task(s: Style): Style {
-    return { ...s, gap: 12.0f32, align: Center, stretch: false, padding: 6.0f32, radius: 8.0f32 };
+    return { ...s, gap: 8.0f32, align: Center, stretch: false, padding: 4.0f32, radius: 6.0f32 };
 }
 
 function text_task(s: TextStyle): TextStyle {
@@ -43,8 +43,8 @@ export function view(m: Model): Element {
     return 
         /* examples/todo.ui.xml:8 */ Div({ ...cls_ground(style()), onClick: NOTHING }, [
         /* examples/todo.ui.xml:9 */ Div(cls_card({ ...style(), direction: Column }), concat(concat(concat([
-        /* examples/todo.ui.xml:10 */ Label(textStyle(22.0f32, rgb(0x111827u32)), `Tâches`)], [
-        /* examples/todo.ui.xml:11 */ Div({ ...cls_line({ ...style(), direction: Row }), gap: 10.0f32 }, concat([
+        /* examples/todo.ui.xml:10 */ Label(textStyle(18.0f32, rgb(0x111827u32)), `Tâches`)], [
+        /* examples/todo.ui.xml:11 */ Div({ ...cls_line({ ...style(), direction: Row }), gap: 8.0f32 }, concat([
         /* examples/todo.ui.xml:12 */ textField((m.field), (m.focused), "Nouvelle tâche", FIELD, Fill(1.0f32))], [
         /* examples/todo.ui.xml:13 */ button(`Ajouter`, ADD, true, Auto, (hand(m, ADD)))]))]), [
         /* examples/todo.ui.xml:17 */ Div({ ...style(), height: Fill(1.0f32), scroll: 0 }, map(iota((m.items).length), (k) => {
@@ -53,10 +53,10 @@ export function view(m: Model): Element {
         /* examples/todo.ui.xml:19 */ Div({ ...cls_task({ ...style(), direction: Row }), background: (m.hover == TICK + k ? rgb(0xF9FAFBu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)) }, concat(concat([
         /* examples/todo.ui.xml:20 */ checkbox((it.done), (TICK + k), (hand(m, TICK + k)))], [
         /* examples/todo.ui.xml:21 */ Div({ ...style(), width: Fill(1.0f32) }, [
-        /* examples/todo.ui.xml:22 */ Label(textStyle(15.0f32, (it.done ? rgb(HINT) : rgb(INK))), `${it.text}`)])]), [
+        /* examples/todo.ui.xml:22 */ Label(textStyle(13.0f32, (it.done ? rgb(HINT) : rgb(INK))), `${it.text}`)])]), [
         /* examples/todo.ui.xml:24 */ iconButton(`×`, (REMOVE + k), true, (hand(m, REMOVE + k)))]));
     }))]), [
         /* examples/todo.ui.xml:28 */ Div({ ...cls_line({ ...style(), direction: Row }), justify: Between }, concat([
-        /* examples/todo.ui.xml:29 */ Label(textStyle(13.0f32, (rgb(MUTED))), `${leftText(m)}`)], [
+        /* examples/todo.ui.xml:29 */ Label(textStyle(12.0f32, (rgb(MUTED))), `${leftText(m)}`)], [
         /* examples/todo.ui.xml:30 */ button(`Effacer les terminées`, CLEAR, false, Auto, (hand(m, CLEAR)))]))]))]);
 }

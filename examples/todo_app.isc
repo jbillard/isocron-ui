@@ -9,7 +9,7 @@ import { initial, update, view } from "./todo";
 action main(args: string[k]): i32 {
     return match (loadFont(args)) {
         Ok(f) => {
-            const end = runWith("Isocron : tâches", 520, 420, ["Couper", "Copier", "Coller", "Tout sélectionner"], f, initial(), view, update);
+            const end = runWith("Isocron : tâches", 448, 380, ["Couper", "Copier", "Coller", "Tout sélectionner"], f, initial(), view, update);
             print(map(end.items, (it) => (it.done ? "[x] " : "[ ] ") + it.text));
             return 0;
         },

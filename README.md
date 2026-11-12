@@ -112,8 +112,8 @@ the view of the list of tasks, the same pixels as the one in code
 ```xml
 <view function="view" model="Model" styles="todo.style" import="./todo: Model, ADD, hand">
   <column class="card">
-    <text size="22" color="#111827">Tâches</text>
-    <row class="line" gap="10">
+    <text size="18" color="#111827">Tâches</text>
+    <row class="line" gap="8">
       <field edit="{m.field}" focused="{m.focused}" hint="Nouvelle tâche" id="FIELD"/>
       <button id="ADD" hand="{hand(m, ADD)}">Ajouter</button>
     </row>
@@ -123,7 +123,7 @@ the view of the list of tasks, the same pixels as the one in code
 ```
 
 ```css
-.card { width: 440; padding: 24; gap: 12; background: #FFFFFF; radius: 16; shadowColor: rgba(0, 0, 0, 0.18); }
+.card { width: 400; padding: 16; gap: 10; background: #FFFFFF; radius: 12; shadowColor: rgba(0, 0, 0, 0.18); }
 ```
 
 ```
@@ -141,8 +141,9 @@ The attributes of a box and the properties of a class are those of
 ## Its files
 
 - `src/app.isc`: `run` and `runWith` (the texts of the menu of a field),
-  `loadFont` (the file of `--font=`, `DejaVuSans.ttf` beside the program or
-  in the current folder, then a font of the system), `fail` (a box of
+  `loadFont` (the file of `--font=`; under Windows Segoe UI, the font of
+  its own windows; else, or without it, `DejaVuSans.ttf` beside the program
+  or in the current folder, then a font of the system), `fail` (a box of
   messages under Windows); the loops of Windows, Wayland and X11.
 - `src/input.isc`: the inputs (`Click`, `Drag`, `Release`, `Hover`, `Text`,
   `Key` with its modifiers, `Paste`, `Focus`, `Viewport`, `Tick`) and the
@@ -176,7 +177,8 @@ The attributes of a box and the properties of a class are those of
 
 Each is built by `iscc build examples/NAME.isc -o NAME` (for Windows: with
 `--target x86_64-windows --subsystem windows`); the applications read
-`DejaVuSans.ttf` beside them or in the current folder (`tests/fonts/`).
+Segoe UI under Windows, else `DejaVuSans.ttf` beside them or in the current
+folder (`tests/fonts/`).
 
 - `minimal.isc`: the button above; prints its clicks at the end.
 - `todo_app.isc` (`todo.isc`): a list of tasks: a field, tasks ticked and

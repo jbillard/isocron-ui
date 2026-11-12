@@ -24,10 +24,10 @@ action main(args: string[k]): i32 {
             // moved by 100 pixels: other tasks seen, the first ones gone
             const [ps1, h1] = placeScrolled(f, view(m), 0.0f32, 0.0f32, 520.0f32, 420.0f32, map(iota(16), (i) => i == 0 ? 100.0f32 : 0.0f32));
             print(ticks(h1));
-            // a click on the tick at 184 to 204: the task now there; on the
-            // part of the third tick cut away above the column: nothing of
-            // it (the ground)
-            print([hitTest(h1, 80.0f32, 194.0f32) - TICK, hitTest(h1, 80.0f32, 150.0f32)] as const);
+            // a click on the tick at 168 to 186: the task now there; on the
+            // part of the third tick cut away above the column (108 to 113):
+            // nothing of it (the ground)
+            print([hitTest(h1, 88.0f32, 177.0f32) - TICK, hitTest(h1, 88.0f32, 110.0f32)] as const);
             // the wheel: down by 1000 pixels, kept within the range; up by
             // 30 from there
             const o = scrolled(fill(16, 0.0f32), h0, 260.0f32, 200.0f32, 1000.0f32);

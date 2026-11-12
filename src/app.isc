@@ -339,15 +339,15 @@ function menuPressed<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect
 // it and its places (its entries, those that can be chosen with a `range`
 // of 1), over the view
 // the tooltip `text` below and right of the pointer, within the window: a
-// dark box of a line of 13 units
+// dark box of a line of 12 units
 function tipLaidOut(ui: Ui, f: Font, text: string): Primitive[] {
     const k = ui.scale;
-    const w = lineWidth(f, 13.0f32 * k, text) + 22.0f32 * k;
-    const h = (13.0f32 * 1.4f32 + 12.0f32) * k;
+    const w = lineWidth(f, 12.0f32 * k, text) + 16.0f32 * k;
+    const h = (12.0f32 * 1.4f32 + 8.0f32) * k;
     const x = max(0.0f32, min(ui.x + 12.0f32 * k, f32(ui.w) - w - 2.0f32));
     const below = ui.y + 22.0f32 * k;
     const y = below + h < f32(ui.h) ? below : max(0.0f32, ui.y - h - 6.0f32 * k);
-    const box = Div({ ...style(), padX: 11.0f32, padY: 6.0f32, background: rgb(0x111827u32), radius: 6.0f32, shadowBlur: 8.0f32, shadowY: 3.0f32, shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.2f32) }, [Label(textStyle(13.0f32, rgb(0xFFFFFFu32)), text)]);
+    const box = Div({ ...style(), padX: 8.0f32, padY: 4.0f32, background: rgb(0x111827u32), radius: 4.0f32, shadowBlur: 6.0f32, shadowY: 2.0f32, shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.2f32) }, [Label(textStyle(12.0f32, rgb(0xFFFFFFu32)), text)]);
     const [ps, hits] = placeFrame(f, scaledElement(box, k), x, y, w, h, { offsets: [], caretOn: false, hotBar: -1, scale: k, deferred: true });
     return ps;
 }
@@ -358,15 +358,16 @@ function menuLaidOut(ui: Ui, f: Font): [Primitive[], Hit[]] {
     const entries = map(iota(n), (k) => Div({
         ...style(),
         width: Fill(1.0f32),
-        height: Px(28.0f32),
-        padding: 6.0f32,
+        height: Px(24.0f32),
+        padX: 8.0f32,
+        padY: 4.0f32,
         background: ui.menuHover == k ? rgb(0xE5EDFFu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32),
         radius: 4.0f32,
         onClick: k,
         cursor: ARROW,
-    }, [Label(textStyle(14.0f32, enabled(k) ? rgb(0x111827u32) : rgb(0x9CA3AFu32)), ui.labels[k])]));
-    const w = 200.0f32 * ui.scale;
-    const h = (8.0f32 + 28.0f32 * f32(n)) * ui.scale;
+    }, [Label(textStyle(13.0f32, enabled(k) ? rgb(0x111827u32) : rgb(0x9CA3AFu32)), ui.labels[k])]));
+    const w = 180.0f32 * ui.scale;
+    const h = (8.0f32 + 24.0f32 * f32(n)) * ui.scale;
     const x = max(0.0f32, min(ui.menuX, f32(ui.w) - w - 2.0f32));
     const y = max(0.0f32, min(ui.menuY, f32(ui.h) - h - 2.0f32));
     const box = Div({
@@ -576,7 +577,10 @@ export action loadFont(args: string[k]): Result<Font, string> {
             Some(w) => w,
             None => "C:\\Windows",
         };
-        return firstFont(concat(beside, ["DejaVuSans.ttf", `${root}\\Fonts\\segoeui.ttf`, `${root}\\Fonts\\arial.ttf`]), 0, "");
+        // the font of the interfaces of Windows first (that of its own
+        // windows, the texts of the same size), DejaVu Sans beside the
+        // program when it is not there
+        return firstFont(concat([`${root}\\Fonts\\segoeui.ttf`], concat(beside, ["DejaVuSans.ttf", `${root}\\Fonts\\arial.ttf`])), 0, "");
     }
     return firstFont(["DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/dejavu/DejaVuSans.ttf", "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf"], 0, "");
 }
