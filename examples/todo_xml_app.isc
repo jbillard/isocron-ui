@@ -1,0 +1,25 @@
+// The list of tasks whose view is described in XML and styles
+// (examples/todo.ui.xml, todo.style), made into examples/todo_view.isc by
+// tools/uigen before the program is compiled:
+//   iscc run tools/uigen/uigen.isc examples/todo.ui.xml examples/todo_view.isc
+//   iscc build examples/todo_xml_app.isc -o todo_xml_app
+// The same application as todo_app.isc: its model and its update are those
+// of examples/todo.isc. Prints its tasks when its window is closed.
+// usage: todo_xml_app [--font=file]
+import { runWith, loadFont, fail } from "../src/app";
+import { initial, update } from "./todo";
+import { view } from "./todo_view";
+
+action main(args: string[k]): i32 {
+    return match (loadFont(args)) {
+        Ok(f) => {
+            const end = runWith("Isocron : tâches (XML)", 520, 420, ["Couper", "Copier", "Coller", "Tout sélectionner"], f, initial(), view, update);
+            print(map(end.items, (it) => (it.done ? "[x] " : "[ ] ") + it.text));
+            return 0;
+        },
+        Err(e) => {
+            fail("Isocron : tâches (XML)", e);
+            return 1;
+        },
+    };
+}

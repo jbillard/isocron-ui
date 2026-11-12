@@ -1,0 +1,298 @@
+// A reader of XML for the files of interfaces (the generator of
+// tools/uigen, read at compile time; later an application built at run
+// time): elements with attributes in double or single quotes, texts,
+// comments, the declaration `<?xml ...?>`, the five entities of XML and the
+// numeric ones (`&#233;`, `&#xE9;`). Each node keeps its line, for the
+// faults told with it. No DTD, no namespaces (a prefix is part of a name),
+// no CDATA.
+
+// an attribute: its name, its value (entities replaced)
+export type Attr = { name: string, value: string };
+
+// a node: an element (its name, its attributes, its children, its line) or
+// a text (entities replaced; the blank texts between elements dropped)
+export type Node = Tag(string, Attr[], Node[], i64) | Text(string, i64);
+
+// a document read: its root element, or the fault at a line
+export type Parsed = Read(Node) | Fault(string, i64);
+
+// the bytes of a name: letters, digits, `_`, `-`, `.`, `:`, and those of
+// UTF-8 beyond ASCII
+function nameByte(c: u8): boolean {
+    return (c >= 97u8 && c <= 122u8) || (c >= 65u8 && c <= 90u8) || (c >= 48u8 && c <= 57u8) || c == 95u8 || c == 45u8 || c == 46u8 || c == 58u8 || c >= 128u8;
+}
+
+function blank(c: u8): boolean {
+    return c == 32u8 || c == 9u8 || c == 10u8 || c == 13u8;
+}
+
+// the line of the byte `at` of `b` (from 1)
+export function lineAt(b: u8[n], at: i64): i64 {
+    return 1 + count(iota(min(at, n)), (i) => b[i] == 10u8);
+}
+
+// the first `k` from `at` where `b[k]` is not blank
+function skipBlank(b: u8[n], at: i64): i64 {
+    return at < n && blank(b[at]) ? skipBlank(b, at + 1) : at;
+}
+
+// the end of the name from `at`
+function nameEnd(b: u8[n], at: i64): i64 {
+    return at < n && nameByte(b[at]) ? nameEnd(b, at + 1) : at;
+}
+
+// the first place from `at` where `b` holds the bytes of `s` (-1: none)
+function find(b: u8[n], s: string, at: i64): i64 {
+    const t = bytes(s);
+    const m = t.length;
+    if (at + m > n) {
+        return -1;
+    }
+    return count(iota(m), (k) => b[at + k] == t[k]) == m ? at : find(b, s, at + 1);
+}
+
+// the character `c` as UTF-8
+function utf8(c: i64): string {
+    if (c < 0x80) {
+        return stringOf([u8(c)]);
+    }
+    if (c < 0x800) {
+        return stringOf([u8(0xC0 | (c >> 6)), u8(0x80 | (c & 0x3F))]);
+    }
+    if (c < 0x10000) {
+        return stringOf([u8(0xE0 | (c >> 12)), u8(0x80 | ((c >> 6) & 0x3F)), u8(0x80 | (c & 0x3F))]);
+    }
+    return stringOf([u8(0xF0 | (c >> 18)), u8(0x80 | ((c >> 12) & 0x3F)), u8(0x80 | ((c >> 6) & 0x3F)), u8(0x80 | (c & 0x3F))]);
+}
+
+// the value of the entity `e` (between `&` and `;`), or "" when unknown
+function entity(e: string): string {
+    if (e == "lt") {
+        return "<";
+    }
+    if (e == "gt") {
+        return ">";
+    }
+    if (e == "amp") {
+        return "&";
+    }
+    if (e == "quot") {
+        return "\"";
+    }
+    if (e == "apos") {
+        return "'";
+    }
+    if (e.startsWith("#x") || e.startsWith("#X")) {
+        return match (tryParseHex(e.slice(2, e.length))) {
+            Ok(v) => v > 0 && v <= 0x10FFFF ? utf8(v) : "",
+            Err(x) => "",
+        };
+    }
+    if (e.startsWith("#")) {
+        return match (tryParseI64(e.slice(1, e.length))) {
+            Ok(v) => v > 0 && v <= 0x10FFFF ? utf8(v) : "",
+            Err(x) => "",
+        };
+    }
+    return "";
+}
+
+// the value of the hexadecimal digits of `s`
+function tryParseHex(s: string): Result<i64, string> {
+    const b = bytes(s);
+    if (b.length == 0 || b.length > 8) {
+        return Err(s);
+    }
+    const v = fold(b, 0, (acc, c) => {
+        const d = c >= 48u8 && c <= 57u8 ? i64(c) - 48 : (c >= 97u8 && c <= 102u8 ? i64(c) - 87 : (c >= 65u8 && c <= 70u8 ? i64(c) - 55 : -1));
+        return acc < 0 || d < 0 ? -1 : acc * 16 + d;
+    });
+    return v < 0 ? Err(s) : Ok(v);
+}
+
+// the text `s` (raw, from the line `line`) with its entities replaced; a
+// fault for an entity unknown or not closed
+function unescaped(s: string, line: i64): Result<string, string> {
+    const parts = split(s, "&");
+    if (parts.length == 1) {
+        return Ok(s);
+    }
+    return unescapedFrom(parts, 1, parts[0]);
+}
+
+function unescapedFrom(parts: string[n], k: i64, acc: string): Result<string, string> {
+    if (k >= n) {
+        return Ok(acc);
+    }
+    const p = parts[k];
+    const semi = p.indexOf(";");
+    if (semi < 0) {
+        return Err("an entity not closed by `;`");
+    }
+    const v = entity(p.slice(0, semi));
+    if (v == "") {
+        return Err(`the entity \`&${p.slice(0, semi)};\` is unknown`);
+    }
+    return unescapedFrom(parts, k + 1, acc + v + p.slice(semi + 1, p.length));
+}
+
+// the attributes of a tag from `at` until its `>` or `/>`: the attributes,
+// the place of `>` or `/`, or a fault
+type Attrs = Got(Attr[], i64) | Bad(string, i64);
+
+function attrsFrom(b: u8[n], at: i64, acc: Attr[]): Attrs {
+    const i = skipBlank(b, at);
+    if (i >= n) {
+        return Bad("a tag not closed", i);
+    }
+    if (b[i] == 62u8 || b[i] == 47u8) {
+        return Got(acc, i);
+    }
+    const e = nameEnd(b, i);
+    if (e == i) {
+        return Bad(`an attribute expected, found \`${stringOf([b[i]])}\``, i);
+    }
+    const name = stringOf(b.slice(i, e));
+    const eq = skipBlank(b, e);
+    if (eq >= n || b[eq] != 61u8) {
+        return Bad(`\`=\` expected after the attribute \`${name}\``, eq);
+    }
+    const q = skipBlank(b, eq + 1);
+    if (q >= n || (b[q] != 34u8 && b[q] != 39u8)) {
+        return Bad(`a value in quotes expected for the attribute \`${name}\``, q);
+    }
+    const close = findByte(b, b[q], q + 1);
+    if (close < 0) {
+        return Bad(`the value of the attribute \`${name}\` not closed`, q);
+    }
+    if (count(acc, (a) => a.name == name) > 0) {
+        return Bad(`the attribute \`${name}\` given twice`, i);
+    }
+    return match (unescaped(stringOf(b.slice(q + 1, close)), lineAt(b, q))) {
+        Ok(v) => attrsFrom(b, close + 1, concat(acc, [{ name: name, value: v }])),
+        Err(m) => Bad(m, q),
+    };
+}
+
+function findByte(b: u8[n], c: u8, at: i64): i64 {
+    return at >= n ? -1 : (b[at] == c ? at : findByte(b, c, at + 1));
+}
+
+// an element read: the element and the place after it, or a fault at a
+// line
+type Elem = Done(Node, i64) | Wrong(string, i64);
+
+// the children of an element named `parent` from `at` until its closing
+// tag: the children and the place after the closing tag, or a fault at a
+// line
+type Children = Kids(Node[], i64) | Broken(string, i64);
+
+function childrenFrom(b: u8[n], parent: string, at: i64, acc: Node[]): Children {
+    if (at >= n) {
+        return Broken(`the element \`${parent}\` not closed`, lineAt(b, at));
+    }
+    if (b[at] != 60u8) {
+        // a text until the next `<`
+        const end = findByte(b, 60u8, at);
+        const stop = end < 0 ? n : end;
+        const raw = stringOf(b.slice(at, stop));
+        if (raw.trim() == "") {
+            return childrenFrom(b, parent, stop, acc);
+        }
+        return match (unescaped(raw, lineAt(b, at))) {
+            Ok(t) => childrenFrom(b, parent, stop, concat(acc, [Text(t, lineAt(b, at))])),
+            Err(m) => Broken(m, lineAt(b, at)),
+        };
+    }
+    if (find(b, "<!--", at) == at) {
+        const end = find(b, "-->", at + 4);
+        return end < 0 ? Broken("a comment not closed", lineAt(b, at)) : childrenFrom(b, parent, end + 3, acc);
+    }
+    if (at + 1 < n && b[at + 1] == 47u8) {
+        // the closing tag: the name of the element
+        const e = nameEnd(b, at + 2);
+        const name = stringOf(b.slice(at + 2, e));
+        const gt = skipBlank(b, e);
+        if (name != parent) {
+            return Broken(`\`</${name}>\` closes \`${parent}\``, lineAt(b, at));
+        }
+        return gt < n && b[gt] == 62u8 ? Kids(acc, gt + 1) : Broken(`\`>\` expected after \`</${name}\``, lineAt(b, gt));
+    }
+    return match (elementAt(b, at)) {
+        Done(node, after) => childrenFrom(b, parent, after, concat(acc, [node])),
+        Wrong(m, line) => Broken(m, line),
+    };
+}
+
+// the element at `at` (its `<`), with its line, and the place after it
+function elementAt(b: u8[n], at: i64): Elem {
+    const e = nameEnd(b, at + 1);
+    const line = lineAt(b, at);
+    if (e == at + 1) {
+        return Wrong("a name of element expected after `<`", line);
+    }
+    const name = stringOf(b.slice(at + 1, e));
+    return match (attrsFrom(b, e, [])) {
+        Bad(m, place) => Wrong(m, lineAt(b, place)),
+        Got(attrs, i) => {
+            if (b[i] == 47u8) {
+                return i + 1 < n && b[i + 1] == 62u8 ? Done(Tag(name, attrs, [], line), i + 2) : Wrong("`>` expected after `/`", lineAt(b, i));
+            }
+            return match (childrenFrom(b, name, i + 1, [])) {
+                Kids(kids, after) => Done(Tag(name, attrs, kids, line), after),
+                Broken(m, l) => Wrong(m, l),
+            };
+        },
+    };
+}
+
+// the document `b`: its root element (after an optional declaration and
+// comments), every node with its line
+export function parse(b: u8[n]): Parsed {
+    return parseFrom(b, 0);
+}
+
+function parseFrom(b: u8[n], at: i64): Parsed {
+    const i = skipBlank(b, at);
+    if (i >= n) {
+        return Fault("no element", lineAt(b, i));
+    }
+    if (find(b, "<?", i) == i) {
+        const end = find(b, "?>", i + 2);
+        return end < 0 ? Fault("a declaration not closed", lineAt(b, i)) : parseFrom(b, end + 2);
+    }
+    if (find(b, "<!--", i) == i) {
+        const end = find(b, "-->", i + 4);
+        return end < 0 ? Fault("a comment not closed", lineAt(b, i)) : parseFrom(b, end + 3);
+    }
+    if (b[i] != 60u8) {
+        return Fault("an element expected", lineAt(b, i));
+    }
+    return match (elementAt(b, i)) {
+        Done(node, after) => {
+            const rest = skipComments(b, after);
+            return rest < n ? Fault("text after the root element", lineAt(b, rest)) : Read(node);
+        },
+        Wrong(m, line) => Fault(m, line),
+    };
+}
+
+function skipComments(b: u8[n], at: i64): i64 {
+    const i = skipBlank(b, at);
+    if (find(b, "<!--", i) == i) {
+        const end = find(b, "-->", i + 4);
+        return end < 0 ? i : skipComments(b, end + 3);
+    }
+    return i;
+}
+
+// the value of the attribute `name` of `attrs` ("" when absent)
+export function attr(attrs: Attr[n], name: string): string {
+    const k = findIndex(attrs, (a) => a.name == name);
+    return k < 0 ? "" : attrs[k].value;
+}
+
+// the attribute `name` is among `attrs`
+export function has(attrs: Attr[n], name: string): boolean {
+    return count(attrs, (a) => a.name == name) > 0;
+}

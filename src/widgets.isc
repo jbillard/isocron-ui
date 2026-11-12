@@ -210,6 +210,15 @@ export function toggleAt(at: f32, id: i64): Element {
     }, [Div({ ...style(), width: Px(32.0f32 * t), height: Px(26.0f32) }, []), knob()]);
 }
 
+// the element `e` (a box: a component) with its style changed by `f` (the
+// classes of a file of styles, tools/uigen)
+export function restyled(e: Element, f: (Style) => Style): Element {
+    return match (e) {
+        Div(st, cs) => Div(f(st), cs),
+        other => other,
+    };
+}
+
 // the element `e` (a box: a component) with the tooltip `text`, shown by
 // the pointer resting over it
 export function withTip(e: Element, text: string): Element {

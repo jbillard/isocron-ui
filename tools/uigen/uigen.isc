@@ -1,0 +1,476 @@
+// The generator of views: an interface described in XML (`NAME.ui.xml`)
+// and the classes of its styles (a file in the manner of CSS) turned into
+// the module of Isocron that builds its elements, before `iscc` compiles
+// it (« pas au démarrage mais à la compilation »: what the files say is
+// checked twice, by this generator, an element, an attribute, a property,
+// a value or a class it does not know refused at its file and line, then
+// by `iscc`, the expressions `{...}` given to it as they are: a field of
+// the model or a message that does not exist an error of compilation).
+//
+// usage: uigen VIEW.ui.xml OUT.isc
+//
+// The root `<view>`: `function` (the name of the function made, `view` by
+// default), `model` (the type of its argument `m`), `import` (the modules
+// whose names the expressions use: `./todo: Model, ADD; ./other: x`),
+// `styles` (the file of styles, beside the view), `lib` (the folder of the
+// library from the module made, `../src` by default). Its one child is the
+// root of the interface. The elements:
+//   <box>, <row>, <column>   a box (`Div`; a row, a column), its children
+//   <text>                   a text (`Label`): its content, `{expr}` in it
+//                            replaced by the value
+//   <button>, <iconbutton>, <field>, <checkbox>, <toggle>, <progress>
+//                            the components of src/widgets.isc
+//   <each items="{xs}" as="x" index="k">   its one child for each element
+//   <slot elements="{expr}"/>              elements made by code
+// The attributes of a box and the properties of a class: those of `Style`
+// (width, height, direction, gap, padding, padX, padY, justify, align,
+// stretch, background, border, borderColor, radius, shadowBlur, shadowY,
+// shadowColor, clip, scroll, cursor, focusable, tip, outline,
+// outlineColor), and for a text size, color, textAlign; `class` names
+// classes of the styles, `id` the message of a click. A value `{expr}` is
+// an expression of Isocron.
+import { parse, Node, Tag, Text, Read, Fault, Attr, attr, has } from "../../src/xml";
+import { parseStyles, Sheet, Bad, Rule, Property } from "../../src/css";
+import * as sys from "sys";
+
+// a separator of the parts of code, found in none
+const SEP: string = "<<uigen>>";
+
+// what is made: the code, or the faults (`file:line: message`)
+type Made = Code(string) | Faults(string[]);
+
+// the faults of `a` and `b` together; the code of each joined otherwise
+function both(a: Made, b: Made, join2: (string, string) => string): Made {
+    return match (a) {
+        Faults(fa) => match (b) {
+            Faults(fb) => Faults(concat(fa, fb)),
+            Code(cb) => Faults(fa),
+        },
+        Code(ca) => match (b) {
+            Faults(fb) => Faults(fb),
+            Code(cb) => Code(join2(ca, cb)),
+        },
+    };
+}
+
+// the made of each of `xs` joined by `sep`
+function allOf(xs: Made[n], sep: string): Made {
+    return fold(xs, Code(""), (acc, x) => match (acc) {
+        Code(c) => both(acc, x, (p, q) => p == "" ? q : p + sep + q),
+        Faults(f) => both(acc, x, (p, q) => p),
+    });
+}
+
+// ----- values ----------------------------------------------------------
+
+// `s` is an expression of Isocron, `{...}`
+function isExpr(s: string): boolean {
+    return s.startsWith("{") && s.endsWith("}");
+}
+
+function exprOf(s: string): string {
+    return `(${s.slice(1, s.length - 1)})`;
+}
+
+// a number written as an `f32` of Isocron
+function f32Of(s: string): string {
+    const v = match (tryParseF64(s)) {
+        Ok(x) => x,
+        Err(e) => 0.0,
+    };
+    const t = `${v}`;
+    return (t.indexOf(".") >= 0 || t.indexOf("e") >= 0 ? t : t + ".0") + "f32";
+}
+
+function isNumber(s: string): boolean {
+    return match (tryParseF64(s)) {
+        Ok(x) => true,
+        Err(e) => false,
+    };
+}
+
+// the value of the hexadecimal digits `s` (-1: not all digits)
+function hex(s: string): i64 {
+    const b = bytes(s);
+    return b.length == 0 ? -1 : fold(b, 0, (v, c) => {
+        const d = c >= 48u8 && c <= 57u8 ? i64(c) - 48 : (c >= 97u8 && c <= 102u8 ? i64(c) - 87 : (c >= 65u8 && c <= 70u8 ? i64(c) - 55 : -1));
+        return v < 0 || d < 0 ? -1 : v * 16 + d;
+    });
+}
+
+// `s` with every `a` replaced by `b`
+function swapped(s: string, a: string, b: string): string {
+    return join(split(s, a), b);
+}
+
+// a string of Isocron holding `s`
+function quoted(s: string): string {
+    return "\"" + swapped(swapped(swapped(s, "\\", "\\\\"), "\"", "\\\""), "\n", "\\n") + "\"";
+}
+
+// the kinds of the values of the properties
+const KIND_F32: i64 = 0;
+const KIND_LENGTH: i64 = 1;
+const KIND_COLOR: i64 = 2;
+const KIND_BOOL: i64 = 3;
+const KIND_DIRECTION: i64 = 4;
+const KIND_JUSTIFY: i64 = 5;
+const KIND_ALIGN: i64 = 6;
+const KIND_CURSOR: i64 = 7;
+const KIND_TEXT: i64 = 8;
+const KIND_I64: i64 = 9;
+// a message: an integer, a name of constant, or an expression
+const KIND_NAME: i64 = 10;
+
+const BOX_PROPS: string[] = ["width", "height", "direction", "gap", "padding", "padX", "padY", "justify", "align", "stretch", "background", "border", "borderColor", "radius", "shadowBlur", "shadowY", "shadowColor", "clip", "scroll", "cursor", "focusable", "tip", "outline", "outlineColor"];
+const BOX_KINDS: i64[] = [1, 1, 4, 0, 0, 0, 0, 5, 6, 3, 2, 0, 2, 0, 0, 0, 2, 3, 9, 7, 3, 8, 0, 2];
+const TEXT_PROPS: string[] = ["size", "color", "textAlign"];
+const TEXT_KINDS: i64[] = [0, 2, 6];
+
+// the value `v` of the kind `kind` as code, or "" when it is not one
+function valueOf(kind: i64, v: string): string {
+    if (isExpr(v)) {
+        return exprOf(v);
+    }
+    if (kind == KIND_F32) {
+        return isNumber(v) ? f32Of(v) : "";
+    }
+    if (kind == KIND_I64) {
+        return match (tryParseI64(v)) {
+            Ok(x) => `${x}`,
+            Err(e) => "",
+        };
+    }
+    if (kind == KIND_NAME) {
+        const b = bytes(v);
+        const ident = b.length > 0 && count(b, (c) => (c >= 97u8 && c <= 122u8) || (c >= 65u8 && c <= 90u8) || (c >= 48u8 && c <= 57u8) || c == 95u8) == b.length;
+        return ident ? v : "";
+    }
+    if (kind == KIND_LENGTH) {
+        if (v == "auto") {
+            return "Auto";
+        }
+        if (v == "fill") {
+            return "Fill(1.0f32)";
+        }
+        if (v.startsWith("fill(") && v.endsWith(")") && isNumber(v.slice(5, v.length - 1))) {
+            return `Fill(${f32Of(v.slice(5, v.length - 1))})`;
+        }
+        return isNumber(v) ? `Px(${f32Of(v)})` : "";
+    }
+    if (kind == KIND_COLOR) {
+        if (v == "transparent") {
+            return "rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)";
+        }
+        const h = v.startsWith("#") ? hex(v.slice(1, v.length)) : -1;
+        if (h >= 0 && v.length == 7) {
+            return `rgb(0x${v.slice(1, 7)}u32)`;
+        }
+        if (h >= 0 && v.length == 9) {
+            const c = (k: i64) => f32Of(`${f64(hex(v.slice(1 + 2 * k, 3 + 2 * k))) / 255.0}`);
+            return `rgba(${c(0)}, ${c(1)}, ${c(2)}, ${c(3)})`;
+        }
+        // rgba(r, g, b, a): the channels from 0 to 255, the opacity from 0
+        // to 1 (as written)
+        if (v.startsWith("rgba(") && v.endsWith(")")) {
+            const parts = map(split(v.slice(5, v.length - 1), ","), (x) => x.trim());
+            if (parts.length == 4 && count(parts, (x) => isNumber(x)) == 4) {
+                const ch = (x: string) => f32Of(`${match (tryParseF64(x)) { Ok(d) => d, Err(e) => 0.0, } / 255.0}`);
+                return `rgba(${ch(parts[0])}, ${ch(parts[1])}, ${ch(parts[2])}, ${f32Of(parts[3])})`;
+            }
+        }
+        return "";
+    }
+    if (kind == KIND_BOOL) {
+        return v == "true" || v == "false" ? v : "";
+    }
+    if (kind == KIND_DIRECTION) {
+        return v == "row" ? "Row" : (v == "column" ? "Column" : "");
+    }
+    if (kind == KIND_JUSTIFY) {
+        return v == "start" ? "Packed(Start)" : (v == "center" ? "Packed(Center)" : (v == "end" ? "Packed(End)" : (v == "between" ? "Between" : "")));
+    }
+    if (kind == KIND_ALIGN) {
+        return v == "start" ? "Start" : (v == "center" ? "Center" : (v == "end" ? "End" : ""));
+    }
+    if (kind == KIND_CURSOR) {
+        return v == "arrow" ? "ARROW" : (v == "pointer" ? "POINTER" : (v == "text" ? "TEXT" : ""));
+    }
+    if (kind == KIND_TEXT) {
+        return quoted(v);
+    }
+    return "";
+}
+
+// what values a kind takes, for its faults
+function kindName(kind: i64): string {
+    return kind == KIND_F32 ? "a number" : (kind == KIND_I64 ? "an integer" : (kind == KIND_LENGTH ? "auto, fill, fill(n) or a number"
+        : (kind == KIND_COLOR ? "#RRGGBB, #RRGGBBAA, rgba(r, g, b, a) or transparent" : (kind == KIND_BOOL ? "true or false"
+        : (kind == KIND_DIRECTION ? "row or column" : (kind == KIND_JUSTIFY ? "start, center, end or between"
+        : (kind == KIND_ALIGN ? "start, center or end" : (kind == KIND_CURSOR ? "arrow, pointer or text" : "a text"))))))));
+}
+
+// the field `name` set to `v` as code (`name: value`), or a fault
+function propOf(file: string, names: string[n], kinds: i64[n], name: string, v: string, line: i64): Made {
+    const k = findIndex(names, (x) => x == name);
+    if (k < 0) {
+        return Faults([`${file}:${line}: the property \`${name}\` is unknown (${join(names, ", ")})`]);
+    }
+    const code = valueOf(kinds[k], v);
+    return code == "" ? Faults([`${file}:${line}: \`${v}\` is not a value of \`${name}\` (${kindName(kinds[k])})`]) : Code(`${name == "textAlign" ? "align" : (name == "size" ? "em" : name)}: ${code}`);
+}
+
+// ----- styles ------------------------------------------------------------
+
+// the function of the class `r` (`cls_NAME`): a style with its properties
+function classFunction(file: string, r: Rule): Made {
+    const box = filter(r.props, (p) => findIndex(BOX_PROPS, (x) => x == p.name) >= 0 || findIndex(TEXT_PROPS, (x) => x == p.name) < 0);
+    const text = filter(r.props, (p) => findIndex(TEXT_PROPS, (x) => x == p.name) >= 0 && findIndex(BOX_PROPS, (x) => x == p.name) < 0);
+    const fields = allOf(map(box, (p) => propOf(file, BOX_PROPS, BOX_KINDS, p.name, p.value, p.line)), ", ");
+    const tfields = allOf(map(text, (p) => propOf(file, TEXT_PROPS, TEXT_KINDS, p.name, p.value, p.line)), ", ");
+    const id = swapped(r.name, "-", "_");
+    return both(fields, tfields, (f, t) => `function cls_${id}(s: Style): Style {\n    return ${f == "" ? "s" : `{ ...s, ${f} }`};\n}\n\nfunction text_${id}(s: TextStyle): TextStyle {\n    return ${t == "" ? "s" : `{ ...s, ${t} }`};\n}\n`);
+}
+
+// ----- elements ----------------------------------------------------------
+
+type Gen = { file: string, classes: string[] };
+
+// the classes of the attribute `class` of an element applied to `base` (a
+// style; `text_` for a text), or a fault for one unknown
+function classed(g: Gen, attrs: Attr[n], base: string, prefix: string, line: i64): Made {
+    const names = filter(map(split(attr(attrs, "class"), " "), (x) => x.trim()), (x) => x != "");
+    const unknown = filter(names, (x) => findIndex(g.classes, (c) => c == x) < 0);
+    if (unknown.length > 0) {
+        return Faults([`${g.file}:${line}: the class \`${unknown[0]}\` is not in the styles`]);
+    }
+    return Code(fold(names, base, (acc, x) => `${prefix}${swapped(x, "-", "_")}(${acc})`));
+}
+
+// the attributes `attrs` known for a box (those of `Style`, `class`, `id`):
+// the style of the box as code
+function boxStyle(g: Gen, attrs: Attr[n], direction: string, line: i64): Made {
+    const known = concat(BOX_PROPS, ["class", "id"]);
+    const strange = filter(attrs, (a) => findIndex(known, (x) => x == a.name) < 0);
+    if (strange.length > 0) {
+        return Faults([`${g.file}:${line}: the attribute \`${strange[0].name}\` is unknown for a box`]);
+    }
+    const base = direction == "" ? "style()" : `{ ...style(), direction: ${direction} }`;
+    const props = allOf(map(filter(attrs, (a) => a.name != "class" && a.name != "id"), (a) => propOf(g.file, BOX_PROPS, BOX_KINDS, a.name, a.value, line)), ", ");
+    const click = has(attrs, "id") ? `onClick: ${isExpr(attr(attrs, "id")) ? exprOf(attr(attrs, "id")) : attr(attrs, "id")}` : "";
+    return both(classed(g, attrs, base, "cls_", line), props, (c, p) => {
+        const fields = p == "" ? click : (click == "" ? p : p + ", " + click);
+        return fields == "" ? c : `{ ...${c}, ${fields} }`;
+    });
+}
+
+// the text of the children of `kids` (texts), `{expr}` in it replaced by
+// their values: a template string of Isocron
+function textOf(kids: Node[n]): string {
+    const raw = join(map(kids, (k) => match (k) {
+        Text(t, line) => t.trim(),
+        Tag(name, attrs, cs, line) => "",
+    }), " ");
+    const escaped = swapped(swapped(swapped(raw, "\\", "\\\\"), "`", "\\`"), "$", "\\$");
+    return "`" + swapped(escaped, "{", "${") + "`";
+}
+
+// the value of the attribute `name` of a component, as code: an
+// expression, a number, `true`/`false`, a length, or a text
+function argOf(attrs: Attr[n], name: string, kind: i64, fallback: string): string {
+    if (!has(attrs, name)) {
+        return fallback;
+    }
+    const v = attr(attrs, name);
+    const code = valueOf(kind, v);
+    return code == "" ? fallback : code;
+}
+
+// an attribute of a component not among `known`: a fault
+function onlyAttrs(g: Gen, attrs: Attr[n], what: string, known: string[m], line: i64): Made {
+    const strange = filter(attrs, (a) => findIndex(known, (x) => x == a.name) < 0);
+    return strange.length > 0 ? Faults([`${g.file}:${line}: the attribute \`${strange[0].name}\` is unknown for <${what}> (${join(known, ", ")})`]) : Code("");
+}
+
+// a component made by `call`, its classes applied to its box
+function component(g: Gen, attrs: Attr[n], what: string, known: string[m], call: string, line: i64): Made {
+    const checked = onlyAttrs(g, attrs, what, concat(known, ["class"]), line);
+    const restyle = has(attrs, "class") ? classed(g, attrs, "s", "cls_", line) : Code("");
+    return both(checked, restyle, (a, r) => r == "" ? call : `restyled(${call}, (s) => ${r})`);
+}
+
+// the element `n` as code (an `Element`), on a line of its own with the
+// file and line it comes from (an error of `iscc` in it leads there)
+function element(g: Gen, n: Node): Made {
+    return match (n) {
+        Text(t, line) => Faults([`${g.file}:${line}: a text outside <text> or a component`]),
+        Tag(name, attrs, kids, line) => both(tagOf(g, name, attrs, kids, line), Code(""), (c, x) => `\n        /* ${g.file}:${line} */ ${c}`),
+    };
+}
+
+function tagOf(g: Gen, name: string, attrs: Attr[n], kids: Node[m], line: i64): Made {
+    if (name == "box" || name == "row" || name == "column") {
+        const direction = name == "row" ? "Row" : (name == "column" ? "Column" : "");
+        return both(boxStyle(g, attrs, direction, line), childrenOf(g, kids), (st, cs) => `Div(${st}, ${cs})`);
+    }
+    if (name == "text") {
+        const checked = onlyAttrs(g, attrs, "text", ["size", "color", "textAlign", "class"], line);
+        const base = `textStyle(${argOf(attrs, "size", KIND_F32, "14.0f32")}, ${argOf(attrs, "color", KIND_COLOR, "rgb(0x111827u32)")})`;
+        const aligned = has(attrs, "textAlign") ? `{ ...${base}, align: ${argOf(attrs, "textAlign", KIND_ALIGN, "Start")} }` : base;
+        return both(checked, classed(g, attrs, aligned, "text_", line), (c, st) => `Label(${st}, ${textOf(kids)})`);
+    }
+    if (name == "button") {
+        return component(g, attrs, name, ["id", "primary", "width", "hand"], `button(${textOf(kids)}, ${argOf(attrs, "id", KIND_NAME, "-1")}, ${argOf(attrs, "primary", KIND_BOOL, "true")}, ${argOf(attrs, "width", KIND_LENGTH, "Auto")}, ${argOf(attrs, "hand", KIND_TEXT, "{ hovered: false, pressed: false }")})`, line);
+    }
+    if (name == "iconbutton") {
+        return component(g, attrs, name, ["id", "danger", "hand"], `iconButton(${textOf(kids)}, ${argOf(attrs, "id", KIND_NAME, "-1")}, ${argOf(attrs, "danger", KIND_BOOL, "false")}, ${argOf(attrs, "hand", KIND_TEXT, "{ hovered: false, pressed: false }")})`, line);
+    }
+    if (name == "field") {
+        return component(g, attrs, name, ["edit", "focused", "hint", "id", "width"], `textField(${argOf(attrs, "edit", KIND_TEXT, "editing(\"\")")}, ${argOf(attrs, "focused", KIND_BOOL, "false")}, ${argOf(attrs, "hint", KIND_TEXT, "\"\"")}, ${argOf(attrs, "id", KIND_NAME, "-1")}, ${argOf(attrs, "width", KIND_LENGTH, "Fill(1.0f32)")})`, line);
+    }
+    if (name == "checkbox") {
+        return component(g, attrs, name, ["checked", "id", "hand"], `checkbox(${argOf(attrs, "checked", KIND_BOOL, "false")}, ${argOf(attrs, "id", KIND_NAME, "-1")}, ${argOf(attrs, "hand", KIND_TEXT, "{ hovered: false, pressed: false }")})`, line);
+    }
+    if (name == "toggle") {
+        return component(g, attrs, name, ["at", "id"], `toggleAt(${argOf(attrs, "at", KIND_F32, "0.0f32")}, ${argOf(attrs, "id", KIND_NAME, "-1")})`, line);
+    }
+    if (name == "progress") {
+        return component(g, attrs, name, ["value", "width"], `progress(${argOf(attrs, "value", KIND_F32, "0.0f32")}, ${argOf(attrs, "width", KIND_F32, "200.0f32")})`, line);
+    }
+    return Faults([`${g.file}:${line}: the element <${name}> is unknown (box, row, column, text, button, iconbutton, field, checkbox, toggle, progress, each, slot)`]);
+}
+
+// the children of a box as code (an array of elements): its elements, and
+// those of <each> and <slot> joined after them in their order
+function childrenOf(g: Gen, kids: Node[n]): Made {
+    const parts = map(kids, (k) => match (k) {
+        Tag(name, attrs, cs, line) => name == "each" ? eachOf(g, attrs, cs, line) : (name == "slot" ? slotOf(g, attrs, line) : both(element(g, k), Code(""), (e, x) => `[${e}]`)),
+        Text(t, line) => Faults([`${g.file}:${line}: a text in a box (in <text> it is shown)`]),
+    });
+    return match (allOf(parts, SEP)) {
+        Code(c) => Code(c == "" ? "[]" : fold(split(c, SEP), "", (acc, p) => acc == "" ? p : `concat(${acc}, ${p})`)),
+        Faults(f) => Faults(f),
+    };
+}
+
+// <each items="{xs}" as="x" index="k">: its one child for each element of
+// `xs`
+function eachOf(g: Gen, attrs: Attr[n], kids: Node[m], line: i64): Made {
+    const checked = onlyAttrs(g, attrs, "each", ["items", "as", "index"], line);
+    const items = attr(attrs, "items");
+    if (!isExpr(items)) {
+        return Faults([`${g.file}:${line}: <each> needs items="{an array}"`]);
+    }
+    const tags = filter(kids, (k) => match (k) {
+        Tag(name, a, c, l) => true,
+        Text(t, l) => false,
+    });
+    if (tags.length != 1) {
+        return Faults([`${g.file}:${line}: <each> holds one element (it has ${tags.length})`]);
+    }
+    const as = has(attrs, "as") ? attr(attrs, "as") : "item";
+    const index = has(attrs, "index") ? attr(attrs, "index") : "index";
+    return both(checked, element(g, tags[0]), (c, e) => `map(iota(${exprOf(items)}.length), (${index}) => {\n        const ${as} = ${exprOf(items)}[${index}];\n        return ${e};\n    })`);
+}
+
+// <slot elements="{expr}">: elements made by code
+function slotOf(g: Gen, attrs: Attr[n], line: i64): Made {
+    const v = attr(attrs, "elements");
+    return isExpr(v) ? Code(exprOf(v)) : Faults([`${g.file}:${line}: <slot> needs elements="{an array of elements}"`]);
+}
+
+// ----- the module --------------------------------------------------------
+
+// the imports of the root's `import` (`./a: x, y; ./b: z`)
+function importsOf(spec: string): string {
+    const parts = filter(map(split(spec, ";"), (x) => x.trim()), (x) => x != "");
+    return join(map(parts, (p) => {
+        const colon = p.indexOf(":");
+        return colon < 0 ? "" : `import { ${p.slice(colon + 1, p.length).trim()} } from "${p.slice(0, colon).trim()}";`;
+    }), "\n");
+}
+
+// the folder of the file `path` (with its `/`)
+function folderOf(path: string): string {
+    const k = path.lastIndexOf("/");
+    return k < 0 ? "" : path.slice(0, k + 1);
+}
+
+action main(args: string[k]): i32 {
+    if (args.length < 2) {
+        print("usage: uigen VIEW.ui.xml OUT.isc");
+        return 2;
+    }
+    const xmlPath = args[0];
+    return match (sys.readFile(xmlPath)) {
+        Err(e) => {
+            print(`${xmlPath}: ${sys.message(e)}`);
+            return 1;
+        },
+        Ok(text) => match (parse(text)) {
+            Fault(m, line) => {
+                print(`${xmlPath}:${line}: ${m}`);
+                return 1;
+            },
+            Read(root) => match (root) {
+                Text(t, line) => {
+                    print(`${xmlPath}:${line}: <view> expected`);
+                    return 1;
+                },
+                Tag(rname, rattrs, rkids, rline) => made(xmlPath, rname, rattrs, rkids, rline, args[1]),
+            },
+        },
+    };
+}
+
+// the module of the view `<view rattrs>rkids</view>` written to `out`
+action made(xmlPath: string, rname: string, rattrs: Attr[n], rkids: Node[m], rline: i64, out: string): i32 {
+    if (rname != "view") {
+        print(`${xmlPath}:${rline}: the root is <view>, not <${rname}>`);
+        return 1;
+    }
+    const stylePath = has(rattrs, "styles") ? folderOf(xmlPath) + attr(rattrs, "styles") : "";
+    const rules = stylePath == "" ? Sheet([]) : match (sys.readText(stylePath)) {
+        Ok(t) => parseStyles(t),
+        Err(e) => Bad(`${stylePath}: ${sys.message(e)}`, 0),
+    };
+    return match (rules) {
+        Bad(m, line) => {
+            print(`${stylePath}:${line}: ${m}`);
+            return 1;
+        },
+        Sheet(rs) => {
+            const g = { file: xmlPath, classes: map(rs, (r) => r.name) };
+            const tags = filter(rkids, (k) => match (k) {
+                Tag(name, a, c, l) => true,
+                Text(t, l) => false,
+            });
+            const body = tags.length == 1 ? element(g, tags[0]) : Faults([`${xmlPath}:${rline}: <view> holds one element (it has ${tags.length})`]);
+            const classes = allOf(map(rs, (r) => classFunction(stylePath, r)), "\n");
+            return match (both(classes, body, (c, b) => c + SEP + b)) {
+                Faults(fs) => {
+                    print(join(fs, "\n"));
+                    return 1;
+                },
+                Code(c) => {
+                    const at = c.indexOf(SEP);
+                    const lib = has(rattrs, "lib") ? attr(rattrs, "lib") : "../src";
+                    const fname = has(rattrs, "function") ? attr(rattrs, "function") : "view";
+                    const model = has(rattrs, "model") ? attr(rattrs, "model") : "i64";
+                    const source = `// Made by tools/uigen from ${xmlPath}${stylePath == "" ? "" : ` and ${stylePath}`}: not to be edited\n`
+                        + `import { rgb, rgba } from "${lib}/paint";\n`
+                        + `import { Element, Div, Label, Px, Fill, Auto, Row, Column, Packed, Between, style, textStyle, Style, TextStyle, ARROW, POINTER, TEXT } from "${lib}/ui";\n`
+                        + `import { Start, Center, End } from "${lib}/text";\n`
+                        + `import { editing } from "${lib}/edit";\n`
+                        + `import { button, iconButton, textField, checkbox, toggleAt, progress, restyled } from "${lib}/widgets";\n`
+                        + importsOf(attr(rattrs, "import")) + "\n\n"
+                        + c.slice(0, at) + (at > 0 ? "\n" : "")
+                        + `export function ${fname}(m: ${model}): Element {\n    return ${c.slice(at + SEP.length, c.length)};\n}\n`;
+                    writeBytes(out, bytes(source));
+                    print(`${out}: made`);
+                    return 0;
+                },
+            };
+        },
+    };
+}

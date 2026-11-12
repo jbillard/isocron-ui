@@ -1,0 +1,3 @@
+<view model="i64" styles="ok.style">
+  <row class="a b"/>
+</view>

@@ -1,0 +1,113 @@
+// A reader of files of styles in the manner of CSS, for the interfaces read
+// at compile time (tools/uigen): rules of classes, `.name { property:
+// value; ... }`, several classes sharing a rule (`.a, .b { ... }`),
+// comments `/* ... */`. Each property keeps its line, for the faults told
+// with it; what a property means is the generator's (a name or a value it
+// does not know: a fault there).
+
+// a property: its name, its value (as written, trimmed), its line
+export type Property = { name: string, value: string, line: i64 };
+
+// a rule: the class it is for, its properties in their order
+export type Rule = { name: string, props: Property[] };
+
+// the rules of a file, or the fault at a line
+export type Styles = Sheet(Rule[]) | Bad(string, i64);
+
+// the text `s` without its comments (each replaced by as many line feeds as
+// it held: the lines kept), or "" with `ok` false when one is not closed
+function uncommented(s: string): [string, boolean] {
+    const parts = split(s, "/*");
+    return uncommentedFrom(parts, 1, parts[0]);
+}
+
+function uncommentedFrom(parts: string[n], k: i64, acc: string): [string, boolean] {
+    if (k >= n) {
+        return [acc, true] as const;
+    }
+    const p = parts[k];
+    const end = p.indexOf("*/");
+    if (end < 0) {
+        return ["", false] as const;
+    }
+    const comment = p.slice(0, end);
+    const feeds = "\n".repeat(count(bytes(comment), (c) => c == 10u8));
+    return uncommentedFrom(parts, k + 1, acc + feeds + p.slice(end + 2, p.length));
+}
+
+// the line of the place `at` of `s`
+function lineOf(s: string, at: i64): i64 {
+    const b = bytes(s);
+    return 1 + count(iota(min(at, b.length)), (i) => b[i] == 10u8);
+}
+
+// a name of class: letters, digits, `_` and `-`
+function className(s: string): boolean {
+    const b = bytes(s);
+    return b.length > 0 && count(b, (c) => (c >= 97u8 && c <= 122u8) || (c >= 65u8 && c <= 90u8) || (c >= 48u8 && c <= 57u8) || c == 95u8 || c == 45u8) == b.length;
+}
+
+// the file of styles `text`
+export function parseStyles(text: string): Styles {
+    const [s, ok] = uncommented(text);
+    if (!ok) {
+        return Bad("a comment not closed", lineOf(text, text.lastIndexOf("/*")));
+    }
+    return rulesFrom(s, 0, []);
+}
+
+// the rules of `s` from the place `at`
+function rulesFrom(s: string, at: i64, acc: Rule[]): Styles {
+    const rest = s.slice(at, s.length);
+    if (rest.trim() == "") {
+        return Sheet(acc);
+    }
+    const open = rest.indexOf("{");
+    if (open < 0) {
+        return Bad("`{` expected after a selector", lineOf(s, at + rest.length - rest.trimStart().length));
+    }
+    const close = rest.indexOf("}");
+    if (close < 0) {
+        return Bad("a rule not closed by `}`", lineOf(s, at + open));
+    }
+    if (close < open) {
+        return Bad("`}` without its `{`", lineOf(s, at + max(0, close)));
+    }
+    const selectors = map(split(rest.slice(0, open), ","), (x) => x.trim());
+    const bad = findIndex(selectors, (x) => !x.startsWith(".") || !className(x.slice(1, x.length)));
+    if (bad >= 0) {
+        return Bad(`\`${selectors[bad]}\` is not a class (\`.name\`)`, lineOf(s, at + rest.indexOf(selectors[bad])));
+    }
+    const bodyAt = at + open + 1;
+    return match (propsFrom(s, bodyAt, at + close, [])) {
+        Sheet(rs) => rulesFrom(s, at + close + 1, concat(acc, map(selectors, (x) => ({ name: x.slice(1, x.length), props: rs[0].props })))),
+        Bad(m, line) => Bad(m, line),
+    };
+}
+
+// the properties of the body between `from` and `to` (its `}`), as one rule
+function propsFrom(s: string, from: i64, to: i64, acc: Property[]): Styles {
+    const body = s.slice(from, to);
+    if (body.trim() == "") {
+        return Sheet([{ name: "", props: acc }]);
+    }
+    const semi = body.indexOf(";");
+    const end = semi < 0 ? body.length : semi;
+    const decl = body.slice(0, end);
+    const lead = decl.length - decl.trimStart().length;
+    const line = lineOf(s, from + lead);
+    const colon = decl.indexOf(":");
+    if (colon < 0) {
+        return Bad(`\`:\` expected in \`${decl.trim()}\``, line);
+    }
+    const name = decl.slice(0, colon).trim();
+    const value = decl.slice(colon + 1, decl.length).trim();
+    if (!className(name)) {
+        return Bad(`\`${name}\` is not a name of property`, line);
+    }
+    if (value == "") {
+        return Bad(`the property \`${name}\` has no value`, line);
+    }
+    const next = concat(acc, [{ name: name, value: value, line: line }]);
+    return semi < 0 ? Sheet([{ name: "", props: next }]) : propsFrom(s, from + semi + 1, to, next);
+}

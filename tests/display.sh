@@ -151,4 +151,9 @@ done
 mw="$(cd "$out" && python3 "$here/../tools/display/play.py" 320 200 clickat:160,40 clickat:160,40 clickat:160,40 endserver -- "$out/minimal" | tail -1)"
 mx="$(cd "$out" && PLAY_X11=1 python3 "$here/../tools/display/play.py" 320 120 clickat:160,40 clickat:160,40 clickat:160,40 endserver -- "$out/minimal" | tail -1)"
 [ "$mw $mx" = "3 3" ] || { echo "FAILED: the minimal application: $mw $mx"; exit 1; }
-echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx; the keyboard: $tabwl, $tabx; the long list: $longwl, $longx; selections: $selwl, $selx; the live gallery: tooltips and animations; large clipboards; MIT-SHM and strips the same; a fractional scale of 1.5 under sway, the same pixels; the examples"
+# the list of tasks whose view is made from XML and styles (tools/uigen):
+# the same hand, the same tasks
+"$iscc" build examples/todo_xml_app.isc -o "$out/todox"
+xmltasks="$(cd "$out" && python3 "$here/../tools/display/play.py" 520 420 clickat:211,124 type:Lait key:Return type:Pain clickat:411,124 clickat:80,174 clickat:211,124 type:Thex key:BackSpace key:Return endserver -- "$out/todox" | tail -1)"
+[ "$xmltasks" = "$tasks" ] || { echo "FAILED: the view made from XML: $xmltasks"; exit 1; }
+echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx; the keyboard: $tabwl, $tabx; the long list: $longwl, $longx; selections: $selwl, $selx; the live gallery: tooltips and animations; large clipboards; MIT-SHM and strips the same; a fractional scale of 1.5 under sway, the same pixels; the examples; the view made from XML"

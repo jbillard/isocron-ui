@@ -1,0 +1,41 @@
+// The view of the list of tasks written in code (examples/todo.isc) and the
+// one made by tools/uigen from examples/todo.ui.xml and todo.style
+// (examples/todo_view.isc): for models at their start, a field with the
+// focus and a text, a pointer over a task, tasks ticked, the same pixels
+// and the same places.
+import { parse, Font } from "../src/font";
+import { render, rgb } from "../src/paint";
+import { interface, laidOut } from "../src/app";
+import { editing } from "../src/edit";
+import * as todo from "../examples/todo";
+import * as xmlView from "../examples/todo_view";
+
+function same(f: Font, m: todo.Model): [boolean, boolean, i64] {
+    const [pa, ua] = laidOut(interface(520, 420, 0u64), f, m, todo.view, 0u64);
+    const [pb, ub] = laidOut(interface(520, 420, 0u64), f, m, xmlView.view, 0u64);
+    const xa = render(520, 420, rgb(0xFFFFFFu32), pa);
+    const xb = render(520, 420, rgb(0xFFFFFFu32), pb);
+    const ha = map(ua.hits, (h) => [h.id, h.kind, i64(h.x), i64(h.y), i64(h.w), i64(h.h)] as const);
+    const hb = map(ub.hits, (h) => [h.id, h.kind, i64(h.x), i64(h.y), i64(h.w), i64(h.h)] as const);
+    return [count(iota(xa.length), (i) => xa[i] != xb[i]) == 0 && xa.length == xb.length, ha == hb, ha.length] as const;
+}
+
+action main(args: string[k]): i32 {
+    return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => {
+            const m0 = todo.initial();
+            const items = map(iota(9), (i) => ({ text: `Tâche ${i}`, done: i % 2 == 0 }));
+            print([
+                same(f, m0),
+                same(f, { ...m0, field: editing("Pain de mie"), focused: true }),
+                same(f, { ...m0, hover: todo.TICK + 1 }),
+                same(f, { ...m0, items: items, hover: todo.ADD }),
+            ] as const);
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

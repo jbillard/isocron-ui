@@ -98,7 +98,7 @@ export function update(m: Model, i: HandInput): [Model, Effect[]] {
 }
 
 // the hand of the place `id`: under the pointer, pressed
-function hand(m: Model, id: i64): Hand {
+export function hand(m: Model, id: i64): Hand {
     return { hovered: m.hover == id, pressed: m.pressed == id };
 }
 
@@ -110,6 +110,12 @@ function row(it: Item, k: i64, m: Model): Element {
         Div({ ...style(), width: Fill(1.0f32) }, [text]),
         iconButton("×", REMOVE + k, true, hand(m, REMOVE + k)),
     ]);
+}
+
+// the tasks left to do, in words
+export function leftText(m: Model): string {
+    const left = count(m.items, (it) => !it.done);
+    return left <= 1 ? `${left} tâche à faire` : `${left} tâches à faire`;
 }
 
 export function view(m: Model): Element {

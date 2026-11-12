@@ -96,6 +96,48 @@ action main(args: string[k]): i32 {
 Its steps are one pure function (`step` of `src/app.isc`), tested without a
 screen.
 
+## Interfaces in files
+
+A view can also be described in XML, its styles in a file in the manner of
+CSS, both read at compile time: `tools/uigen` turns them into the module of
+Isocron that builds its elements, which `iscc` then compiles with the
+program. An element, an attribute, a property, a value or a class the
+generator does not know is refused at its file and line; the expressions
+`{...}` are given to `iscc` as they are (a field of the model or a message
+that does not exist is an error of compilation, on a line that names the
+line of the XML). `examples/todo.ui.xml` and `examples/todo.style` describe
+the view of the list of tasks, the same pixels as the one in code
+(`tests/uigen_check.isc`):
+
+```xml
+<view function="view" model="Model" styles="todo.style" import="./todo: Model, ADD, hand">
+  <column class="card">
+    <text size="22" color="#111827">Tâches</text>
+    <row class="line" gap="10">
+      <field edit="{m.field}" focused="{m.focused}" hint="Nouvelle tâche" id="FIELD"/>
+      <button id="ADD" hand="{hand(m, ADD)}">Ajouter</button>
+    </row>
+    <each items="{m.items}" as="it" index="k"> ... </each>
+  </column>
+</view>
+```
+
+```css
+.card { width: 440; padding: 24; gap: 12; background: #FFFFFF; radius: 16; shadowColor: rgba(0, 0, 0, 0.18); }
+```
+
+```
+iscc run tools/uigen/uigen.isc examples/todo.ui.xml examples/todo_view.isc
+iscc build examples/todo_xml_app.isc -o todo_xml_app
+```
+
+The elements: `box`, `row`, `column`, `text` (`{expr}` in its text),
+`button`, `iconbutton`, `field`, `checkbox`, `toggle`, `progress`, `each`
+(its child for each element of an array), `slot` (elements made by code).
+The attributes of a box and the properties of a class are those of
+`Style`; a text has `size`, `color` and `textAlign`; `class` names classes,
+`id` the message of a click. `src/xml.isc` and `src/css.isc` read the files.
+
 ## Its files
 
 - `src/app.isc`: `run` and `runWith` (the texts of the menu of a field),
@@ -139,7 +181,8 @@ Each is built by `iscc build examples/NAME.isc -o NAME` (for Windows: with
 - `minimal.isc`: the button above; prints its clicks at the end.
 - `todo_app.isc` (`todo.isc`): a list of tasks: a field, tasks ticked and
   removed, a list that scrolls, the clipboard, the keyboard alone; prints
-  its tasks at the end.
+  its tasks at the end. `todo_xml_app.isc`: the same, its view made from
+  `todo.ui.xml` and `todo.style` (`todo_view.isc`).
 - `long_list_app.isc` (`long_list.isc`): 100 000 tasks (or the number
   given) in a long list; prints those ticked.
 - `gallery_app.isc` (`gallery_live.isc`, `gallery_plate.isc`): the plate of
@@ -159,7 +202,9 @@ Each is built by `iscc build examples/NAME.isc -o NAME` (for Windows: with
 with `tests/reference/`, and runs the checks of `tests/*_check.isc` (the
 editing of a field, the steps of the list of tasks, the long list, the
 tooltips and animations, X11, Wayland, PNG, the inflater, text, fonts,
-keyboards). `tests/display.sh` plays a hand under Wayland (Weston in
+keyboards, the view made from XML). `tests/uigen.sh` checks the
+generator (its module up to date, faulty files refused at their lines).
+`tests/display.sh` plays a hand under Wayland (Weston in
 Docker, the image of `tools/display`, `xdotool`), under X11 (Xvfb in the
 same image) and under sway at a fractional scale (the image of
 `tools/display/sway`), and runs every example of Linux; the programs of

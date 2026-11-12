@@ -1,0 +1,3 @@
+<view model="Model" lib="../../src" import="../../examples/todo: Model">
+  <text>{m.nothing}</text>
+</view>

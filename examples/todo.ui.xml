@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The view of the list of tasks (examples/todo.isc) described in XML and
+     in the styles of todo.style: tools/uigen makes examples/todo_view.isc of
+     them before the program is compiled, the same elements as the view
+     written in code (tests/uigen.sh draws both). -->
+<view function="view" model="Model" styles="todo.style"
+      import="./todo: Model, FIELD, ADD, CLEAR, NOTHING, TICK, REMOVE, hand, leftText; ../src/widgets: INK, HINT, MUTED">
+  <box class="ground" id="NOTHING">
+    <column class="card">
+      <text size="22" color="#111827">Tâches</text>
+      <row class="line" gap="10">
+        <field edit="{m.field}" focused="{m.focused}" hint="Nouvelle tâche" id="FIELD" width="fill"/>
+        <button id="ADD" primary="true" width="auto" hand="{hand(m, ADD)}">Ajouter</button>
+      </row>
+      <!-- the tasks in a column that scrolls (the first offset the
+           application keeps) -->
+      <box height="fill" scroll="0">
+        <each items="{m.items}" as="it" index="k">
+          <row class="task" background="{m.hover == TICK + k ? rgb(0xF9FAFBu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)}">
+            <checkbox checked="{it.done}" id="{TICK + k}" hand="{hand(m, TICK + k)}"/>
+            <box width="fill">
+              <text size="15" color="{it.done ? rgb(HINT) : rgb(INK)}">{it.text}</text>
+            </box>
+            <iconbutton id="{REMOVE + k}" danger="true" hand="{hand(m, REMOVE + k)}">×</iconbutton>
+          </row>
+        </each>
+      </box>
+      <row class="line" justify="between">
+        <text size="13" color="{rgb(MUTED)}">{leftText(m)}</text>
+        <button id="CLEAR" primary="false" hand="{hand(m, CLEAR)}">Effacer les terminées</button>
+      </row>
+    </column>
+  </box>
+</view>
