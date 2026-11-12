@@ -37,7 +37,7 @@ export type Vm = {
     code: i64[], lines: i64[], notes: string[], kT: i64[], kI: i64[], kF: f64[],
     pStart: i64[], pNparams: i64[], pVararg: boolean[], pNregs: i64[], pUpBase: i64[], pNups: i64[], pName: string[], pLine: i64[], pChunk: string[],
     upLocal: boolean[], upIdx: i64[],
-    rT: i64[], rI: i64[], rF: f64[],
+    regs: V[],
     base: i64, pc: i64, cl: i64, va: i64, vaN: i64, mtop: i64,
     fBase: i64[], fPc: i64[], fCl: i64[], fRet: i64[], fWant: i64[], fVa: i64[], fVaN: i64[], depth: i64,
     vaT: i64[], vaI: i64[], vaF: f64[], vaTop: i64,
@@ -90,6 +90,10 @@ function growS(xs: string[n], need: i64): string[] {
     return need <= n ? xs : concat(xs, fill(max(max(n, need - n), 16), ""));
 }
 
+function growV(xs: V[n], need: i64): V[] {
+    return need <= n ? xs : concat(xs, fill(max(max(n, need - n), 16), { t: T_NIL, i: 0, f: 0.0 }));
+}
+
 function growT(xs: TabInfo[n], need: i64): TabInfo[] {
     return need <= n ? xs : concat(xs, fill(max(max(n, need - n), 16), { arr: 0, len: 0, acap: 0, hash: 0, cap: 0, used: 0, meta: -1 }));
 }
@@ -97,11 +101,11 @@ function growT(xs: TabInfo[n], need: i64): TabInfo[] {
 // ----- registers ---------------------------------------------------------------
 
 function reg(vm: Vm, r: i64): V {
-    return { t: vm.rT[r], i: vm.rI[r], f: vm.rF[r] };
+    return vm.regs[r];
 }
 
 function setReg(vm: Vm, r: i64, v: V): Vm {
-    return { ...vm, rT: vm.rT.with(r, v.t), rI: vm.rI.with(r, v.i), rF: vm.rF.with(r, v.f) };
+    return { ...vm, regs: vm.regs.with(r, v) };
 }
 
 // the operand `x` of an instruction: a register of the frame, or below 0
@@ -112,17 +116,15 @@ function rkv(vm: Vm, x: i64): V {
         return { t: vm.kT[k], i: vm.kI[k], f: vm.kF[k] };
     }
     const r = vm.base + x;
-    return { t: vm.rT[r], i: vm.rI[r], f: vm.rF[r] };
+    return { t: vm.regs[r].t, i: vm.regs[r].i, f: vm.regs[r].f };
 }
 
 // room for the registers up to `need`
 function roomRegs(vm: Vm, need: i64): Vm {
-    if (need <= vm.rT.length) {
+    if (need <= vm.regs.length) {
         return vm;
     }
-    const v1 = { ...vm, rT: growI(vm.rT, need) };
-    const v2 = { ...v1, rI: growI(v1.rI, need) };
-    return { ...v2, rF: growF(v2.rF, need) };
+    return { ...vm, regs: growV(vm.regs, need) };
 }
 
 // the first register above the frame running
@@ -573,7 +575,7 @@ function equal(vm: Vm, x: V, y: V): [Vm, boolean] {
     }
     const r = frameTop(vm);
     const v1 = callMeta(vm, mm, x, y, r);
-    return [v1, truthyT(v1.rT[r])] as const;
+    return [v1, truthyT(v1.regs[r].t)] as const;
 }
 
 // `x < y` (`<=` with `orEqual`): its truth
@@ -597,7 +599,7 @@ function less(vm: Vm, x: V, y: V, orEqual: boolean): [Vm, boolean] {
     if (mm.t != T_NIL) {
         const r = frameTop(vm);
         const v1 = callMeta(vm, mm, x, y, r);
-        return [v1, truthyT(v1.rT[r])] as const;
+        return [v1, truthyT(v1.regs[r].t)] as const;
     }
     const tx = typeName(x.t);
     const ty = typeName(y.t);
@@ -738,12 +740,12 @@ export function callAt(vm: Vm, a: i64, n: i64, want: i64): Vm {
 // results there: a frame entered for a closure (the instruction after the
 // call `pc` its return), a function of the library run at once
 function enter(vm: Vm, a: i64, n: i64, want: i64, line: i64): Vm {
-    const t = vm.rT[a];
+    const t = vm.regs[a].t;
     if (t == T_FUN) {
-        return enterLua(vm, vm.rI[a], a, n, want, line);
+        return enterLua(vm, vm.regs[a].i, a, n, want, line);
     }
     if (t == T_BUILTIN) {
-        const [v1, nres] = libCall(vm, vm.rI[a], a, n, line);
+        const [v1, nres] = libCall(vm, vm.regs[a].i, a, n, line);
         return v1.err ? v1 : results(v1, a, a, nres, want);
     }
     const f = reg(vm, a);
@@ -772,7 +774,7 @@ function enterLua(vm: Vm, k: i64, a: i64, n: i64, want: i64, pc: i64): Vm {
     const vaAt = v0.vaTop;
     const v1 = extra > 0 ? keepVarargs(v0, base + nparams, extra) : v0;
     // (the parameters not given nil)
-    const v2 = n < nparams ? fold(iota(nparams - n), v1, (acc, i) => ({ ...acc, rT: acc.rT.with(base + n + i, T_NIL) })) : v1;
+    const v2 = n < nparams ? fold(iota(nparams - n), v1, (acc, i) => ({ ...acc, regs: acc.regs.with(base + n + i, { t: T_NIL, i: 0, f: 0.0 }) })) : v1;
     const d = v2.depth + 1;
     const v3 = {
         ...v2,
@@ -793,7 +795,7 @@ function enterLua(vm: Vm, k: i64, a: i64, n: i64, want: i64, pc: i64): Vm {
 function keepVarargs(vm: Vm, from: i64, n: i64): Vm {
     const at = vm.vaTop;
     const v1 = { ...vm, vaT: growI(vm.vaT, at + n), vaI: growI(vm.vaI, at + n), vaF: growF(vm.vaF, at + n) };
-    const v2 = fold(iota(n), v1, (acc, i) => ({ ...acc, vaT: acc.vaT.with(at + i, acc.rT[from + i]), vaI: acc.vaI.with(at + i, acc.rI[from + i]), vaF: acc.vaF.with(at + i, acc.rF[from + i]) }));
+    const v2 = fold(iota(n), v1, (acc, i) => ({ ...acc, vaT: acc.vaT.with(at + i, acc.regs[from + i].t), vaI: acc.vaI.with(at + i, acc.regs[from + i].i), vaF: acc.vaF.with(at + i, acc.regs[from + i].f) }));
     return { ...v2, vaTop: at + n };
 }
 
@@ -803,7 +805,7 @@ function results(vm: Vm, from: i64, to: i64, nres: i64, want: i64): Vm {
     const n = want < 0 ? nres : want;
     const v0 = roomRegs(vm, to + n + 1);
     const v1 = from == to ? v0 : fold(iota(min(n, nres)), v0, (acc, i) => setReg(acc, to + i, reg(acc, from + i)));
-    const v2 = nres < n ? fold(iota(n - nres), v1, (acc, i) => ({ ...acc, rT: acc.rT.with(to + nres + i, T_NIL) })) : v1;
+    const v2 = nres < n ? fold(iota(n - nres), v1, (acc, i) => ({ ...acc, regs: acc.regs.with(to + nres + i, { t: T_NIL, i: 0, f: 0.0 }) })) : v1;
     return want < 0 ? { ...v2, mtop: to + nres } : v2;
 }
 
@@ -834,34 +836,34 @@ function run(vm: Vm, stop: i64): Vm {
     return match (op) {
         0 => {
             const r = vm.base + b;
-            return run({ ...vm, rT: vm.rT.with(ra, vm.rT[r]), rI: vm.rI.with(ra, vm.rI[r]), rF: vm.rF.with(ra, vm.rF[r]), pc: next }, stop);
+            return run({ ...vm, regs: vm.regs.with(ra, { t: vm.regs[r].t, i: vm.regs[r].i, f: vm.regs[r].f }), pc: next }, stop);
         },
-        1 => run({ ...vm, rT: vm.rT.with(ra, vm.kT[b]), rI: vm.rI.with(ra, vm.kI[b]), rF: vm.rF.with(ra, vm.kF[b]), pc: next }, stop),
-        2 => run({ ...fold(iota(b + 1), vm, (acc, i) => ({ ...acc, rT: acc.rT.with(ra + i, T_NIL) })), pc: next }, stop),
-        3 => run({ ...vm, rT: vm.rT.with(ra, b != 0 ? T_TRUE : T_FALSE), pc: next }, stop),
-        4 => run({ ...vm, rT: vm.rT.with(ra, T_INT), rI: vm.rI.with(ra, b), pc: next }, stop),
+        1 => run({ ...vm, regs: vm.regs.with(ra, { t: vm.kT[b], i: vm.kI[b], f: vm.kF[b] }), pc: next }, stop),
+        2 => run({ ...fold(iota(b + 1), vm, (acc, i) => ({ ...acc, regs: acc.regs.with(ra + i, { t: T_NIL, i: 0, f: 0.0 }) })), pc: next }, stop),
+        3 => run({ ...vm, regs: vm.regs.with(ra, { t: b != 0 ? T_TRUE : T_FALSE, i: 0, f: 0.0 }), pc: next }, stop),
+        4 => run({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: b, f: 0.0 }), pc: next }, stop),
         5 => {
             const cell = vm.ups[vm.clUp[vm.cl] + b];
-            return run({ ...vm, rT: vm.rT.with(ra, vm.cT[cell]), rI: vm.rI.with(ra, vm.cI[cell]), rF: vm.rF.with(ra, vm.cF[cell]), pc: next }, stop);
+            return run({ ...vm, regs: vm.regs.with(ra, { t: vm.cT[cell], i: vm.cI[cell], f: vm.cF[cell] }), pc: next }, stop);
         },
         6 => {
             const cell = vm.ups[vm.clUp[vm.cl] + b];
-            return run({ ...vm, cT: vm.cT.with(cell, vm.rT[ra]), cI: vm.cI.with(cell, vm.rI[ra]), cF: vm.cF.with(cell, vm.rF[ra]), pc: next }, stop);
+            return run({ ...vm, cT: vm.cT.with(cell, vm.regs[ra].t), cI: vm.cI.with(cell, vm.regs[ra].i), cF: vm.cF.with(cell, vm.regs[ra].f), pc: next }, stop);
         },
         7 => {
             const at = slotIn(vm, vm.tabs[vm.globals], { t: T_STR, i: vm.kI[b], f: 0.0 });
             if (at < 0) {
-                return run({ ...vm, rT: vm.rT.with(ra, T_NIL), pc: next }, stop);
+                return run({ ...vm, regs: vm.regs.with(ra, { t: T_NIL, i: 0, f: 0.0 }), pc: next }, stop);
             }
-            return run({ ...vm, rT: vm.rT.with(ra, vm.svT[at]), rI: vm.rI.with(ra, vm.svI[at]), rF: vm.rF.with(ra, vm.svF[at]), pc: next }, stop);
+            return run({ ...vm, regs: vm.regs.with(ra, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
         },
         8 => {
             const g = vm.globals;
             const key = { t: T_STR, i: vm.kI[b], f: 0.0 };
             const at = slotIn(vm, vm.tabs[g], key);
             // (a global that has a value: written in place)
-            if (at >= 0 && vm.svT[at] != T_NIL && vm.rT[ra] != T_NIL) {
-                return run({ ...vm, svT: vm.svT.with(at, vm.rT[ra]), svI: vm.svI.with(at, vm.rI[ra]), svF: vm.svF.with(at, vm.rF[ra]), pc: next }, stop);
+            if (at >= 0 && vm.svT[at] != T_NIL && vm.regs[ra].t != T_NIL) {
+                return run({ ...vm, svT: vm.svT.with(at, vm.regs[ra].t), svI: vm.svI.with(at, vm.regs[ra].i), svF: vm.svF.with(at, vm.regs[ra].f), pc: next }, stop);
             }
             const v = reg(vm, ra);
             return run({ ...rawSet(vm, g, key, v), pc: next }, stop);
@@ -871,14 +873,14 @@ function run(vm: Vm, stop: i64): Vm {
             const k = rkv(vm, c);
             // (a table of a value at that key, or of no metatable: read
             // here, without a call)
-            if (vm.rT[r] == T_TAB) {
-                const info = vm.tabs[vm.rI[r]];
+            if (vm.regs[r].t == T_TAB) {
+                const info = vm.tabs[vm.regs[r].i];
                 const at = placeOf(vm, info, k);
                 if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
-                    return run({ ...vm, rT: vm.rT.with(ra, vm.svT[at]), rI: vm.rI.with(ra, vm.svI[at]), rF: vm.rF.with(ra, vm.svF[at]), pc: next }, stop);
+                    return run({ ...vm, regs: vm.regs.with(ra, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
                 }
                 if (at < 0 && info.meta < 0 && k.t != T_NUM) {
-                    return run({ ...vm, rT: vm.rT.with(ra, T_NIL), pc: next }, stop);
+                    return run({ ...vm, regs: vm.regs.with(ra, { t: T_NIL, i: 0, f: 0.0 }), pc: next }, stop);
                 }
             }
             const o = reg(vm, r);
@@ -890,8 +892,8 @@ function run(vm: Vm, stop: i64): Vm {
             // (a value written at a key that has one, or into a table of no
             // metatable: here; one more at the end of the array part of a
             // table of no hashes and room enough: here too)
-            if (vm.rT[ra] == T_TAB && v.t != T_NIL) {
-                const t = vm.rI[ra];
+            if (vm.regs[ra].t == T_TAB && v.t != T_NIL) {
+                const t = vm.regs[ra].i;
                 const info = vm.tabs[t];
                 const at = placeOf(vm, info, k);
                 if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
@@ -907,7 +909,7 @@ function run(vm: Vm, stop: i64): Vm {
         },
         11 => {
             const [v1, t] = newTable(gcMaybe(vm), b, c);
-            return run({ ...v1, rT: v1.rT.with(ra, T_TAB), rI: v1.rI.with(ra, t), pc: next }, stop);
+            return run({ ...v1, regs: v1.regs.with(ra, { t: T_TAB, i: t, f: 0.0 }), pc: next }, stop);
         },
         12 => {
             const o = reg(vm, vm.base + b);
@@ -920,7 +922,7 @@ function run(vm: Vm, stop: i64): Vm {
                     const mt = vm.svT[at];
                     const mi = vm.svI[at];
                     const mf = vm.svF[at];
-                    return run({ ...vm, rT: vm.rT.with(ra + 1, T_TAB).with(ra, mt), rI: vm.rI.with(ra + 1, o.i).with(ra, mi), rF: vm.rF.with(ra, mf), pc: next }, stop);
+                    return run({ ...vm, regs: vm.regs.with(ra + 1, { t: T_TAB, i: o.i, f: 0.0 }).with(ra, { t: mt, i: mi, f: mf }), pc: next }, stop);
                 }
             }
             const v1 = setReg({ ...vm, pc: next }, ra + 1, o);
@@ -931,10 +933,10 @@ function run(vm: Vm, stop: i64): Vm {
             const y = rkv(vm, c);
             // (the integers and the floats here, without a call)
             if (x.t == T_INT && y.t == T_INT) {
-                return run({ ...vm, rT: vm.rT.with(ra, T_INT), rI: vm.rI.with(ra, x.i + y.i), pc: next }, stop);
+                return run({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: x.i + y.i, f: 0.0 }), pc: next }, stop);
             }
             if (x.t == T_NUM && y.t == T_NUM) {
-                return run({ ...vm, rT: vm.rT.with(ra, T_NUM), rF: vm.rF.with(ra, x.f + y.f), pc: next }, stop);
+                return run({ ...vm, regs: vm.regs.with(ra, { t: T_NUM, i: 0, f: x.f + y.f }), pc: next }, stop);
             }
             return run(arith({ ...vm, pc: next }, 0, x, y, ra), stop);
         },
@@ -943,10 +945,10 @@ function run(vm: Vm, stop: i64): Vm {
             const y = rkv(vm, c);
             // (the integers and the floats here, without a call)
             if (x.t == T_INT && y.t == T_INT) {
-                return run({ ...vm, rT: vm.rT.with(ra, T_INT), rI: vm.rI.with(ra, x.i - y.i), pc: next }, stop);
+                return run({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: x.i - y.i, f: 0.0 }), pc: next }, stop);
             }
             if (x.t == T_NUM && y.t == T_NUM) {
-                return run({ ...vm, rT: vm.rT.with(ra, T_NUM), rF: vm.rF.with(ra, x.f - y.f), pc: next }, stop);
+                return run({ ...vm, regs: vm.regs.with(ra, { t: T_NUM, i: 0, f: x.f - y.f }), pc: next }, stop);
             }
             return run(arith({ ...vm, pc: next }, 1, x, y, ra), stop);
         },
@@ -955,10 +957,10 @@ function run(vm: Vm, stop: i64): Vm {
             const y = rkv(vm, c);
             // (the integers and the floats here, without a call)
             if (x.t == T_INT && y.t == T_INT) {
-                return run({ ...vm, rT: vm.rT.with(ra, T_INT), rI: vm.rI.with(ra, x.i * y.i), pc: next }, stop);
+                return run({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: x.i * y.i, f: 0.0 }), pc: next }, stop);
             }
             if (x.t == T_NUM && y.t == T_NUM) {
-                return run({ ...vm, rT: vm.rT.with(ra, T_NUM), rF: vm.rF.with(ra, x.f * y.f), pc: next }, stop);
+                return run({ ...vm, regs: vm.regs.with(ra, { t: T_NUM, i: 0, f: x.f * y.f }), pc: next }, stop);
             }
             return run(arith({ ...vm, pc: next }, 2, x, y, ra), stop);
         },
@@ -967,7 +969,7 @@ function run(vm: Vm, stop: i64): Vm {
             const y = rkv(vm, c);
             // (the integers and the floats here, without a call)
             if (x.t == T_NUM && y.t == T_NUM) {
-                return run({ ...vm, rT: vm.rT.with(ra, T_NUM), rF: vm.rF.with(ra, x.f / y.f), pc: next }, stop);
+                return run({ ...vm, regs: vm.regs.with(ra, { t: T_NUM, i: 0, f: x.f / y.f }), pc: next }, stop);
             }
             return run(arith({ ...vm, pc: next }, 3, x, y, ra), stop);
         },
@@ -981,7 +983,7 @@ function run(vm: Vm, stop: i64): Vm {
             const y = rkv(vm, c);
             // (the integers and the floats here, without a call)
             if (x.t == T_INT && y.t == T_INT && y.i != 0) {
-                return run({ ...vm, rT: vm.rT.with(ra, T_INT), rI: vm.rI.with(ra, luaMod(x.i, y.i)), pc: next }, stop);
+                return run({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: luaMod(x.i, y.i), f: 0.0 }), pc: next }, stop);
             }
             return run(arith({ ...vm, pc: next }, 5, x, y, ra), stop);
         },
@@ -1002,7 +1004,7 @@ function run(vm: Vm, stop: i64): Vm {
             const x = reg(vm, vm.base + b);
             return run(unary({ ...vm, pc: next }, 0, x, ra), stop);
         },
-        22 => run({ ...vm, rT: vm.rT.with(ra, truthyT(vm.rT[vm.base + b]) ? T_FALSE : T_TRUE), pc: next }, stop),
+        22 => run({ ...vm, regs: vm.regs.with(ra, { t: truthyT(vm.regs[vm.base + b].t) ? T_FALSE : T_TRUE, i: 0, f: 0.0 }), pc: next }, stop),
         23 => {
             const x = reg(vm, vm.base + b);
             return run(unary({ ...vm, pc: next }, 2, x, ra), stop);
@@ -1054,26 +1056,26 @@ function run(vm: Vm, stop: i64): Vm {
             const [v1, r] = less({ ...vm, pc: next }, x, y, true);
             return run({ ...v1, pc: r != want ? next + 1 : next }, stop);
         },
-        28 => run({ ...vm, pc: truthyT(vm.rT[ra]) != (c != 0) ? next + 1 : next }, stop),
+        28 => run({ ...vm, pc: truthyT(vm.regs[ra].t) != (c != 0) ? next + 1 : next }, stop),
         29 => {
             const n = b == 0 ? vm.mtop - ra - 1 : b - 1;
             // (`setmetatable(t, m)`, `t` of no metatable yet: here, without
             // the library)
-            if (vm.rT[ra] == T_BUILTIN && vm.rI[ra] == 16 && n == 2 && vm.rT[ra + 1] == T_TAB && vm.rT[ra + 2] == T_TAB && vm.tabs[vm.rI[ra + 1]].meta < 0 && c <= 2) {
-                const t = vm.rI[ra + 1];
-                const m = vm.rI[ra + 2];
+            if (vm.regs[ra].t == T_BUILTIN && vm.regs[ra].i == 16 && n == 2 && vm.regs[ra + 1].t == T_TAB && vm.regs[ra + 2].t == T_TAB && vm.tabs[vm.regs[ra + 1].i].meta < 0 && c <= 2) {
+                const t = vm.regs[ra + 1].i;
+                const m = vm.regs[ra + 2].i;
                 const info = vm.tabs[t];
                 const top = c == 0 ? ra + 1 : vm.mtop;
-                return run({ ...vm, tabs: vm.tabs.with(t, { ...info, meta: m }), rT: vm.rT.with(ra, T_TAB), rI: vm.rI.with(ra, t), mtop: top, pc: next }, stop);
+                return run({ ...vm, tabs: vm.tabs.with(t, { ...info, meta: m }), regs: vm.regs.with(ra, { t: T_TAB, i: t, f: 0.0 }), mtop: top, pc: next }, stop);
             }
             // (a function of Lua given as many arguments as it has
             // parameters, the frames and the registers room enough: its
             // frame entered here, without a call)
-            if (vm.rT[ra] == T_FUN) {
-                const k = vm.rI[ra];
+            if (vm.regs[ra].t == T_FUN) {
+                const k = vm.regs[ra].i;
                 const p = vm.clProto[k];
                 const d = vm.depth + 1;
-                if (n == vm.pNparams[p] && !vm.pVararg[p] && d < vm.fBase.length && ra + 1 + max(n, vm.pNregs[p]) + 2 <= vm.rT.length && d < 200000) {
+                if (n == vm.pNparams[p] && !vm.pVararg[p] && d < vm.fBase.length && ra + 1 + max(n, vm.pNregs[p]) + 2 <= vm.regs.length && d < 200000) {
                     const entry = vm.pStart[p];
                     const base = vm.base;
                     const cl = vm.cl;
@@ -1097,16 +1099,16 @@ function run(vm: Vm, stop: i64): Vm {
             // (one value to a caller that wants one: given back here)
             if (n == 1 && d > 0 && vm.fWant[d] == 1) {
                 const to = vm.fRet[d];
-                const t = vm.rT[ra];
-                const i = vm.rI[ra];
-                const f = vm.rF[ra];
+                const t = vm.regs[ra].t;
+                const i = vm.regs[ra].i;
+                const f = vm.regs[ra].f;
                 const base = vm.fBase[d];
                 const back = vm.fPc[d];
                 const cl = vm.fCl[d];
                 const va = vm.fVa[d];
                 const vaN = vm.fVaN[d];
                 const top = vm.va;
-                return run({ ...vm, rT: vm.rT.with(to, t), rI: vm.rI.with(to, i), rF: vm.rF.with(to, f), depth: d - 1, base: base, pc: back, cl: cl, va: va, vaN: vaN, vaTop: top }, stop);
+                return run({ ...vm, regs: vm.regs.with(to, { t: t, i: i, f: f }), depth: d - 1, base: base, pc: back, cl: cl, va: va, vaN: vaN, vaTop: top }, stop);
             }
             return run(leave(vm, ra, n), stop);
         },
@@ -1114,13 +1116,13 @@ function run(vm: Vm, stop: i64): Vm {
         32 => run(forLoop({ ...vm, pc: next }, ra, b, vm.base + c), stop),
         33 => run(tforCall({ ...vm, pc: next }, ra, c), stop),
         34 => {
-            const more = vm.rT[ra + 3] != T_NIL;
+            const more = vm.regs[ra + 3].t != T_NIL;
             const v = reg(vm, ra + 3);
             return run({ ...(more ? setReg(vm, ra + 2, v) : vm), pc: more ? next + b : next }, stop);
         },
         35 => {
             const n = b == 0 ? vm.mtop - ra - 1 : b;
-            const t = vm.rI[ra];
+            const t = vm.regs[ra].i;
             // (the value read before the machine is given to `rawSet`: read
             // after, it copied the whole store at each value)
             return run({ ...fold(iota(n), vm, (acc, i) => {
@@ -1134,59 +1136,59 @@ function run(vm: Vm, stop: i64): Vm {
             const r = vm.base + b;
             const v0 = gcMaybe(vm);
             const k = v0.ncell;
-            const v1 = { ...v0, cT: growI(v0.cT, k + 1).with(k, v0.rT[r]), cI: growI(v0.cI, k + 1).with(k, v0.rI[r]), cF: growF(v0.cF, k + 1).with(k, v0.rF[r]), ncell: k + 1 };
-            return run({ ...v1, rT: v1.rT.with(ra, T_CELL), rI: v1.rI.with(ra, k), pc: next }, stop);
+            const v1 = { ...v0, cT: growI(v0.cT, k + 1).with(k, v0.regs[r].t), cI: growI(v0.cI, k + 1).with(k, v0.regs[r].i), cF: growF(v0.cF, k + 1).with(k, v0.regs[r].f), ncell: k + 1 };
+            return run({ ...v1, regs: v1.regs.with(ra, { t: T_CELL, i: k, f: 0.0 }), pc: next }, stop);
         },
         39 => {
-            const cell = vm.rI[vm.base + b];
-            return run({ ...vm, rT: vm.rT.with(ra, vm.cT[cell]), rI: vm.rI.with(ra, vm.cI[cell]), rF: vm.rF.with(ra, vm.cF[cell]), pc: next }, stop);
+            const cell = vm.regs[vm.base + b].i;
+            return run({ ...vm, regs: vm.regs.with(ra, { t: vm.cT[cell], i: vm.cI[cell], f: vm.cF[cell] }), pc: next }, stop);
         },
         40 => {
-            const cell = vm.rI[ra];
+            const cell = vm.regs[ra].i;
             const r = vm.base + b;
-            return run({ ...vm, cT: vm.cT.with(cell, vm.rT[r]), cI: vm.cI.with(cell, vm.rI[r]), cF: vm.cF.with(cell, vm.rF[r]), pc: next }, stop);
+            return run({ ...vm, cT: vm.cT.with(cell, vm.regs[r].t), cI: vm.cI.with(cell, vm.regs[r].i), cF: vm.cF.with(cell, vm.regs[r].f), pc: next }, stop);
         },
         41 => {
             const x = rkv(vm, b);
             const y = rkv(vm, c);
             const [v1, r] = equal({ ...vm, pc: next }, x, y);
-            return run({ ...v1, rT: v1.rT.with(ra, r ? T_TRUE : T_FALSE) }, stop);
+            return run({ ...v1, regs: v1.regs.with(ra, { t: r ? T_TRUE : T_FALSE, i: 0, f: 0.0 }) }, stop);
         },
         42 => {
             const x = rkv(vm, b);
             const y = rkv(vm, c);
             if (x.t == T_INT && y.t == T_INT) {
-                return run({ ...vm, rT: vm.rT.with(ra, x.i < y.i ? T_TRUE : T_FALSE), pc: next }, stop);
+                return run({ ...vm, regs: vm.regs.with(ra, { t: x.i < y.i ? T_TRUE : T_FALSE, i: 0, f: 0.0 }), pc: next }, stop);
             }
             if (x.t == T_NUM && y.t == T_NUM) {
-                return run({ ...vm, rT: vm.rT.with(ra, x.f < y.f ? T_TRUE : T_FALSE), pc: next }, stop);
+                return run({ ...vm, regs: vm.regs.with(ra, { t: x.f < y.f ? T_TRUE : T_FALSE, i: 0, f: 0.0 }), pc: next }, stop);
             }
             const [v1, r] = less({ ...vm, pc: next }, x, y, false);
-            return run({ ...v1, rT: v1.rT.with(ra, r ? T_TRUE : T_FALSE) }, stop);
+            return run({ ...v1, regs: v1.regs.with(ra, { t: r ? T_TRUE : T_FALSE, i: 0, f: 0.0 }) }, stop);
         },
         43 => {
             const x = rkv(vm, b);
             const y = rkv(vm, c);
             if (x.t == T_INT && y.t == T_INT) {
-                return run({ ...vm, rT: vm.rT.with(ra, x.i <= y.i ? T_TRUE : T_FALSE), pc: next }, stop);
+                return run({ ...vm, regs: vm.regs.with(ra, { t: x.i <= y.i ? T_TRUE : T_FALSE, i: 0, f: 0.0 }), pc: next }, stop);
             }
             if (x.t == T_NUM && y.t == T_NUM) {
-                return run({ ...vm, rT: vm.rT.with(ra, x.f <= y.f ? T_TRUE : T_FALSE), pc: next }, stop);
+                return run({ ...vm, regs: vm.regs.with(ra, { t: x.f <= y.f ? T_TRUE : T_FALSE, i: 0, f: 0.0 }), pc: next }, stop);
             }
             const [v1, r] = less({ ...vm, pc: next }, x, y, true);
-            return run({ ...v1, rT: v1.rT.with(ra, r ? T_TRUE : T_FALSE) }, stop);
+            return run({ ...v1, regs: v1.regs.with(ra, { t: r ? T_TRUE : T_FALSE, i: 0, f: 0.0 }) }, stop);
         },
         44 => {
             const r = vm.base + b;
             const key = { t: T_STR, i: vm.kI[c], f: 0.0 };
-            if (vm.rT[r] == T_TAB) {
-                const info = vm.tabs[vm.rI[r]];
+            if (vm.regs[r].t == T_TAB) {
+                const info = vm.tabs[vm.regs[r].i];
                 const at = slotIn(vm, info, key);
                 if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
-                    return run({ ...vm, rT: vm.rT.with(ra, vm.svT[at]), rI: vm.rI.with(ra, vm.svI[at]), rF: vm.rF.with(ra, vm.svF[at]), pc: next }, stop);
+                    return run({ ...vm, regs: vm.regs.with(ra, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
                 }
                 if (at < 0 && info.meta < 0) {
-                    return run({ ...vm, rT: vm.rT.with(ra, T_NIL), pc: next }, stop);
+                    return run({ ...vm, regs: vm.regs.with(ra, { t: T_NIL, i: 0, f: 0.0 }), pc: next }, stop);
                 }
             }
             const o = reg(vm, r);
@@ -1195,8 +1197,8 @@ function run(vm: Vm, stop: i64): Vm {
         45 => {
             const key = { t: T_STR, i: vm.kI[b], f: 0.0 };
             const v = rkv(vm, c);
-            if (vm.rT[ra] == T_TAB && v.t != T_NIL) {
-                const t = vm.rI[ra];
+            if (vm.regs[ra].t == T_TAB && v.t != T_NIL) {
+                const t = vm.regs[ra].i;
                 const info = vm.tabs[t];
                 const at = slotIn(vm, info, key);
                 if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
@@ -1219,8 +1221,8 @@ function run(vm: Vm, stop: i64): Vm {
         },
         46 => {
             const r = vm.base + b;
-            if (vm.rT[r] == T_INT) {
-                return run({ ...vm, rT: vm.rT.with(ra, T_INT), rI: vm.rI.with(ra, vm.rI[r] + c), pc: next }, stop);
+            if (vm.regs[r].t == T_INT) {
+                return run({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: vm.regs[r].i + c, f: 0.0 }), pc: next }, stop);
             }
             const x = reg(vm, r);
             return run(arith({ ...vm, pc: next }, 0, x, intV(c), ra), stop);
@@ -1278,13 +1280,13 @@ function forPrep(vm: Vm, a: i64, skip: i64, v: i64): Vm {
     const limit = toNumber(vm, reg(vm, a + 1));
     const step = toNumber(vm, reg(vm, a + 2));
     if (start.t == T_NIL) {
-        return fail(vm, `bad 'for' initial value (number expected, got ${typeName(vm.rT[a])})`);
+        return fail(vm, `bad 'for' initial value (number expected, got ${typeName(vm.regs[a].t)})`);
     }
     if (limit.t == T_NIL) {
-        return fail(vm, `bad 'for' limit (number expected, got ${typeName(vm.rT[a + 1])})`);
+        return fail(vm, `bad 'for' limit (number expected, got ${typeName(vm.regs[a + 1].t)})`);
     }
     if (step.t == T_NIL) {
-        return fail(vm, `bad 'for' step (number expected, got ${typeName(vm.rT[a + 2])})`);
+        return fail(vm, `bad 'for' step (number expected, got ${typeName(vm.regs[a + 2].t)})`);
     }
     if (start.t == T_INT && step.t == T_INT) {
         const k = step.i;
@@ -1317,29 +1319,29 @@ function forPrep(vm: Vm, a: i64, skip: i64, v: i64): Vm {
 // FORLOOP: the next turn of the loop of `a` (back by `back`), its value in
 // `v`
 function forLoop(vm: Vm, a: i64, back: i64, v: i64): Vm {
-    if (vm.rT[a] == T_INT) {
-        const left = vm.rI[a + 1];
+    if (vm.regs[a].t == T_INT) {
+        const left = vm.regs[a + 1].i;
         if (left <= 0 && u64(left) == 0u64) {
             return vm;
         }
-        const x = vm.rI[a] + vm.rI[a + 2];
+        const x = vm.regs[a].i + vm.regs[a + 2].i;
         // (turns counted as unsigned: wrapping past i64 is fine)
-        return { ...vm, rI: vm.rI.with(a, x).with(a + 1, i64(u64(left) - 1u64)).with(v, x), rT: vm.rT.with(v, T_INT), pc: vm.pc + back };
+        return { ...vm, regs: vm.regs.with(a, { t: T_INT, i: x, f: 0.0 }).with(a + 1, { t: T_INT, i: i64(u64(left) - 1u64), f: 0.0 }).with(v, { t: T_INT, i: x, f: 0.0 }), pc: vm.pc + back };
     }
-    const x = vm.rF[a] + vm.rF[a + 2];
-    const k = vm.rF[a + 2];
-    if (k > 0.0 ? x > vm.rF[a + 1] : x < vm.rF[a + 1]) {
+    const x = vm.regs[a].f + vm.regs[a + 2].f;
+    const k = vm.regs[a + 2].f;
+    if (k > 0.0 ? x > vm.regs[a + 1].f : x < vm.regs[a + 1].f) {
         return vm;
     }
-    return { ...vm, rF: vm.rF.with(a, x).with(v, x), rT: vm.rT.with(v, T_NUM), pc: vm.pc + back };
+    return { ...vm, regs: vm.regs.with(a, { t: T_NUM, i: 0, f: x }).with(v, { t: T_NUM, i: 0, f: x }), pc: vm.pc + back };
 }
 
 // TFORCALL: R[a + 3 ..] = R[a](R[a + 1], R[a + 2]) (`next` and the
 // iterator of `ipairs` without a call)
 function tforCall(vm: Vm, a: i64, nvars: i64): Vm {
-    const f = vm.rT[a];
-    if (f == T_BUILTIN && vm.rI[a] == B_NEXT && vm.rT[a + 1] == T_TAB) {
-        const t = vm.rI[a + 1];
+    const f = vm.regs[a].t;
+    if (f == T_BUILTIN && vm.regs[a].i == B_NEXT && vm.regs[a + 1].t == T_TAB) {
+        const t = vm.regs[a + 1].i;
         const pos = afterKey(vm, t, reg(vm, a + 2));
         if (pos == NOT_A_KEY) {
             return fail(vm, "invalid key to 'next'");
@@ -1347,9 +1349,9 @@ function tforCall(vm: Vm, a: i64, nvars: i64): Vm {
         const [p, k, v] = walkFrom(vm, t, pos);
         return setReg(setReg(vm, a + 3, k), a + 4, v);
     }
-    if (f == T_BUILTIN && vm.rI[a] == B_IPAIRS_STEP && vm.rT[a + 1] == T_TAB && vm.rT[a + 2] == T_INT && vm.tabs[vm.rI[a + 1]].meta < 0) {
-        const i = vm.rI[a + 2] + 1;
-        const v = rawGet(vm, vm.rI[a + 1], intV(i));
+    if (f == T_BUILTIN && vm.regs[a].i == B_IPAIRS_STEP && vm.regs[a + 1].t == T_TAB && vm.regs[a + 2].t == T_INT && vm.tabs[vm.regs[a + 1].i].meta < 0) {
+        const i = vm.regs[a + 2].i + 1;
+        const v = rawGet(vm, vm.regs[a + 1].i, intV(i));
         return v.t == T_NIL ? setReg(vm, a + 3, nilV()) : setReg(setReg(vm, a + 3, intV(i)), a + 4, v);
     }
     // (a call: the function and its two values copied after them)
@@ -1367,18 +1369,18 @@ function closure(vm: Vm, a: i64, p: i64): Vm {
     const at = vm.nup;
     // (the cells read first: a fold that read `vm.ups` while it writes it
     // would copy it at each closure made)
-    const cells = map(iota(nu), (i) => vm.upLocal[ub + i] ? vm.rI[vm.base + vm.upIdx[ub + i]] : vm.ups[myUp + vm.upIdx[ub + i]]);
+    const cells = map(iota(nu), (i) => vm.upLocal[ub + i] ? vm.regs[vm.base + vm.upIdx[ub + i]].i : vm.ups[myUp + vm.upIdx[ub + i]]);
     const ups = fold(iota(nu), growI(vm.ups, at + nu), (acc, i) => acc.with(at + i, cells[i]));
     const k = vm.ncl;
     const v1 = { ...vm, ups: ups, nup: at + nu, clProto: growI(vm.clProto, k + 1).with(k, p), clUp: growI(vm.clUp, k + 1).with(k, at), ncl: k + 1 };
-    return { ...v1, rT: v1.rT.with(a, T_FUN), rI: v1.rI.with(a, k) };
+    return { ...v1, regs: v1.regs.with(a, { t: T_FUN, i: k, f: 0.0 }) };
 }
 
 // VARARG: `n` values of `...` into `a` (n < 0: all, `mtop` after them)
 function varargs(vm: Vm, a: i64, n: i64): Vm {
     const want = n < 0 ? vm.vaN : n;
     const v1 = roomRegs(vm, a + want + 1);
-    const v2 = fold(iota(want), v1, (acc, i) => i < acc.vaN ? setReg(acc, a + i, { t: acc.vaT[acc.va + i], i: acc.vaI[acc.va + i], f: acc.vaF[acc.va + i] }) : { ...acc, rT: acc.rT.with(a + i, T_NIL) });
+    const v2 = fold(iota(want), v1, (acc, i) => i < acc.vaN ? setReg(acc, a + i, { t: acc.vaT[acc.va + i], i: acc.vaI[acc.va + i], f: acc.vaF[acc.va + i] }) : { ...acc, regs: acc.regs.with(a + i, { t: T_NIL, i: 0, f: 0.0 }) });
     return n < 0 ? { ...v2, mtop: a + want } : v2;
 }
 
@@ -1460,7 +1462,7 @@ function sortLess(vm: Vm, a: V, b: V, comp: V): [Vm, boolean] {
     const saved = vm.ltop;
     const top = max(frameTop(vm), saved);
     const v1 = callValues({ ...vm, ltop: top + 4 }, comp, [a, b], top, 1);
-    const r = !v1.err && truthyT(v1.rT[top]);
+    const r = !v1.err && truthyT(v1.regs[top].t);
     return [{ ...v1, ltop: saved }, r] as const;
 }
 
@@ -1667,14 +1669,14 @@ function libDone(vm: Vm, a: i64, fx: Fx, rs: Value[n]): [Vm, i64] {
 // written from `a`
 function libCall(vm: Vm, id: i64, a: i64, n: i64, line: i64): [Vm, i64] {
     // (a part of a text of the machine: read where it is)
-    if ((id == 20 || id == 21 || id == 25 || id == 28 || id == 29) && n >= 1 && vm.rT[a + 1] == T_STR) {
+    if ((id == 20 || id == 21 || id == 25 || id == 28 || id == 29) && n >= 1 && vm.regs[a + 1].t == T_STR) {
         const fx0 = { err: false, msg: "", chunk: chunkOf(vm) };
         const others = map(iota(n), (i) => i == 0 ? Nil : toValue(vm, reg(vm, a + 1 + i)));
-        const [fx, rs] = textPrimF(fx0, vm.strs[vm.rI[a + 1]], id, others, line);
+        const [fx, rs] = textPrimF(fx0, vm.strs[vm.regs[a + 1].i], id, others, line);
         return libDone(vm, a, fx, rs);
     }
-    if (id == PRIM_GMATCH_STEP && n >= 1 && vm.rT[a + 1] == T_TAB) {
-        const t = vm.rI[a + 1];
+    if (id == PRIM_GMATCH_STEP && n >= 1 && vm.regs[a + 1].t == T_TAB) {
+        const t = vm.regs[a + 1].i;
         const sv = rawGet(vm, t, intV(1));
         const pv = rawGet(vm, t, intV(2));
         const posv = rawGet(vm, t, intV(3));
@@ -2901,7 +2903,7 @@ export function newVm(): Vm {
         code: k.code, lines: k.lines, notes: k.notes, kT: k.kT, kI: k.kI, kF: k.kF,
         pStart: k.pStart, pNparams: k.pNparams, pVararg: k.pVararg, pNregs: k.pNregs, pUpBase: k.pUpBase, pNups: k.pNups, pName: k.pName, pLine: k.pLine, pChunk: k.pChunk,
         upLocal: k.upLocal, upIdx: k.upIdx,
-        rT: fill(256, T_NIL), rI: fill(256, 0), rF: fill(256, 0.0),
+        regs: fill(256, { t: T_NIL, i: 0, f: 0.0 }),
         base: 0, pc: 0, cl: -1, va: 0, vaN: 0, mtop: 0,
         fBase: fill(16, 0), fPc: fill(16, 0), fCl: fill(16, 0), fRet: fill(16, 0), fWant: fill(16, 0), fVa: fill(16, 0), fVaN: fill(16, 0), depth: 0,
         vaT: fill(16, 0), vaI: fill(16, 0), vaF: fill(16, 0.0), vaTop: 0,
@@ -2971,7 +2973,7 @@ function internFrom(vm: Vm, kT: i64[n], kS: string[m], i: i64, acc: i64[n]): [Vm
 
 // the call of `f` with `args` from outside the machine: its results
 export function call(vm: Vm, f: V, args: V[n]): [Vm, V[]] {
-    const at = vm.rT.length > 0 ? frameTop(vm) : 0;
+    const at = vm.regs.length > 0 ? frameTop(vm) : 0;
     const v1 = callValues(vm, f, args, at, -1);
     if (v1.err) {
         return [v1, []] as const;
@@ -3176,7 +3178,7 @@ function moveRoots(vm: Vm, g: Gc, roots: V[n], i: i64, acc: V[]): [Gc, V[]] {
 // the new machine
 export function collect(vm: Vm, roots: V[n]): [Vm, V[]] {
     const [v1, rs] = collectCore(vm, roots);
-    return [{ ...v1, rT: fill(vm.rT.length, T_NIL), rI: fill(vm.rI.length, 0), rF: fill(vm.rF.length, 0.0), depth: 0, base: 0, cl: -1, va: 0, vaN: 0, vaTop: 0, ltop: 0, mtop: 0 }, rs] as const;
+    return [{ ...v1, regs: fill(vm.regs.length, { t: T_NIL, i: 0, f: 0.0 }), depth: 0, base: 0, cl: -1, va: 0, vaN: 0, vaTop: 0, ltop: 0, mtop: 0 }, rs] as const;
 }
 
 // the memory taken back while the machine runs, at an instruction that
@@ -3187,11 +3189,11 @@ function collectLive(vm: Vm): Vm {
     const top = frameTop(vm);
     const d = vm.depth;
     const nva = vm.vaTop;
-    const regs = map(iota(top), (r) => ({ t: vm.rT[r], i: vm.rI[r], f: vm.rF[r] }));
+    const regs = map(iota(top), (r) => ({ t: vm.regs[r].t, i: vm.regs[r].i, f: vm.regs[r].f }));
     const vas = map(iota(nva), (k) => ({ t: vm.vaT[k], i: vm.vaI[k], f: vm.vaF[k] }));
     const fcls = map(iota(d + 1), (k) => ({ t: k == d ? (vm.cl >= 0 ? T_FUN : T_NIL) : (vm.fCl[k + 1] >= 0 ? T_FUN : T_NIL), i: k == d ? vm.cl : vm.fCl[k + 1], f: 0.0 }));
     const [v1, rs] = collectCore(vm, concat(concat(regs, vas), fcls));
-    const v2 = fold(iota(top), v1, (acc, r) => ({ ...acc, rT: acc.rT.with(r, rs[r].t), rI: acc.rI.with(r, rs[r].i), rF: acc.rF.with(r, rs[r].f) }));
+    const v2 = fold(iota(top), v1, (acc, r) => ({ ...acc, regs: acc.regs.with(r, { t: rs[r].t, i: rs[r].i, f: rs[r].f }) }));
     const v3 = fold(iota(nva), v2, (acc, k) => ({ ...acc, vaI: acc.vaI.with(k, rs[top + k].i) }));
     const v4 = fold(iota(d), v3, (acc, k) => ({ ...acc, fCl: acc.fCl.with(k + 1, rs[top + nva + k].t == T_FUN ? rs[top + nva + k].i : acc.fCl[k + 1]) }));
     const c = rs[top + nva + d];
