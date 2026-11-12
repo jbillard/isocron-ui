@@ -40,4 +40,11 @@ edited="$(cd "$out" && python3 "$here/../tools/display/play.py" 520 420 clickat:
 # at it, a click at the place of the field in pixels, a word typed
 scaled2="$(cd "$out" && PLAY_SCALE=2 python3 "$here/../tools/display/play.py" 520 420 clickat:422,248 type:Pain key:Return endserver -- "$out/todo" | tail -1)"
 [ "$scaled2" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Pain]" ] || { echo "FAILED: scale 2: $scaled2"; exit 1; }
-echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited"
+# the clipboard of the session: a text copied in the field read by another
+# program (wl-paste), a text of another program (wl-copy) pasted after it;
+# then copied and pasted again in the field (its own selection, read
+# without the compositor)
+shared="$(cd "$out" && python3 "$here/../tools/display/play.py" 520 420 clickat:211,124 "type:Vers dehors" key:ctrl+a key:ctrl+c "paste:$out/pasted.txt" "copy:Du dehors é" key:End key:ctrl+v key:ctrl+a key:ctrl+c key:End key:ctrl+v key:Return endserver -- "$out/todo" | tail -1)"
+[ "$(cat "$out/pasted.txt")" = "Vers dehors" ] || { echo "FAILED: the selection read by wl-paste: $(cat "$out/pasted.txt")"; exit 1; }
+[ "$shared" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Vers dehorsDu dehors éVers dehorsDu dehors é]" ] || { echo "FAILED: clipboard: $shared"; exit 1; }
+echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared"

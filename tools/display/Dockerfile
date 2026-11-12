@@ -6,5 +6,5 @@
 # servers through a folder shared with the container.
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends weston xvfb x11-apps xdotool \
+    && apt-get install -y --no-install-recommends weston xvfb x11-apps xdotool wl-clipboard \
     && rm -r /var/lib/apt/lists

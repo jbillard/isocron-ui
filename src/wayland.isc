@@ -73,7 +73,7 @@ function eventStarts(b: u8[n], at: i64, found: i64[]): i64[] {
 
 // the names of the globals of the compositor that a window needs (0: not
 // offered)
-export type Globals = { compositor: u32, shm: u32, wmBase: u32, seat: u32, cursorShape: u32, output: u32 };
+export type Globals = { compositor: u32, shm: u32, wmBase: u32, seat: u32, cursorShape: u32, output: u32, data: u32 };
 
 // the ids the client gives its objects (the display is 1). A compositor
 // takes a new id only when it is the next one or one it has freed
@@ -118,7 +118,8 @@ export function globalsOf(evs: Event[n], g: Globals): Globals {
             : (iface == "xdg_wm_base" ? { ...acc, wmBase: name }
             : (iface == "wl_seat" ? { ...acc, seat: name }
             : (iface == "wp_cursor_shape_manager_v1" ? { ...acc, cursorShape: name }
-            : (iface == "wl_output" && acc.output == 0u32 ? { ...acc, output: name } : acc)))));
+            : (iface == "wl_output" && acc.output == 0u32 ? { ...acc, output: name }
+            : (iface == "wl_data_device_manager" ? { ...acc, data: name } : acc))))));
     });
 }
 
@@ -221,6 +222,37 @@ export function outputRequests(g: Globals, id: u32): u8[] {
 // (`wl_surface.set_buffer_scale`)
 export function scaleRequest(scale: i64): u8[] {
     return request(SURFACE, 8u32, i32le(i32(scale)));
+}
+
+// the manager of the data of the seat bound as `manager` (version 3), the
+// device of the seat as `device`: the selections of the other programs
+export function dataRequests(g: Globals, manager: u32, device: u32): u8[] {
+    return concat(bind(g.data, "wl_data_device_manager", 3u32, manager), request(manager, 1u32, concat(le32(device), le32(SEAT))));
+}
+
+// the text of the offer `offer` as the type `mime`, written by the program
+// that holds it into the descriptor sent beside (`wl_data_offer.receive`)
+export function receiveRequest(offer: u32, mime: string): u8[] {
+    return request(offer, 1u32, str(mime));
+}
+
+// a source of data made (`source`, of the manager `manager`) that offers a
+// text (UTF-8 under its three usual names), made the selection of the seat
+// (its device `device`) at the input `serial`
+export function selectionRequests(manager: u32, source: u32, device: u32, serial: u32): u8[] {
+    const made = request(manager, 0u32, le32(source));
+    const offers = concat(concat(request(source, 0u32, str("text/plain;charset=utf-8")), request(source, 0u32, str("text/plain"))), request(source, 0u32, str("UTF8_STRING")));
+    return concat(concat(made, offers), request(device, 1u32, concat(le32(source), le32(serial))));
+}
+
+// a source no longer the selection destroyed (`wl_data_source.destroy`)
+export function sourceDestroy(source: u32): u8[] {
+    return request(source, 1u32, []);
+}
+
+// an offer no longer the selection destroyed (`wl_data_offer.destroy`)
+export function offerDestroy(offer: u32): u8[] {
+    return request(offer, 2u32, []);
 }
 
 // the buffer and the pool of an image no longer shown destroyed

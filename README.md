@@ -55,7 +55,9 @@ action main(args: string[k]): i32 {
   interface itself: the place under the pointer and its shape, the clicks
   counted (double, triple), drags, the boxes that scroll (the wheel, their
   scrollbars), the caret blinking, the menu of a field (the right button),
-  the clipboard, the density of the screen (sizes in units of 96 dots per
+  the clipboard (that of the system: Windows, the selection of a Wayland
+  session, read from and given to the other programs), the density of the
+  screen (sizes in units of 96 dots per
   inch, multiplied by it). Its steps are one pure function (`step`), tested
   without a screen.
 - `src/input.isc`: the inputs (`Click`, `Drag`, `Release`, `Hover`,
@@ -70,13 +72,15 @@ action main(args: string[k]): i32 {
 - `src/ui.isc`: the elements (`Div` and its `Style`, a part of flexbox;
   `Label`, a text cut in lines; `Input`, the line of a field) and their
   layout (`placeFrame`: what draws them and the places the pointer
-  reaches).
+  reaches); `Image`, a PNG file read (`png.decode`) drawn in its box. A
+  box that clips or scrolls places only the children it shows: a long list
+  costs the rows in sight.
 
 ## Below
 
 - `src/paint.isc`: the primitives of a scene drawn on the processor by
   tiles: rectangles with rounded corners and borders, their shadows, glyphs,
-  clips; the formulas of the shaders of GPUI in `f32`.
+  images (bilinear), clips; the formulas of the shaders of GPUI in `f32`.
 - `src/font.isc`, `src/text.isc`: a font of TrueType read, its glyphs drawn
   with an exact coverage, kerning, lines and paragraphs.
 - `src/png.isc`, `src/inflate.isc`: PNG files written and read (every file

@@ -586,9 +586,112 @@ type State = {
     scale: i64,
     lw: i64,
     lh: i64,
+    manager: u32,
+    device: u32,
+    lastOffer: u32,
+    lastMime: string,
+    offer: u32,
+    mime: string,
+    source: u32,
+    text: string,
+    serial: u32,
+    fds: i32[],
+    fdAt: i64,
     done: boolean,
     failed: string,
 };
+
+// the bytes `b` are UTF-8 (each character its leading byte and the right
+// number of bytes after it)
+function utf8Valid(b: u8[n]): boolean {
+    const left = fold(b, 0, (need, x) => {
+        if (need < 0) {
+            return need;
+        }
+        if (need > 0) {
+            return (x & 0xC0u8) == 0x80u8 ? need - 1 : -1;
+        }
+        return x < 0x80u8 ? 0 : ((x & 0xE0u8) == 0xC0u8 ? 1 : ((x & 0xF0u8) == 0xE0u8 ? 2 : ((x & 0xF8u8) == 0xF0u8 ? 3 : -1)));
+    });
+    return left == 0;
+}
+
+// the bytes of `b` from now to its end (a second at most without any)
+action readAll(b: net.Conn, acc: u8[]): u8[] {
+    const ready = match (unix.poll([unix.fdOf(b)], 1000)) {
+        Ok(rs) => rs[0] != 0i32,
+        Err(e) => false,
+    };
+    if (!ready) {
+        return acc;
+    }
+    return match (net.read(b, 65536)) {
+        Ok(x) => x.length == 0 ? acc : readAll(b, concat(acc, x)),
+        Err(e) => acc,
+    };
+}
+
+// the text of the selection of another program (the offer `offer` of the
+// type `mime`): a pair of sockets made (a name of the abstract space, one
+// end accepted), one end given to the compositor, which the program writes
+// the text into, the other read to its end; "" when it fails
+action readOffer(c: net.Conn, offer: u32, mime: string): string {
+    const name = `@isocron-ui-paste-${clock()}`;
+    return match (unix.listen(name)) {
+        Ok(l) => match (unix.connect(name)) {
+            Ok(a) => match (unix.accept(l)) {
+                Ok(b) => {
+                    const sent = unix.sendWithFds(c, wl.receiveRequest(offer, mime), [unix.fdOf(a)]);
+                    net.close(a);
+                    net.closeListener(l);
+                    const bytes = readAll(b, []);
+                    net.close(b);
+                    return utf8Valid(bytes) ? stringOf(bytes) : "";
+                },
+                Err(e) => {
+                    net.close(a);
+                    net.closeListener(l);
+                    return "";
+                },
+            },
+            Err(e) => {
+                net.closeListener(l);
+                return "";
+            },
+        },
+        Err(e) => "",
+    };
+}
+
+// the text `text` made the selection of the seat (a source of data of
+// this program, the one before destroyed), given to the programs that
+// paste it (`sent`); nothing without a device of data
+action offered(c: net.Conn, st: State, text: string): State {
+    if (st.manager == 0u32 || st.device == 0u32) {
+        return st;
+    }
+    const old = st.source != 0u32 ? net.write(c, wl.sourceDestroy(st.source)) : Ok(());
+    const made = net.write(c, wl.selectionRequests(st.manager, st.next, st.device, st.serial));
+    return { ...st, source: st.next, next: st.next + 1u32, text: text };
+}
+
+// the event `ev` given to `step`, what the model asks done: a text copied
+// made the selection of the seat; a paste given the selection when it is
+// another program's (this program's source no longer the selection), else
+// the program's clipboard
+action feedWayland<M>(c: net.Conn, ui: Ui, m: M, now: u64, st: State, update: (M, Input) => [M, Effect[]], ev: Ev): [M, Ui, State] {
+    const [u1, m1] = step(ui, m, ev, now, update);
+    const copied = count(u1.asked, (e) => e != AskPaste) > 0;
+    const asks = count(u1.asked, (e) => e == AskPaste) > 0;
+    const st1 = copied ? offered(c, st, u1.clipboard) : st;
+    if (!asks) {
+        return [m1, { ...u1, asked: [] }, st1] as const;
+    }
+    const external = st1.source == 0u32 && st1.offer != 0u32 && st1.mime != "";
+    const text = external ? readOffer(c, st1.offer, st1.mime) : u1.clipboard;
+    const [u2, m2] = step({ ...u1, asked: [] }, m1, Pasted(text), now, update);
+    return [m2, { ...u2, asked: [] }, st1] as const;
+}
 
 // the shape of the pointer `shape` shown at its entry
 action shapeShown(c: net.Conn, st: State, shape: i64): State {
@@ -655,7 +758,7 @@ action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f
     return match (unix.connect(path)) {
         Ok(c) => {
             const asked = net.write(c, concat(wl.request(wl.DISPLAY, 1u32, wl.le32(wl.REGISTRY)), wl.request(wl.DISPLAY, 0u32, wl.le32(wl.SYNC))));
-            const g = globals(c, [], { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32, cursorShape: 0u32, output: 0u32 });
+            const g = globals(c, [], { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32, cursorShape: 0u32, output: 0u32, data: 0u32 });
             if (g.compositor == 0u32 || g.shm == 0u32 || g.wmBase == 0u32) {
                 net.close(c);
                 return m;
@@ -678,11 +781,17 @@ action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f
                 pending: [], shown: false, next: g.cursorShape != 0u32 ? wl.POOL + 2u32 : wl.POOL + 5u32, pool: 0u32, buffer: 0u32,
                 keymap: parseKeymap(""), mods: 0u32, entry: 0u32, shape: -1,
                 shapes: g.cursorShape != 0u32 ? wl.POOL + 1u32 : 0u32, cursorSurface: wl.POOL, cursorFirst: wl.POOL + 2u32,
-                output: 0u32, scale: 1, lw: width, lh: height, done: false, failed: "",
+                output: 0u32, scale: 1, lw: width, lh: height,
+                manager: 0u32, device: 0u32, lastOffer: 0u32, lastMime: "", offer: 0u32, mime: "", source: 0u32, text: "", serial: 0u32, fds: [], fdAt: 0,
+                done: false, failed: "",
             };
             // the first screen, for its scale (the next id)
-            const st2 = g.output != 0u32 ? { ...st, output: st.next, next: st.next + 1u32 } : st;
+            const st1 = g.output != 0u32 ? { ...st, output: st.next, next: st.next + 1u32 } : st;
             const bound = g.output != 0u32 ? net.write(c, wl.outputRequests(g, st.next)) : Ok(());
+            // the selections of the other programs: the manager of the data
+            // and the device of the seat (the next two ids)
+            const st2 = g.data != 0u32 && g.seat != 0u32 ? { ...st1, manager: st1.next, device: st1.next + 1u32, next: st1.next + 2u32 } : st1;
+            const data = g.data != 0u32 && g.seat != 0u32 ? net.write(c, wl.dataRequests(g, st1.next, st1.next + 1u32)) : Ok(());
             const end = loopWayland(c, f, m, { ...interface(width, height, clock()), labels: labels }, st2, view, update);
             net.close(c);
             return end;
@@ -735,11 +844,11 @@ action loopWayland<M>(c: net.Conn, f: Font, m: M, ui: Ui, st: State, view: (M) =
         return m;
     }
     const [evs, rest] = wl.events(concat(st.pending, r.bytes));
-    // the table of the keyboard: the descriptor sent with its event
-    const k = findIndex(evs, (e) => e.obj == wl.KEYBOARD && e.op == 0u32);
-    const km = k >= 0 && r.fds.length > 0 ? keymapOf(r.fds[0], i64(wl.word(evs[k].args, 4))) : st.keymap;
+    // the descriptors received, taken in their order by the events that
+    // carry one (the table of the keyboard, a paste of another program),
+    // then closed
+    const [nm, nu, ns] = handle(c, f, m, evs, 0, ui, { ...st, pending: rest, fds: r.fds, fdAt: 0 }, view, update);
     const closed = map(r.fds, (fd) => unix.closeFd(fd) == Ok(()) ? 1 : 0);
-    const [nm, nu, ns] = handle(c, f, m, evs, 0, ui, { ...st, pending: rest, keymap: km }, view, update);
     const now = clock();
     const blink = nu.caret && caretShown(nu, now) != nu.caretOn;
     const [u2, s2] = (nu.redraw || blink) && ns.shown && !ns.done ? drawWayland(c, f, nm, view, nu, ns) : [nu, ns] as const;
@@ -752,18 +861,53 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
         return [m, ui, st] as const;
     }
     const now = clock();
-    const hand = (ev: Ev) => {
-        const [u, mm] = steps(ui, m, [ev], now, update);
-        return [mm, { ...u, asked: [] }, st] as const;
-    };
-    const [nm, nu, ns] = match (wl.input(evs[i])) {
+    const e = evs[i];
+    // the table of the keyboard: the descriptor sent with its event
+    if (e.obj == wl.KEYBOARD && e.op == 0u32 && e.args.length >= 8) {
+        const km = st.fdAt < st.fds.length ? keymapOf(st.fds[st.fdAt], i64(wl.word(e.args, 4))) : st.keymap;
+        return handle(c, f, m, evs, i + 1, ui, { ...st, keymap: km, fdAt: st.fdAt + 1 }, view, update);
+    }
+    // the serial of an input (its entry, a key, a button): that of the
+    // selection made after it
+    const serial = (e.obj == wl.KEYBOARD && (e.op == 1u32 || e.op == 3u32)) || (e.obj == wl.POINTER && e.op == 3u32) ? (e.args.length >= 4 ? wl.word(e.args, 0) : st.serial) : st.serial;
+    // this program's selection: its text written to the descriptor of a
+    // program that pastes it (closed after the events); another's selection
+    // made: this one's destroyed
+    if (st.source != 0u32 && e.obj == st.source && e.op == 1u32) {
+        const written = st.fdAt < st.fds.length ? unix.writeFd(st.fds[st.fdAt], bytes(st.text)) : Ok(());
+        return handle(c, f, m, evs, i + 1, ui, { ...st, fdAt: st.fdAt + 1 }, view, update);
+    }
+    if (st.source != 0u32 && e.obj == st.source && e.op == 2u32) {
+        const gone = net.write(c, wl.sourceDestroy(st.source));
+        return handle(c, f, m, evs, i + 1, ui, { ...st, source: 0u32, text: "" }, view, update);
+    }
+    // the selections of the others: an offer made (its types follow), the
+    // selection set (an offer, or none)
+    if (st.device != 0u32 && e.obj == st.device && e.op == 0u32 && e.args.length >= 4) {
+        return handle(c, f, m, evs, i + 1, ui, { ...st, lastOffer: wl.word(e.args, 0), lastMime: "" }, view, update);
+    }
+    if (st.lastOffer != 0u32 && e.obj == st.lastOffer && e.op == 0u32) {
+        const [mime, after] = wl.strAt(e.args, 0);
+        const better = mime == "text/plain;charset=utf-8" || (st.lastMime == "" && (mime == "text/plain" || mime == "UTF8_STRING"));
+        return handle(c, f, m, evs, i + 1, ui, better ? { ...st, lastMime: mime } : st, view, update);
+    }
+    if (st.device != 0u32 && e.obj == st.device && e.op == 5u32 && e.args.length >= 4) {
+        const id = wl.word(e.args, 0);
+        const gone = st.offer != 0u32 && st.offer != id ? net.write(c, wl.offerDestroy(st.offer)) : Ok(());
+        const next = id == 0u32 ? { ...st, offer: 0u32, mime: "" } : { ...st, offer: id, mime: id == st.lastOffer ? st.lastMime : "" };
+        return handle(c, f, m, evs, i + 1, ui, next, view, update);
+    }
+    if (serial != st.serial) {
+        return handle(c, f, m, evs, i, ui, { ...st, serial: serial }, view, update);
+    }
+    const [nm, nu, ns] = match (wl.input(e)) {
         // (sizes and places in units of the compositor, the images in
         // pixels: times the scale of its screen)
         wl.Size(w, h) => {
             if (w <= 0 || h <= 0) {
                 return [m, ui, st] as const;
             }
-            const [mm, u, s2] = hand(Resized(w * st.scale, h * st.scale));
+            const [mm, u, s2] = feedWayland(c, ui, m, now, st, update, Resized(w * st.scale, h * st.scale));
             return [mm, u, { ...s2, lw: w, lh: h }] as const;
         },
         wl.OutputScale(obj, k) => {
@@ -783,32 +927,32 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
             const pong = net.write(c, wl.request(wl.WM_BASE, 3u32, wl.le32(serial)));
             return [m, ui, st] as const;
         },
-        wl.Pointer(x, y) => hand(Moved(f32(x) * f32(st.scale), f32(y) * f32(st.scale))),
+        wl.Pointer(x, y) => feedWayland(c, ui, m, now, st, update, Moved(f32(x) * f32(st.scale), f32(y) * f32(st.scale))),
         // its entry: its serial kept (the shape of the pointer set with it)
         wl.Enter(serial, x, y) => {
-            const [mm, u, s2] = hand(Moved(f32(x) * f32(st.scale), f32(y) * f32(st.scale)));
+            const [mm, u, s2] = feedWayland(c, ui, m, now, st, update, Moved(f32(x) * f32(st.scale), f32(y) * f32(st.scale)));
             return [mm, u, shapeShown(c, { ...s2, entry: serial, shape: -1 }, u.cursor)] as const;
         },
         wl.Leave => [m, ui, { ...st, entry: 0u32 }] as const,
         // the buttons of evdev: left (BTN_LEFT, 272), right, middle
         wl.Button(b, down) => {
             const which = b == 272u32 ? 0 : (b == 273u32 ? 1 : (b == 274u32 ? 2 : -1));
-            return which < 0 ? [m, ui, st] as const : hand(down ? Down(which) : Up(which));
+            return which < 0 ? [m, ui, st] as const : feedWayland(c, ui, m, now, st, update, down ? Down(which) : Up(which));
         },
         wl.Modifiers(mods) => {
             const [u, mm] = steps(ui, m, [Mods(modsOf(mods))], now, update);
             return [mm, u, { ...st, mods: mods }] as const;
         },
         // the vertical wheel: its distance, four times (a notch: 10)
-        wl.Axis(axis, value) => axis == 0u32 ? hand(Scroll(f32(value) * 4.0f32)) : [m, ui, st] as const,
+        wl.Axis(axis, value) => axis == 0u32 ? feedWayland(c, ui, m, now, st, update, Scroll(f32(value) * 4.0f32)) : [m, ui, st] as const,
         wl.Key(code, down) => {
             const ch = down ? charOf(st.keymap, code, st.mods) : 0;
             return ch != 0 ? match (keyEvent(ch, st.mods)) {
-                Typed(t) => t < 0 ? [m, ui, st] as const : hand(Typed(t)),
-                ev => hand(ev),
+                Typed(t) => t < 0 ? [m, ui, st] as const : feedWayland(c, ui, m, now, st, update, Typed(t)),
+                ev => feedWayland(c, ui, m, now, st, update, ev),
             } : [m, ui, st] as const;
         },
-        wl.Close => hand(Closed),
+        wl.Close => feedWayland(c, ui, m, now, st, update, Closed),
         wl.Failure(msg) => [m, ui, { ...st, done: true, failed: msg }] as const,
         _ => [m, ui, st] as const,
     };

@@ -23,6 +23,8 @@ The actions, in their order:
   shot:FILE    the screen of Weston written to FILE (PNG)
   move:X,Y     the pointer moved to a point of the window
   wait:SECONDS
+  copy:TEXT    TEXT made the selection of another program (wl-copy)
+  paste:FILE   the selection, of whatever program, written to FILE (wl-paste)
 Then the program's output to its end.
 
 usage: play.py WIDTH HEIGHT ACTIONS... -- COMMAND...
@@ -131,6 +133,18 @@ def main():
                 subprocess.run(["docker", "exec", name, "sh", "-c", "kill $(pidof weston)"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             elif kind == "wait":
                 time.sleep(float(arg))
+            elif kind == "copy":
+                # (it stays to give the text: started apart)
+                subprocess.run(["docker", "exec", "-d", "-e", "WAYLAND_DISPLAY=wayland-test", "-e", "XDG_RUNTIME_DIR=/run/display", name,
+                                "wl-copy", "--foreground", "--type", "text/plain;charset=utf-8", arg], check=True)
+                time.sleep(0.6)
+            elif kind == "paste":
+                got = subprocess.run(["docker", "exec", "-e", "WAYLAND_DISPLAY=wayland-test", "-e", "XDG_RUNTIME_DIR=/run/display", name,
+                                      "timeout", "5", "wl-paste", "--no-newline"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                with open(arg, "wb") as out:
+                    out.write(got.stdout)
+                if got.returncode != 0:
+                    print("paste failed:", got.stderr.decode(errors="replace").strip())
             time.sleep(0.15)
         out, _ = prog.communicate(timeout=30)
         print(out, end="")
