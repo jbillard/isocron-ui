@@ -7,7 +7,7 @@
 // the place a click gives; the state it shows (under the pointer, pressed,
 // with the focus, ticked) given by the application.
 import { Color, rgb, rgba, transparent } from "./paint";
-import { Element, Div, Label, Input, Length, Px, Fill, Auto, Row, Column, Packed, style, textStyle, TextStyle, POINTER, TEXT } from "./ui";
+import { Element, Div, Label, Input, Length, Px, Fill, Auto, Row, Column, Packed, style, textStyle, TextStyle, Style, POINTER, TEXT } from "./ui";
 import { Start, Center, End } from "./text";
 import { Editing } from "./edit";
 
@@ -66,6 +66,7 @@ export function button(label: string, id: i64, primary: boolean, width: Length, 
         shadowY: primary && !h.pressed ? 2.0f32 : 0.0f32,
         shadowColor: rgba(0.23f32, 0.51f32, 0.96f32, 0.5f32),
         onClick: id,
+        focusable: true,
     }, [Label(centred(15.0f32, primary ? rgb(0xFFFFFFu32) : rgb(h.pressed ? ACCENT_PRESSED : ACCENT)), label)]);
 }
 
@@ -83,6 +84,7 @@ export function iconButton(symbol: string, id: i64, danger: boolean, h: Hand): E
         background: lit ? (danger ? rgb(0xFEE2E2u32) : rgb(0xF3F4F6u32)) : clear(),
         radius: 6.0f32,
         onClick: id,
+        focusable: true,
     }, [Label(centred(16.0f32, lit ? (danger ? rgb(0xDC2626u32) : rgb(INK)) : rgb(HINT)), symbol)]);
 }
 
@@ -107,6 +109,7 @@ export function textField(ed: Editing, focused: boolean, hint: string, id: i64, 
         outline: focused ? 4.0f32 : 0.0f32,
         outlineColor: rgba(0.23f32, 0.51f32, 0.96f32, 0.25f32),
         onClick: id,
+        focusable: true,
         cursor: TEXT,
     }, [Div({ ...style(), width: Fill(1.0f32) }, [Input(textStyle(14.0f32, rgb(INK)), ed, focused, hint)])]);
 }
@@ -127,6 +130,7 @@ export function checkbox(ticked: boolean, id: i64, h: Hand): Element {
         borderColor: h.hovered ? rgb(ACCENT) : rgb(HINT),
         radius: 6.0f32,
         onClick: id,
+        focusable: true,
     }, ticked ? [Div({ ...style(), width: Px(10.0f32), height: Px(10.0f32), background: rgb(0xFFFFFFu32), radius: 2.0f32 }, [])] : []);
 }
 
@@ -145,6 +149,7 @@ export function radio(chosen: boolean, id: i64, h: Hand): Element {
         borderColor: chosen || h.hovered ? rgb(ACCENT) : rgb(HINT),
         radius: 14.0f32,
         onClick: id,
+        focusable: true,
     }, chosen ? [Div({ ...style(), width: Px(12.0f32), height: Px(12.0f32), background: rgb(ACCENT), radius: 6.0f32 }, [])] : []);
 }
 
@@ -178,6 +183,7 @@ export function toggle(on: boolean, id: i64): Element {
         background: on ? rgb(GREEN) : rgb(LINE),
         radius: 16.0f32,
         onClick: id,
+        focusable: true,
     }, [knob()]);
 }
 
@@ -194,6 +200,7 @@ export function slider(value: f32, id: i64, width: f32): Element {
         align: Center,
         stretch: false,
         onClick: id,
+        focusable: true,
     }, [
         Div({ ...style(), width: Px(at), height: Px(6.0f32), background: rgb(ACCENT), radius: 3.0f32 }, []),
         knob(),
@@ -234,6 +241,7 @@ export function segments(labels: string[n], chosen: i64, first: i64, each: f32):
         shadowY: k == chosen ? 1.0f32 : 0.0f32,
         shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.2f32),
         onClick: first + k,
+        focusable: true,
     }, [Label(centred(13.0f32, k == chosen ? rgb(INK) : rgb(MUTED)), labels[k])])));
 }
 
@@ -265,4 +273,29 @@ export function tooltip(text: string, width: f32): Element {
     return Div({ ...style(), width: Px(width), height: Px(36.0f32), justify: Packed(Center), align: Center, stretch: false, background: rgb(INK), radius: 8.0f32 }, [
         Label(centred(13.0f32, rgb(0xFFFFFFu32)), text),
     ]);
+}
+
+// the rows of a long list in sight: from `offset` to `offset + height`
+// units (what the window shows at most), rows of `rowHeight` units, one
+// more on each side; `[first, last)`
+export function rowsInSight(count: i64, rowHeight: f32, offset: f32, height: f32): [i64, i64] {
+    const first = max(0, i64(offset / rowHeight) - 1);
+    const last = min(count, i64((offset + height) / rowHeight) + 2);
+    return [min(first, last), last] as const;
+}
+
+// a long list (GPUI's `uniform_list`): `count` rows of `rowHeight` units
+// in a column that scrolls (its offset the `scroll`-th), whose rows in
+// sight alone are built (`row(i)`, each in a box of the height of a row):
+// the others are a space above them and one below, so that the column has
+// its whole height and its scrollbar its place. `offset` and `height`: the
+// last `Viewport` the application was told for this box (0 and the height
+// of its window before any). `st`: the style of the column (its size, its
+// colour); its scroll and its direction set here
+export function uniformList(scroll: i64, count: i64, rowHeight: f32, offset: f32, height: f32, st: Style, row: (i64) => Element): Element {
+    const [first, last] = rowsInSight(count, rowHeight, offset, height);
+    const above = Div({ ...style(), height: Px(f32(first) * rowHeight), width: Fill(1.0f32) }, []);
+    const below = Div({ ...style(), height: Px(f32(count - last) * rowHeight), width: Fill(1.0f32) }, []);
+    const rows = map(iota(last - first), (k) => Div({ ...style(), height: Px(rowHeight), width: Fill(1.0f32) }, [row(first + k)]));
+    return Div({ ...st, direction: Column, scroll: scroll, gap: 0.0f32 }, concat(concat([above], rows), [below]));
 }

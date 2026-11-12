@@ -75,7 +75,15 @@ export function spacingAccent(k: i64): i64 {
 //   with Ctrl (its lower case code: Ctrl+C is `Key(99, WITH_CTRL)`), and
 //   the modifiers held
 // - `Paste(s)`: the text of the clipboard, after `AskPaste`
-export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i64) | Release(i64) | Hover(i64) | Text(i64) | Key(i64, i64) | Paste(string);
+// - `Focus(place)`: the keyboard gave the focus to the place whose message
+//   is `place` (Tab, Shift+Tab; -1: to none, Escape)
+// - `Viewport(scroll, offset, height)`: the box that scrolls whose offset
+//   is the `scroll`-th is at `offset` units from its top, and shows at most
+//   `height` units (the height of the window): told when its offset
+//   changes, and for every such box when the window changes its size or
+//   its density (a long list builds the rows in sight alone with it:
+//   `uniformList` of widgets.isc)
+export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i64) | Release(i64) | Hover(i64) | Text(i64) | Key(i64, i64) | Paste(string) | Focus(i64) | Viewport(i64, f32, f32);
 
 // what an application asks after an input: a text copied to the clipboard,
 // the text of the clipboard (it comes as `Paste`)

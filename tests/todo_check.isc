@@ -9,7 +9,7 @@
 import { parse, Font } from "../src/font";
 import { Hit } from "../src/ui";
 import { Ui, Ev, Moved, Down, Up, Typed, Pressed, Mods, interface, steps, laidOut } from "../src/app";
-import { WITH_SHIFT, WITH_CTRL, BACKSPACE, ENTER, ESCAPE, LEFT, END } from "../src/input";
+import { WITH_SHIFT, WITH_CTRL, BACKSPACE, ENTER, ESCAPE, LEFT, END, TAB } from "../src/input";
 import { Model, initial, update, view, FIELD, ADD, CLEAR, NOTHING, TICK, REMOVE } from "../examples/todo";
 
 // the centre of the place of the message `id`
@@ -107,6 +107,24 @@ action main(args: string[k]): i32 {
             const dead = (k: i64) => Typed(0xF0000 + k);
             const [u17, m17] = drive(f, u16, m16, [Pressed(END), Mods(WITH_CTRL), Pressed(97), Mods(0), Pressed(BACKSPACE), dead(2), Typed(101), dead(7), Typed(105), dead(2), Typed(32), dead(2), Typed(120), dead(0), Typed(69), dead(11), Typed(99), dead(2), Pressed(BACKSPACE), Typed(97)], 0, 0u64, 1000000000u64);
             print(show(m17));
+            // the keyboard: Escape (the field left), Tab to the field, "Thé"
+            // typed, Tab (the button Ajouter), Enter (the task added), Tab
+            // and Space (the first task's box ticked), Shift+Tab, the focus
+            // and the ring after each; Escape (none)
+            const tab = (u: Ui) => [u.focus, u.ring] as const;
+            const [k0, n0] = drive(f, u17, m17, [Pressed(ESCAPE)], 0, 0u64, 1000000000u64);
+            const [k1, n1] = drive(f, k0, n0, [Pressed(TAB)], 0, 0u64, 1000000000u64);
+            print([tab(k1), n1.focused] as const);
+            const [k2, n2] = drive(f, k1, n1, [Pressed(END), Mods(WITH_CTRL), Pressed(97), Mods(0), Pressed(BACKSPACE), Typed(84), Typed(104), Typed(233), Pressed(TAB)], 0, 0u64, 1000000000u64);
+            print([tab(k2), n2.focused] as const);
+            const [k3, n3] = drive(f, k2, n2, [Pressed(ENTER)], 0, 0u64, 1000000000u64);
+            print(show(n3));
+            const [k4, n4] = drive(f, k3, n3, [Pressed(TAB), Typed(32)], 0, 0u64, 1000000000u64);
+            print([tab(k4), show(n4)] as const);
+            const [k5, n5] = drive(f, k4, n4, [Mods(WITH_SHIFT), Pressed(TAB), Mods(0)], 0, 0u64, 1000000000u64);
+            print(tab(k5));
+            const [k6, n6] = drive(f, k5, n5, [Pressed(ESCAPE)], 0, 0u64, 1000000000u64);
+            print([tab(k6), n6.focused] as const);
             return 0;
         },
         Err(e) => {

@@ -16,3 +16,9 @@
 [ ] Café 😀 😀 / field "abcabc" 6,6 focused true
 false
 [ ] Café 😀 😀 / field "êï^^xÈça" 12,12 focused true
+((1, true), true)
+((2, true), false)
+[ ] Café 😀 😀 | [ ] Thé / field "" 0,0 focused false
+((1000, true), [x] Café 😀 😀 | [ ] Thé / field "" 0,0 focused false)
+(2, true)
+((-1, false), false)

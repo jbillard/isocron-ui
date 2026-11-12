@@ -27,6 +27,10 @@ export const BAR: i64 = 2;
 export const FIELD: i64 = 3;
 export const SHAPE: i64 = 4;
 export const MENU: i64 = 5;
+// a place the keyboard reaches (Tab): that of a box `focusable`, its
+// message `id`, the radius of its corners as its `range` (its ring drawn
+// around it)
+export const FOCUS: i64 = 6;
 
 // a size along an axis: as its content, a number of pixels, or a share of
 // the room its siblings leave (`Fill(1.0)` and `Fill(2.0)`: a third and two)
@@ -69,6 +73,9 @@ export type Style = {
     // the shape of the pointer over the box (-1: a hand over a box a click
     // reaches, else that of the box under it)
     cursor: i64,
+    // a box with a message reached by the keyboard too: Tab gives it the
+    // focus (a ring around it), Enter or Space then click it
+    focusable: boolean,
     // the padding across and down when not that of `padding` (-1)
     padX: f32,
     padY: f32,
@@ -188,6 +195,7 @@ export function style(): Style {
         clip: false,
         scroll: -1,
         cursor: -1,
+        focusable: false,
         padX: -1.0f32,
         padY: -1.0f32,
         outline: 0.0f32,
@@ -340,7 +348,8 @@ export function placeFrame(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, 
         Div(st, cs) => {
             const deco = decoration(st, x, y, w, h);
             const shape = st.cursor >= 0 ? st.cursor : (st.onClick >= 0 ? POINTER : -1);
-            const hits: Hit[] = st.onClick >= 0 ? [placeOf(x, y, w, h, st.onClick, CLICK, 0.0f32, shape)] : (shape >= 0 ? [placeOf(x, y, w, h, -1, SHAPE, 0.0f32, shape)] : []);
+            const clicked: Hit[] = st.onClick >= 0 ? [placeOf(x, y, w, h, st.onClick, CLICK, 0.0f32, shape)] : (shape >= 0 ? [placeOf(x, y, w, h, -1, SHAPE, 0.0f32, shape)] : []);
+            const hits: Hit[] = st.focusable && st.onClick >= 0 ? concat(clicked, [placeOf(x, y, w, h, st.onClick, FOCUS, st.radius, shape)]) : clicked;
             const row = isRow(st.direction);
             const n = cs.length;
             const [px, py] = padsOf(st);

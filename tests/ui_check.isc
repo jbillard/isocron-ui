@@ -2,7 +2,7 @@
 // the places its clicks reach, then clicks played at their centres and
 // the model they make; a click outside every button gives nothing.
 import { parse } from "../src/font";
-import { place, hitTest, Hit } from "../src/ui";
+import { place, hitTest, Hit, CLICK } from "../src/ui";
 import { Model, initial, update, view, INCREMENT, DECREMENT, RESET, STEP } from "../examples/counter";
 import { Font } from "../src/font";
 
@@ -25,7 +25,7 @@ action main(args: string[k]): i32 {
             const m0 = initial();
             const [ps, hits] = place(f, view(m0), 0.0f32, 0.0f32, 480.0f32, 320.0f32);
             print(ps.length);
-            print(map(hits, (h) => [h.id, i64(h.x), i64(h.y), i64(h.w), i64(h.h)] as const));
+            print(map(filter(hits, (h) => h.kind == CLICK), (h) => [h.id, i64(h.x), i64(h.y), i64(h.w), i64(h.h)] as const));
             const m1 = click(f, click(f, click(f, m0, INCREMENT), INCREMENT), INCREMENT);
             const m2 = click(f, m1, DECREMENT);
             const m3 = click(f, click(f, m2, STEP), INCREMENT);

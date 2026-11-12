@@ -7,7 +7,7 @@
 import { rgb, rgba, Color } from "../src/paint";
 import { Element, Div, Label, Input, Length, Px, Fill, Auto, Row, Column, Packed, Between, style, textStyle, TEXT, ARROW } from "../src/ui";
 import { Start, Center, End } from "../src/text";
-import { Input as HandInput, Effect, Click, Release, Hover, Key, ENTER, ESCAPE } from "../src/input";
+import { Input as HandInput, Effect, Click, Release, Hover, Key, Focus, ENTER, ESCAPE } from "../src/input";
 import { Editing, editing, edited } from "../src/edit";
 import { button, iconButton, textField, checkbox, handOf, Hand, INK, HINT, MUTED } from "../src/widgets";
 
@@ -72,6 +72,8 @@ export function update(m: Model, i: HandInput): [Model, Effect[]] {
             return [{ ...clicked(m, p), pressed: p }, []] as const;
         },
         Release(p) => [{ ...m, pressed: -1 }, []] as const,
+        // the focus of the keyboard: the field's when it comes to it
+        Focus(p) => [{ ...m, focused: p == FIELD }, []] as const,
         Key(k, mods) => {
             if (!m.focused) {
                 return [m, []] as const;

@@ -18,11 +18,11 @@ import * as net from "net";
 import * as wl from "./wayland";
 import * as x11 from "./x11";
 import { IoError, ioError } from "sys";
-import { rgb, rgba, render, Primitive } from "./paint";
+import { rgb, rgba, render, Primitive, Box, quad, rounded, bordered, transparent } from "./paint";
 import { Font, parse } from "./font";
-import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU } from "./ui";
+import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU, FOCUS, WHEEL } from "./ui";
 import { POINTER as POINTER_SHAPE, TEXT as TEXT_SHAPE } from "./ui";
-import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./input";
+import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Focus, Viewport, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./input";
 import { DEAD, DEAD_ACCENTS, composed, spacingAccent } from "./input";
 import { Keymap, parseKeymap, charOf } from "./xkb";
 import * as cursors from "./cursors";
@@ -90,6 +90,8 @@ export type Ui = {
     labels: string[],
     scale: f32,
     dead: i64,
+    focus: i64,
+    ring: boolean,
     redraw: boolean,
     closed: boolean,
 };
@@ -108,7 +110,7 @@ export function interface(w: i64, h: i64, now: u64): Ui {
         w: w, h: h, hits: [], offsets: fill(16, 0.0f32), x: -1.0f32, y: -1.0f32, hover: -1, cursor: ARROW, mods: 0,
         pressed: -1, field: -1, px: 0.0f32, py: 0.0f32, bar: -1, grab: 0.0f32, hotBar: -1,
         clickTime: 0u64, clicks: 0, cx: 0.0f32, cy: 0.0f32, since: now, caret: false, caretOn: true,
-        clipboard: "", asked: [], menu: false, menuX: 0.0f32, menuY: 0.0f32, menuHover: -1, menuCut: false, labels: englishMenu(), scale: 1.0f32, dead: -1,
+        clipboard: "", asked: [], menu: false, menuX: 0.0f32, menuY: 0.0f32, menuHover: -1, menuCut: false, labels: englishMenu(), scale: 1.0f32, dead: -1, focus: -1, ring: false,
         redraw: true, closed: false,
     };
 }
@@ -129,6 +131,62 @@ function told<M>(ui: Ui, m: M, i: Input, update: (M, Input) => [M, Effect[]]): [
     return [{ ...ui, clipboard: copied, asked: concat(ui.asked, fx), redraw: true }, nm] as const;
 }
 
+// the place the keyboard reaches whose message is `id` (-1: none)
+function focusIndex(hits: Hit[n], id: i64): i64 {
+    return id < 0 ? -1 : findIndex(hits, (h) => h.kind == FOCUS && h.id == id);
+}
+
+// the focus of the keyboard on a place that is not a field, its ring shown:
+// Enter and Space click it
+function activates(ui: Ui): boolean {
+    const k = focusIndex(ui.hits, ui.focus);
+    if (!ui.ring || k < 0) {
+        return false;
+    }
+    const h = ui.hits[k];
+    return count(ui.hits, (f) => f.kind == FIELD && f.x >= h.x && f.y >= h.y && f.x < h.x + h.w && f.y < h.y + h.h) == 0;
+}
+
+// the place of the focus clicked by the keyboard: pressed and released at
+// its centre
+function activated<M>(ui: Ui, m: M, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    const h = ui.hits[focusIndex(ui.hits, ui.focus)];
+    const [u1, m1] = told(ui, m, Click(h.id, h.w * 0.5f32, h.h * 0.5f32, -1, 1, ui.mods), update);
+    return told(u1, m1, Release(h.id), update);
+}
+
+// the focus of the keyboard moved by Tab (Shift+Tab: back) to the next
+// place it reaches, in the order of the view, around; the model told
+function tabbed<M>(ui: Ui, m: M, back: boolean, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    const places = filter(ui.hits, (h) => h.kind == FOCUS);
+    if (places.length == 0) {
+        return [ui, m] as const;
+    }
+    const at = findIndex(places, (h) => h.id == ui.focus);
+    const next = at < 0 ? (back ? places.length - 1 : 0) : (back ? (at + places.length - 1) % places.length : (at + 1) % places.length);
+    const id = places[next].id;
+    return told({ ...ui, focus: id, ring: true, redraw: true }, m, Focus(id), update);
+}
+
+// a key that edits pressed: Tab moves the focus of the keyboard; Enter
+// clicks the place of the focus when it shows and is not a field; Escape
+// takes the focus back (its ring hidden; the model told, or given the key
+// when the focus came from the pointer: a field leaves it); else the
+// model's
+function keyPressed<M>(ui: Ui, m: M, k: i64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    if (k == TAB) {
+        return tabbed(ui, m, (ui.mods & WITH_SHIFT) != 0, update);
+    }
+    if (k == ENTER && activates(ui)) {
+        return activated(ui, m, update);
+    }
+    if (k == ESCAPE) {
+        const back = { ...ui, focus: -1, ring: false, redraw: true };
+        return ui.ring ? told(back, m, Focus(-1), update) : told(back, m, Key(k, ui.mods), update);
+    }
+    return told(ui, m, Key(k, ui.mods), update);
+}
+
 // the character `c` typed: a dead key kept for the next character (its
 // accent: `^` then `e` gives `ê`), a character after one with its accent
 // when it takes one, else the accent alone then the character (a space:
@@ -138,7 +196,7 @@ function typed<M>(ui: Ui, m: M, c: i64, update: (M, Input) => [M, Effect[]]): [U
         return [{ ...ui, dead: c - DEAD }, m] as const;
     }
     if (ui.dead < 0) {
-        return told(ui, m, Text(c), update);
+        return c == 32 && activates(ui) ? activated(ui, m, update) : told(ui, m, Text(c), update);
     }
     const accent = ui.dead;
     const both = composed(accent, c);
@@ -220,7 +278,10 @@ function pressedAt<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect[]
     // (a click places the caret at the boundary nearest the pointer; a
     // double click takes the word of the character under it)
     const at = fi < 0 ? -1 : (clicks == 2 ? charAt(ui.hits[fi], ui.x) : offsetAt(ui.hits[fi], ui.x));
-    const pressed = { ...ui, pressed: p.id, field: fi, px: p.x, py: p.y, clickTime: now, clicks: clicks, cx: ui.x, cy: ui.y, since: now };
+    // (the focus of the keyboard follows the click, its ring hidden: it
+    // shows only when the keyboard moves it)
+    const reached = count(ui.hits, (h) => h.kind == FOCUS && h.id == p.id) > 0;
+    const pressed = { ...ui, pressed: p.id, field: fi, px: p.x, py: p.y, clickTime: now, clicks: clicks, cx: ui.x, cy: ui.y, since: now, focus: reached ? p.id : -1, ring: false, redraw: true };
     return told(pressed, m, Click(p.id, ui.x - p.x, ui.y - p.y, at, clicks, ui.mods), update);
 }
 
@@ -297,6 +358,33 @@ function menuLaidOut(ui: Ui, f: Font): [Primitive[], Hit[]] {
 // (compiled once, called by each loop of each system)
 @noInline
 export function step<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    const [u1, m1] = stepOnce(ui, m, ev, now, update);
+    const resized = match (ev) {
+        Resized(w, h) => true,
+        Scaled(k) => true,
+        _ => false,
+    };
+    return viewports(u1, m1, ui.offsets, resized, 0, update);
+}
+
+// the model told where each box that scrolls is whose offset changed from
+// `before` (every one the view shows when `all`: the window resized), from
+// the `k`-th, in units
+function viewports<M>(ui: Ui, m: M, before: f32[n], all: boolean, k: i64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    if (k >= n || k >= ui.offsets.length) {
+        return [ui, m] as const;
+    }
+    const shown = all && count(ui.hits, (h) => h.kind == WHEEL && h.id == k) > 0;
+    if (ui.offsets[k] != before[k] || shown) {
+        const [u1, m1] = told(ui, m, Viewport(k, ui.offsets[k] / ui.scale, f32(ui.h) / ui.scale), update);
+        return viewports(u1, m1, before, all, k + 1, update);
+    }
+    return viewports(ui, m, before, all, k + 1, update);
+}
+
+// one event given to the interface (`step` tells the boxes that scroll
+// after it)
+function stepOnce<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
     return match (ev) {
         Moved(x, y) => movedTo(ui, m, x, y, update),
         Down(b) => ui.menu ? menuPressed(ui, m, now, update) : (b == 0 ? pressedAt(ui, m, now, update) : (b == 1 ? menuOpened(ui, m, now, update) : [ui, m] as const)),
@@ -320,7 +408,7 @@ export function step<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M
         // nothing else then)
         Pressed(k) => ui.menu && k == ESCAPE ? [{ ...ui, menu: false, menuHover: -1, dead: -1, redraw: true }, m] as const
             : (ui.dead >= 0 && (k == BACKSPACE || k == ESCAPE) ? [{ ...ui, dead: -1 }, m] as const
-            : told({ ...ui, since: now, menu: false, menuHover: -1, dead: -1 }, m, Key(k, ui.mods), update)),
+            : keyPressed({ ...ui, since: now, menu: false, menuHover: -1, dead: -1 }, m, k, update)),
         Mods(mods) => [{ ...ui, mods: mods }, m] as const,
         Resized(w, h) => [{ ...ui, w: w, h: h, redraw: true }, m] as const,
         // the pixels of a unit (the density of the screen): the offsets of
@@ -358,6 +446,14 @@ export function wakeIn(ui: Ui, now: u64): i64 {
     return max(1, i64((ui.since + (k + 1u64) * BLINK - now) / 1000000u64) + 1);
 }
 
+// the ring of the focus around the place `h`: 2 units wide, 2 units away,
+// its corners those of the place, blue
+function ringOf(h: Hit, k: f32): Primitive {
+    const gap = 2.0f32 * k;
+    const w = 2.0f32 * k;
+    return Box(rounded(bordered(quad(h.x - gap - w, h.y - gap - w, h.w + 2.0f32 * (gap + w), h.h + 2.0f32 * (gap + w), transparent()), w, rgba(0.231f32, 0.510f32, 0.965f32, 0.85f32)), h.range + gap + w));
+}
+
 // the view of `m` laid out at the size of the window at the time `now`:
 // what draws it, and the interface with its places (whether a field holds
 // the focus: a caret to blink)
@@ -365,9 +461,12 @@ export function laidOut<M>(ui: Ui, f: Font, m: M, view: (M) => Element, now: u64
     const shown = caretShown(ui, now);
     const [vps, vhits] = placeFrame(f, scaledElement(view(m), ui.scale), 0.0f32, 0.0f32, f32(ui.w), f32(ui.h), { offsets: ui.offsets, caretOn: shown, hotBar: ui.hotBar, scale: ui.scale });
     const caret = count(vhits, (h) => h.kind == FIELD && h.id == 1) > 0;
-    // the menu over the view
+    // the ring of the focus of the keyboard around its place, then the menu,
+    // over the view
+    const fk = focusIndex(vhits, ui.focus);
+    const ring = ui.ring && fk >= 0 ? [ringOf(vhits[fk], ui.scale)] : [];
     const [mps, mhits] = ui.menu ? menuLaidOut(ui, f) : [[], []] as const;
-    const ps = concat(vps, mps);
+    const ps = concat(concat(vps, ring), mps);
     const hits = concat(vhits, mhits);
     // the place under the pointer, its shape, as the new places have them
     const hover = ui.pressed >= 0 ? ui.cursor : cursorAt(hits, ui.x, ui.y);

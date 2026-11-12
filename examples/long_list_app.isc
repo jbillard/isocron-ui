@@ -1,0 +1,24 @@
+// The long list (examples/long_list.isc) as an application of the
+// library: 100 000 tasks (or `count`), the rows in sight alone built.
+// Prints the tasks ticked when its window is closed.
+// usage: long_list_app [count] [--font=file]
+import { runWith, loadFont, fail } from "../src/app";
+import { initial, update, view } from "./long_list";
+
+action main(args: string[k]): i32 {
+    const count = args.length > 0 && !args[0].startsWith("--") ? match (tryParseI64(args[0])) {
+        Ok(v) => v,
+        Err(e) => 100000,
+    } : 100000;
+    return match (loadFont(args)) {
+        Ok(f) => {
+            const end = runWith("Isocron : liste longue", 520, 420, ["Couper", "Copier", "Coller", "Tout sélectionner"], f, initial(count), view, update);
+            print(filter(iota(end.done.length), (k) => end.done[k]));
+            return 0;
+        },
+        Err(e) => {
+            fail("Isocron : liste longue", e);
+            return 1;
+        },
+    };
+}

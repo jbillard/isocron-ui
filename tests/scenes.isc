@@ -74,6 +74,9 @@ action main(args: string[k]): i32 {
             // window of 520 by 420 units, 780 by 630 pixels
             const [sp15, su15] = laidOut({ ...interface(780, 630, 0u64), scale: 1.5f32 }, f, { ...todo.initial(), field: editing("Pain"), focused: true }, todo.view, 0u64);
             scene(args[0], "todo150", 780, 630, white, sp15);
+            // the focus of the keyboard on the button Ajouter: its ring
+            const [fp, fu] = laidOut({ ...interface(520, 420, 0u64), focus: todo.ADD, ring: true }, f, todo.initial(), todo.view, 0u64);
+            scene(args[0], "focus", 520, 420, white, fp);
             // images of the PngSuite (colour and alpha; colour): at their
             // size, four times larger (bilinear), stretched; over a ground
             // of colour, the alpha seen through

@@ -1,0 +1,57 @@
+// A long list (GPUI's `uniform_list`): 100 000 tasks in a column that
+// scrolls, whose rows in sight alone are built (`uniformList` of
+// src/widgets.isc), the place of the column told to the model by the
+// library (`Viewport`). A click on the box of a task ticks it; the tasks
+// ticked printed when the window is closed (`long_list_app.isc`). Its
+// model, its view and its update.
+import { rgb, rgba } from "../src/paint";
+import { Element, Div, Label, Px, Fill, Row, Column, style, textStyle, ARROW } from "../src/ui";
+import { Center } from "../src/text";
+import { Input as HandInput, Effect, Click, Release, Hover, Viewport } from "../src/input";
+import { checkbox, Hand, uniformList, INK, HINT, MUTED } from "../src/widgets";
+
+export type Model = { done: boolean[], offset: f32, height: f32, hover: i64, pressed: i64 };
+
+// the message of the box of the task `k`: TICK plus `k`
+export const TICK: i64 = 1000;
+// the height of a row, in units
+export const ROW: f32 = 44.0f32;
+
+export function initial(count: i64): Model {
+    return { done: fill(count, false), offset: 0.0f32, height: 420.0f32, hover: -1, pressed: -1 };
+}
+
+export function update(m: Model, i: HandInput): [Model, Effect[]] {
+    return match (i) {
+        Hover(p) => [{ ...m, hover: p }, []] as const,
+        Click(p, x, y, at, clicks, mods) => {
+            const k = p - TICK;
+            return k >= 0 && k < m.done.length ? [{ ...m, done: m.done.with(k, !m.done[k]), pressed: p }, []] as const : [m, []] as const;
+        },
+        Release(p) => [{ ...m, pressed: -1 }, []] as const,
+        // (the list is the first box that scrolls)
+        Viewport(id, offset, height) => id == 0 ? [{ ...m, offset: offset, height: height }, []] as const : [m, []] as const,
+        _ => [m, []] as const,
+    };
+}
+
+// the task `k`: its box, its text
+function row(m: Model, k: i64): Element {
+    const done = m.done[k];
+    const hand: Hand = { hovered: m.hover == TICK + k, pressed: m.pressed == TICK + k };
+    return Div({ ...style(), direction: Row, gap: 12.0f32, align: Center, stretch: false, padding: 8.0f32, height: Fill(1.0f32) }, [
+        checkbox(done, TICK + k, hand),
+        Label(textStyle(15.0f32, rgb(done ? HINT : INK)), `Tâche ${k + 1}`),
+    ]);
+}
+
+export function view(m: Model): Element {
+    const n = m.done.length;
+    const ticked = count(m.done, (d) => d);
+    const list = uniformList(0, n, ROW, m.offset, m.height, { ...style(), height: Fill(1.0f32) }, (k) => row(m, k));
+    return Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), padding: 24.0f32, gap: 12.0f32, background: rgb(0xF3F4F6u32), cursor: ARROW }, [
+        Label(textStyle(22.0f32, rgb(0x111827u32)), `${n} tâches`),
+        Label(textStyle(13.0f32, rgb(MUTED)), `${ticked} cochée${ticked > 1 ? "s" : ""}`),
+        Div({ ...style(), height: Fill(1.0f32), background: rgb(0xFFFFFFu32), radius: 12.0f32, padding: 8.0f32 }, [list]),
+    ]);
+}

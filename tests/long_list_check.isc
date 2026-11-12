@@ -1,0 +1,55 @@
+// The long list (examples/long_list.isc) driven without a screen: the rows
+// in sight of offsets; the wheel over the list (`step`), the model told
+// where the list is (`Viewport`), the rows laid out then those in sight
+// alone (the places of their boxes); a click on one ticks it; a resize
+// tells the list again.
+import { parse, Font } from "../src/font";
+import { FOCUS } from "../src/ui";
+import { Ui, Ev, Moved, Down, Up, Scroll, Resized, interface, steps, laidOut } from "../src/app";
+import { rowsInSight } from "../src/widgets";
+import { Model, initial, update, view, TICK, ROW } from "../examples/long_list";
+
+// the events `evs` given in their order, the frame laid out after each
+function drive(f: Font, ui: Ui, m: Model, evs: Ev[n], k: i64): [Ui, Model] {
+    if (k >= n) {
+        return [ui, m] as const;
+    }
+    const [u1, m1] = steps(ui, m, [evs[k]], 0u64, update);
+    const [ps, u2] = laidOut({ ...u1, asked: [] }, f, m1, view, 0u64);
+    return drive(f, u2, m1, evs, k + 1);
+}
+
+// the tasks whose boxes the frame has places for: the first, the last,
+// their number
+function boxes(ui: Ui): [i64, i64, i64] {
+    const ks = map(filter(ui.hits, (h) => h.kind == FOCUS && h.id >= TICK), (h) => h.id - TICK);
+    return ks.length == 0 ? [-1, -1, 0] as const : [ks[0], ks[ks.length - 1], ks.length] as const;
+}
+
+action main(args: string[k]): i32 {
+    print([rowsInSight(100000, 44.0f32, 0.0f32, 420.0f32), rowsInSight(100000, 44.0f32, 440000.0f32, 420.0f32), rowsInSight(100000, 44.0f32, 4399560.0f32, 420.0f32), rowsInSight(5, 44.0f32, 0.0f32, 420.0f32)] as const);
+    return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => {
+            const m0 = initial(100000);
+            const [ps0, u0] = laidOut(interface(520, 420, 0u64), f, m0, view, 0u64);
+            print([boxes(u0), m0.offset] as const);
+            // the wheel over the list: 300 notches down (40 units each)
+            const [u1, m1] = drive(f, u0, m0, concat([Moved(260.0f32, 250.0f32)], fill(300, Scroll(40.0f32))), 0);
+            print([boxes(u1), m1.offset, m1.height] as const);
+            // a click on the box of the first task in sight: ticked
+            const [b0, b1, bn] = boxes(u1);
+            const first = b0 + 1;
+            const h = u1.hits[findIndex(u1.hits, (x) => x.kind == FOCUS && x.id == TICK + first)];
+            const [u2, m2] = drive(f, u1, m1, [Moved(h.x + 4.0f32, h.y + 4.0f32), Down(0), Up(0)], 0);
+            print(filter(iota(m2.done.length), (k) => m2.done[k]));
+            // a resize: the list told again (its height the window's)
+            const [u3, m3] = drive(f, u2, m2, [Resized(520, 800)], 0);
+            print([boxes(u3), m3.offset, m3.height] as const);
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

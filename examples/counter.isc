@@ -42,6 +42,7 @@ function button(label: string, id: i64, primary: boolean, width: f32): Element {
         shadowY: primary ? 2.0f32 : 0.0f32,
         shadowColor: rgba(0.15f32, 0.39f32, 0.92f32, 0.35f32),
         onClick: id,
+        focusable: true,
     }, [Label({ ...textStyle(label.length <= 3 ? 20.0f32 : 15.0f32, primary ? rgb(0xFFFFFFu32) : ink), align: Center }, label)]);
 }
 

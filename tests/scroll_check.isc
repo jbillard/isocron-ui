@@ -4,12 +4,12 @@
 // on a task brought into view, the offset kept within its range by the
 // wheel.
 import { parse } from "../src/font";
-import { placeScrolled, hitTest, scrollTest, scrolled, Hit } from "../src/ui";
+import { placeScrolled, hitTest, scrollTest, scrolled, Hit, CLICK } from "../src/ui";
 import { Model, Item, initial, view, TICK } from "../examples/todo";
 
 // the ticks of the tasks among the places `hs`: their tasks and their tops
 function ticks(hs: Hit[n]): [i64, i64][] {
-    return map(filter(hs, (h) => h.id >= TICK && h.id < TICK + 100), (h) => [h.id - TICK, i64(h.y)] as const);
+    return map(filter(hs, (h) => h.kind == CLICK && h.id >= TICK && h.id < TICK + 100), (h) => [h.id - TICK, i64(h.y)] as const);
 }
 
 action main(args: string[k]): i32 {

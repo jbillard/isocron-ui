@@ -67,4 +67,20 @@ deadwl="$(cd "$out" && PLAY_XKB=us:intl python3 "$here/../tools/display/play.py"
 [ "$deadwl" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] êïé]" ] || { echo "FAILED: dead keys under Wayland: $deadwl"; exit 1; }
 deadx="$(cd "$out" && PLAY_X11=1 PLAY_XKB=us:intl python3 "$here/../tools/display/play.py" 520 420 $deadkeys -- "$out/todo" | tail -1)"
 [ "$deadx" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] êïé]" ] || { echo "FAILED: dead keys under X11: $deadx"; exit 1; }
-echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx"
+# the keyboard alone: Tab to the field, a word, Tab to Ajouter, Enter (the
+# task added), Tab to the box of the first task, Space (unticked); under
+# Wayland and under X11
+keys="move:300,300 key:Tab type:Lait key:Tab key:Return key:Tab key:space endserver"
+tabwl="$(cd "$out" && python3 "$here/../tools/display/play.py" 520 420 $keys -- "$out/todo" | tail -1)"
+[ "$tabwl" = "[[ ] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Lait]" ] || { echo "FAILED: the keyboard under Wayland: $tabwl"; exit 1; }
+tabx="$(cd "$out" && PLAY_X11=1 python3 "$here/../tools/display/play.py" 520 420 $keys -- "$out/todo" | tail -1)"
+[ "$tabx" = "[[ ] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Lait]" ] || { echo "FAILED: the keyboard under X11: $tabx"; exit 1; }
+# the long list (100 000 tasks, the rows in sight alone built): 50 notches
+# of the wheel (2000 units: row 45 at the top), a click on the box of the
+# task 48; under Wayland and under X11
+"$iscc" build examples/long_list_app.isc -o "$out/long"
+longwl="$(cd "$out" && python3 "$here/../tools/display/play.py" 520 420 wheel:260,250,50 clickat:62,200 endserver -- "$out/long" | tail -1)"
+[ "$longwl" = "[47]" ] || { echo "FAILED: the long list under Wayland: $longwl"; exit 1; }
+longx="$(cd "$out" && PLAY_X11=1 python3 "$here/../tools/display/play.py" 520 420 wheel:260,250,50 clickat:62,200 endserver -- "$out/long" | tail -1)"
+[ "$longx" = "[47]" ] || { echo "FAILED: the long list under X11: $longx"; exit 1; }
+echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx; the keyboard: $tabwl, $tabx; the long list: $longwl, $longx"
