@@ -99,8 +99,49 @@ export type Hit = { x: f32, y: f32, w: f32, h: f32, id: i64, kind: i64, range: f
 
 // what the frame drawn shows besides the view: the offsets of the boxes
 // that scroll, the caret (shown or hidden by its blinking), the scrollbar
-// under the pointer (its offset's number, -1: none)
-export type Frame = { offsets: f32[], caretOn: boolean, hotBar: i64 };
+// under the pointer (its offset's number, -1: none), the pixels of a unit
+// (the factor of the screen: 1.5 at 150 %), for the scrollbars
+export type Frame = { offsets: f32[], caretOn: boolean, hotBar: i64, scale: f32 };
+
+// a length `k` times larger
+function scaledLength(l: Length, k: f32): Length {
+    return match (l) {
+        Px(v) => Px(v * k),
+        _ => l,
+    };
+}
+
+function scaledText(ts: TextStyle, k: f32): TextStyle {
+    return { ...ts, em: ts.em * k, lineHeight: ts.lineHeight * k };
+}
+
+// the element `e` `k` times larger: its sizes, gaps, paddings, borders,
+// corners, shadows, rings and texts (the view in units of 96 dots per inch
+// laid out in the pixels of a screen of another density, its texts drawn
+// at their size there, not enlarged after)
+export function scaledElement(e: Element, k: f32): Element {
+    if (k == 1.0f32) {
+        return e;
+    }
+    return match (e) {
+        Label(ts, s) => Label(scaledText(ts, k), s),
+        Input(ts, ed, focused, hint) => Input(scaledText(ts, k), ed, focused, hint),
+        Div(st, cs) => Div({
+            ...st,
+            width: scaledLength(st.width, k),
+            height: scaledLength(st.height, k),
+            gap: st.gap * k,
+            padding: st.padding * k,
+            padX: st.padX >= 0.0f32 ? st.padX * k : st.padX,
+            padY: st.padY >= 0.0f32 ? st.padY * k : st.padY,
+            border: st.border * k,
+            radius: st.radius * k,
+            shadowBlur: st.shadowBlur * k,
+            shadowY: st.shadowY * k,
+            outline: st.outline * k,
+        }, map(cs, (c) => scaledElement(c, k))),
+    };
+}
 
 // a place without the boundaries of a field
 export function placeOf(x: f32, y: f32, w: f32, h: f32, id: i64, kind: i64, range: f32, cursor: i64): Hit {
@@ -252,7 +293,7 @@ export function place(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32): [Pri
 // numbers; none: 0), each offset within its range (the height of its
 // content past its own)
 export function placeScrolled(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, offsets: f32[]): [Primitive[], Hit[]] {
-    return placeFrame(f, e, x, y, w, h, { offsets: offsets, caretOn: true, hotBar: -1 });
+    return placeFrame(f, e, x, y, w, h, { offsets: offsets, caretOn: true, hotBar: -1, scale: 1.0f32 });
 }
 
 // the line of a field (its text, caret and selection `ed`; with the focus,
@@ -309,7 +350,7 @@ export function placeFrame(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, 
                 const [mw, mh] = measure(f, c, iw);
                 return a + mh;
             }) > ih;
-            const cw = tall ? max(0.0f32, iw - 14.0f32) : iw;
+            const cw = tall ? max(0.0f32, iw - 14.0f32 * fr.scale) : iw;
             const mainRoom = row ? cw : ih;
             const crossRoom = row ? ih : cw;
             const sizes = map(cs, (c) => measure(f, c, cw));
@@ -380,10 +421,10 @@ export function placeFrame(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, 
             // content seen, wider under the pointer; its place the right
             // 12 pixels, over its children
             const hot = fr.hotBar == st.scroll;
-            const [ty, th] = thumb(iy, ih, range, off);
-            const bw = hot ? 8.0f32 : 6.0f32;
-            const bar: Primitive[] = range > 0.0f32 ? [Box(rounded(quad(x1 - 2.0f32 - bw, ty, bw, th, rgba(0.0f32, 0.0f32, 0.0f32, hot ? 0.45f32 : 0.28f32)), bw * 0.5f32))] : [];
-            const barPlace: Hit[] = range > 0.0f32 ? [placeOf(x1 - 12.0f32, iy, 12.0f32, ih, st.scroll, BAR, range, ARROW)] : [];
+            const [ty, th] = thumb(iy, ih, range, off, fr.scale);
+            const bw = (hot ? 8.0f32 : 6.0f32) * fr.scale;
+            const bar: Primitive[] = range > 0.0f32 ? [Box(rounded(quad(x1 - 2.0f32 * fr.scale - bw, ty, bw, th, rgba(0.0f32, 0.0f32, 0.0f32, hot ? 0.45f32 : 0.28f32)), bw * 0.5f32))] : [];
+            const barPlace: Hit[] = range > 0.0f32 ? [placeOf(x1 - 12.0f32 * fr.scale, iy, 12.0f32 * fr.scale, ih, st.scroll, BAR, range, ARROW)] : [];
             const drawn = concat(concat(concat(concat(deco, [Clip(ix, iy, x1, y1)]), cps), bar), [Unclip]);
             return [drawn, concat(concat(concat(hits, wheel), cut), barPlace)] as const;
         },
@@ -391,12 +432,13 @@ export function placeFrame(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, 
 }
 
 // the thumb of the scrollbar of a box at `y`, `h` high, whose content
-// passes it by `range`, scrolled by `off`: its top and its height (the
-// share of the content seen, 24 pixels at least), 2 pixels from the ends
-export function thumb(y: f32, h: f32, range: f32, off: f32): [f32, f32] {
-    const track = max(0.0f32, h - 4.0f32);
-    const th = min(track, max(24.0f32, track * h / (h + range)));
-    return [y + 2.0f32 + (range > 0.0f32 ? (track - th) * off / range : 0.0f32), th] as const;
+// passes it by `range`, scrolled by `off`, `k` pixels a unit: its top and
+// its height (the share of the content seen, 24 units at least), 2 units
+// from the ends
+export function thumb(y: f32, h: f32, range: f32, off: f32, k: f32): [f32, f32] {
+    const track = max(0.0f32, h - 4.0f32 * k);
+    const th = min(track, max(24.0f32 * k, track * h / (h + range)));
+    return [y + 2.0f32 * k + (range > 0.0f32 ? (track - th) * off / range : 0.0f32), th] as const;
 }
 
 // the children `cs` from the `i`-th, each laid out in its frame, after

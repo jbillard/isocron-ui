@@ -124,7 +124,7 @@ function shadows(): Primitive[] {
 // in its box: what every application shows of them
 function widgets(f: Font): Primitive[] {
     const y = 600.0f32;
-    const fr = { offsets: [], caretOn: true, hotBar: -1 };
+    const fr = { offsets: [], caretOn: true, hotBar: -1, scale: 1.0f32 };
     const at = (e: Element, x: f32, yy: f32, w: f32, h: f32) => {
         const [ps, hits] = placeFrame(f, e, x, yy, w, h, fr);
         return ps;

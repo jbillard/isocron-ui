@@ -73,7 +73,7 @@ function eventStarts(b: u8[n], at: i64, found: i64[]): i64[] {
 
 // the names of the globals of the compositor that a window needs (0: not
 // offered)
-export type Globals = { compositor: u32, shm: u32, wmBase: u32, seat: u32, cursorShape: u32 };
+export type Globals = { compositor: u32, shm: u32, wmBase: u32, seat: u32, cursorShape: u32, output: u32 };
 
 // the ids the client gives its objects (the display is 1). A compositor
 // takes a new id only when it is the next one or one it has freed
@@ -117,7 +117,8 @@ export function globalsOf(evs: Event[n], g: Globals): Globals {
             : (iface == "wl_shm" ? { ...acc, shm: name }
             : (iface == "xdg_wm_base" ? { ...acc, wmBase: name }
             : (iface == "wl_seat" ? { ...acc, seat: name }
-            : (iface == "wp_cursor_shape_manager_v1" ? { ...acc, cursorShape: name } : acc))));
+            : (iface == "wp_cursor_shape_manager_v1" ? { ...acc, cursorShape: name }
+            : (iface == "wl_output" && acc.output == 0u32 ? { ...acc, output: name } : acc)))));
     });
 }
 
@@ -211,6 +212,17 @@ export function pointerImageRequest(surface: u32, buffer: u32, side: i64, serial
     return concat(concat(concat(set, attach), damage), request(surface, 6u32, []));
 }
 
+// the first screen bound as `id` (`wl_output`, version 2: its scale)
+export function outputRequests(g: Globals, id: u32): u8[] {
+    return bind(g.output, "wl_output", 2u32, id);
+}
+
+// the images of the window drawn at `scale` pixels a unit
+// (`wl_surface.set_buffer_scale`)
+export function scaleRequest(scale: i64): u8[] {
+    return request(SURFACE, 8u32, i32le(i32(scale)));
+}
+
 // the buffer and the pool of an image no longer shown destroyed
 // (`wl_buffer.destroy`, `wl_shm_pool.destroy`)
 export function destroyRequests(pool: u32, buffer: u32): u8[] {
@@ -236,6 +248,7 @@ export type Input =
     | Modifiers(u32)
     | Axis(u32, f64)
     | Capabilities(u32)
+    | OutputScale(u32, i64)
     | Failure(string)
     | Other(u32, u32);
 
@@ -272,6 +285,10 @@ export function input(e: Event): Input {
     }
     if (e.obj == BUFFER && e.op == 0u32) {
         return Released;
+    }
+    // a scale of a screen (`wl_output.scale`): its object and its factor
+    if (e.op == 3u32 && e.obj > FRAME && e.args.length == 4) {
+        return OutputScale(e.obj, i64(i32(word(e.args, 0))));
     }
     if (e.obj == SEAT && e.op == 0u32) {
         return Capabilities(word(e.args, 0));

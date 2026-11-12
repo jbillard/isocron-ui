@@ -1,0 +1,34 @@
+// The smallest application of the library: a button counting its clicks
+// (the example of the README).
+import { runWith, loadFont, fail } from "../src/app";
+import { Input, Effect, Click, Hover } from "../src/input";
+import { Element, Div, Auto, style } from "../src/ui";
+import { button } from "../src/widgets";
+
+type Model = { count: i64, hover: i64 };
+
+function view(m: Model): Element {
+    return Div({ ...style(), padding: 20.0f32 }, [button(`${m.count} clics`, 1, true, Auto, { hovered: m.hover == 1, pressed: false })]);
+}
+
+function update(m: Model, i: Input): [Model, Effect[]] {
+    return match (i) {
+        Click(place, x, y, at, clicks, mods) => [{ ...m, count: m.count + 1 }, []] as const,
+        Hover(place) => [{ ...m, hover: place }, []] as const,
+        _ => [m, []] as const,
+    };
+}
+
+action main(args: string[k]): i32 {
+    return match (loadFont(args)) {
+        Ok(f) => {
+            const end = runWith("Exemple", 320, 120, ["Couper", "Copier", "Coller", "Tout sélectionner"], f, { count: 0, hover: -1 }, view, update);
+            print(end.count);
+            return 0;
+        },
+        Err(e) => {
+            fail("Exemple", e);
+            return 1;
+        },
+    };
+}

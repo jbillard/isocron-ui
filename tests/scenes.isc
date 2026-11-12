@@ -69,6 +69,10 @@ action main(args: string[k]): i32 {
             const ui0 = { ...interface(520, 420, 0u64), menu: true, menuX: 150.0f32, menuY: 128.0f32, menuHover: 1, menuCut: true, labels: ["Couper", "Copier", "Coller", "Tout sélectionner"] };
             const [mp, mu] = laidOut(ui0, f, sel, todo.view, 0u64);
             scene(args[0], "menu", 520, 420, white, mp);
+            // the list of tasks at 150 % (a screen of 144 dots per inch): its
+            // window of 520 by 420 units, 780 by 630 pixels
+            const [sp15, su15] = laidOut({ ...interface(780, 630, 0u64), scale: 1.5f32 }, f, { ...todo.initial(), field: editing("Pain"), focused: true }, todo.view, 0u64);
+            scene(args[0], "todo150", 780, 630, white, sp15);
         },
         Err(e) => print(e),
     };

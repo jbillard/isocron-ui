@@ -18,7 +18,7 @@ import * as net from "net";
 import * as wl from "./wayland";
 import { rgb, rgba, render, Primitive } from "./paint";
 import { Font, parse } from "./font";
-import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU } from "./ui";
+import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU } from "./ui";
 import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./input";
 import { Keymap, parseKeymap, charOf } from "./xkb";
 import * as cursors from "./cursors";
@@ -36,7 +36,7 @@ const NEAR: f32 = 4.0f32;
 // wheel (pixels, down: positive), a character typed, a key that edits or a
 // shortcut, the modifiers held, the size of the window, its closing, the
 // text of the clipboard
-export type Ev = Moved(f32, f32) | Down(i64) | Up(i64) | Scroll(f32) | Typed(i64) | Pressed(i64) | Mods(i64) | Resized(i64, i64) | Closed | Pasted(string);
+export type Ev = Moved(f32, f32) | Down(i64) | Up(i64) | Scroll(f32) | Typed(i64) | Pressed(i64) | Mods(i64) | Resized(i64, i64) | Scaled(f32) | Closed | Pasted(string);
 
 // what the library keeps of the interface: the size of the window, the
 // places of the frame shown and the offsets of its boxes that scroll, the
@@ -84,6 +84,7 @@ export type Ui = {
     menuHover: i64,
     menuCut: boolean,
     labels: string[],
+    scale: f32,
     redraw: boolean,
     closed: boolean,
 };
@@ -102,7 +103,7 @@ export function interface(w: i64, h: i64, now: u64): Ui {
         w: w, h: h, hits: [], offsets: fill(16, 0.0f32), x: -1.0f32, y: -1.0f32, hover: -1, cursor: ARROW, mods: 0,
         pressed: -1, field: -1, px: 0.0f32, py: 0.0f32, bar: -1, grab: 0.0f32, hotBar: -1,
         clickTime: 0u64, clicks: 0, cx: 0.0f32, cy: 0.0f32, since: now, caret: false, caretOn: true,
-        clipboard: "", asked: [], menu: false, menuX: 0.0f32, menuY: 0.0f32, menuHover: -1, menuCut: false, labels: englishMenu(),
+        clipboard: "", asked: [], menu: false, menuX: 0.0f32, menuY: 0.0f32, menuHover: -1, menuCut: false, labels: englishMenu(), scale: 1.0f32,
         redraw: true, closed: false,
     };
 }
@@ -150,9 +151,9 @@ function movedTo<M>(ui: Ui, m: M, x: f32, y: f32, update: (M, Input) => [M, Effe
         }
         const h = ui.hits[b];
         const off = ui.bar < ui.offsets.length ? ui.offsets[ui.bar] : 0.0f32;
-        const [ty, th] = thumb(h.y, h.h, h.range, off);
-        const room = max(1.0f32, h.h - 4.0f32 - th);
-        return [{ ...at, offsets: offsetSet(ui.offsets, ui.bar, (y - ui.grab - h.y - 2.0f32) / room * h.range, h.range), redraw: true }, m] as const;
+        const [ty, th] = thumb(h.y, h.h, h.range, off, ui.scale);
+        const room = max(1.0f32, h.h - 4.0f32 * ui.scale - th);
+        return [{ ...at, offsets: offsetSet(ui.offsets, ui.bar, (y - ui.grab - h.y - 2.0f32 * ui.scale) / room * h.range, h.range), redraw: true }, m] as const;
     }
     const [u1, m1] = ui.pressed >= 0
         ? told(at, m, Drag(ui.pressed, x - ui.px, y - ui.py, ui.field >= 0 && ui.field < ui.hits.length ? offsetAt(ui.hits[ui.field], x) : -1), update)
@@ -176,7 +177,7 @@ function pressedAt<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect[]
     if (b >= 0) {
         const h = ui.hits[b];
         const off = h.id < ui.offsets.length ? ui.offsets[h.id] : 0.0f32;
-        const [ty, th] = thumb(h.y, h.h, h.range, off);
+        const [ty, th] = thumb(h.y, h.h, h.range, off, ui.scale);
         if (ui.y >= ty && ui.y < ty + th) {
             return [{ ...ui, bar: h.id, grab: ui.y - ty, redraw: true }, m] as const;
         }
@@ -243,8 +244,8 @@ function menuLaidOut(ui: Ui, f: Font): [Primitive[], Hit[]] {
         onClick: k,
         cursor: ARROW,
     }, [Label(textStyle(14.0f32, enabled(k) ? rgb(0x111827u32) : rgb(0x9CA3AFu32)), ui.labels[k])]));
-    const w = 200.0f32;
-    const h = 8.0f32 + 28.0f32 * f32(n);
+    const w = 200.0f32 * ui.scale;
+    const h = (8.0f32 + 28.0f32 * f32(n)) * ui.scale;
     const x = max(0.0f32, min(ui.menuX, f32(ui.w) - w - 2.0f32));
     const y = max(0.0f32, min(ui.menuY, f32(ui.h) - h - 2.0f32));
     const box = Div({
@@ -259,7 +260,7 @@ function menuLaidOut(ui: Ui, f: Font): [Primitive[], Hit[]] {
         shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.18f32),
         cursor: ARROW,
     }, entries);
-    const [ps, hits] = placeFrame(f, box, x, y, w, h, { offsets: [], caretOn: false, hotBar: -1 });
+    const [ps, hits] = placeFrame(f, scaledElement(box, ui.scale), x, y, w, h, { offsets: [], caretOn: false, hotBar: -1, scale: ui.scale });
     // (its entries as entries of a menu; its box a place of its own, which
     // a click closes the menu on)
     const own = map(hits, (p) => p.kind == CLICK ? { ...p, kind: MENU, range: enabled(p.id) ? 1.0f32 : 0.0f32 } : p);
@@ -287,12 +288,15 @@ export function step<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M
             const [u1, m1] = told({ ...ui, pressed: -1, field: -1 }, m, Release(ui.pressed), update);
             return [{ ...u1, cursor: cursorAt(u1.hits, ui.x, ui.y) }, m1] as const;
         },
-        Scroll(dy) => [{ ...ui, offsets: scrolled(ui.offsets, ui.hits, ui.x, ui.y, dy), redraw: true }, m] as const,
+        Scroll(dy) => [{ ...ui, offsets: scrolled(ui.offsets, ui.hits, ui.x, ui.y, dy * ui.scale), redraw: true }, m] as const,
         Typed(c) => told({ ...ui, since: now }, m, Text(c), update),
         // (Escape closes the menu; another key closes it and is the model's)
         Pressed(k) => ui.menu && k == ESCAPE ? [{ ...ui, menu: false, menuHover: -1, redraw: true }, m] as const : told({ ...ui, since: now, menu: false, menuHover: -1 }, m, Key(k, ui.mods), update),
         Mods(mods) => [{ ...ui, mods: mods }, m] as const,
         Resized(w, h) => [{ ...ui, w: w, h: h, redraw: true }, m] as const,
+        // the pixels of a unit (the density of the screen): the offsets of
+        // the boxes that scroll kept in units
+        Scaled(k) => [{ ...ui, scale: k, offsets: map(ui.offsets, (o) => o * k / ui.scale), redraw: true }, m] as const,
         Closed => [{ ...ui, closed: true }, m] as const,
         Pasted(s) => told({ ...ui, since: now }, m, Paste(s), update),
     };
@@ -330,7 +334,7 @@ export function wakeIn(ui: Ui, now: u64): i64 {
 // the focus: a caret to blink)
 export function laidOut<M>(ui: Ui, f: Font, m: M, view: (M) => Element, now: u64): [Primitive[], Ui] {
     const shown = caretShown(ui, now);
-    const [vps, vhits] = placeFrame(f, view(m), 0.0f32, 0.0f32, f32(ui.w), f32(ui.h), { offsets: ui.offsets, caretOn: shown, hotBar: ui.hotBar });
+    const [vps, vhits] = placeFrame(f, scaledElement(view(m), ui.scale), 0.0f32, 0.0f32, f32(ui.w), f32(ui.h), { offsets: ui.offsets, caretOn: shown, hotBar: ui.hotBar, scale: ui.scale });
     const caret = count(vhits, (h) => h.kind == FIELD && h.id == 1) > 0;
     // the menu over the view
     const [mps, mhits] = ui.menu ? menuLaidOut(ui, f) : [[], []] as const;
@@ -423,7 +427,8 @@ action runWindows<M>(title: string, width: i64, height: i64, labels: string[], f
     return match (win.open(title, width, height)) {
         Ok(w) => {
             const [cw, ch] = win.clientSize(w);
-            const ui = frame(w, f, m, view, { ...interface(cw, ch, clock()), labels: labels });
+            // the pixels of a unit: the density of its screen
+            const ui = frame(w, f, m, view, { ...interface(cw, ch, clock()), labels: labels, scale: f32(win.dpi(w)) / 96.0f32 });
             const end = loopWindows(w, f, m, ui, 0, ARROW, view, update);
             win.close(w);
             return end;
@@ -486,6 +491,8 @@ function readFrom(evs: win.Event[n], i: i64, out: Ev[], mods: i64, high: i64): [
             return readFrom(evs, i + 1, c >= 32 && c != 127 ? concat(out, [Typed(c)]) : out, mods, 0);
         },
         win.Close => readFrom(evs, i + 1, concat(out, [Closed]), mods, high),
+        // another density of screen (the window resized by Windows)
+        win.Dpi(d) => readFrom(evs, i + 1, concat(out, [Scaled(f32(d) / 96.0f32)]), mods, high),
         _ => readFrom(evs, i + 1, out, mods, high),
     };
 }
@@ -575,6 +582,10 @@ type State = {
     shapes: u32,
     cursorSurface: u32,
     cursorFirst: u32,
+    output: u32,
+    scale: i64,
+    lw: i64,
+    lh: i64,
     done: boolean,
     failed: string,
 };
@@ -644,7 +655,7 @@ action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f
     return match (unix.connect(path)) {
         Ok(c) => {
             const asked = net.write(c, concat(wl.request(wl.DISPLAY, 1u32, wl.le32(wl.REGISTRY)), wl.request(wl.DISPLAY, 0u32, wl.le32(wl.SYNC))));
-            const g = globals(c, [], { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32, cursorShape: 0u32 });
+            const g = globals(c, [], { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32, cursorShape: 0u32, output: 0u32 });
             if (g.compositor == 0u32 || g.shm == 0u32 || g.wmBase == 0u32) {
                 net.close(c);
                 return m;
@@ -666,9 +677,13 @@ action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f
             const st = {
                 pending: [], shown: false, next: g.cursorShape != 0u32 ? wl.POOL + 2u32 : wl.POOL + 5u32, pool: 0u32, buffer: 0u32,
                 keymap: parseKeymap(""), mods: 0u32, entry: 0u32, shape: -1,
-                shapes: g.cursorShape != 0u32 ? wl.POOL + 1u32 : 0u32, cursorSurface: wl.POOL, cursorFirst: wl.POOL + 2u32, done: false, failed: "",
+                shapes: g.cursorShape != 0u32 ? wl.POOL + 1u32 : 0u32, cursorSurface: wl.POOL, cursorFirst: wl.POOL + 2u32,
+                output: 0u32, scale: 1, lw: width, lh: height, done: false, failed: "",
             };
-            const end = loopWayland(c, f, m, { ...interface(width, height, clock()), labels: labels }, st, view, update);
+            // the first screen, for its scale (the next id)
+            const st2 = g.output != 0u32 ? { ...st, output: st.next, next: st.next + 1u32 } : st;
+            const bound = g.output != 0u32 ? net.write(c, wl.outputRequests(g, st.next)) : Ok(());
+            const end = loopWayland(c, f, m, { ...interface(width, height, clock()), labels: labels }, st2, view, update);
             net.close(c);
             return end;
         },
@@ -742,7 +757,23 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
         return [mm, { ...u, asked: [] }, st] as const;
     };
     const [nm, nu, ns] = match (wl.input(evs[i])) {
-        wl.Size(w, h) => w > 0 && h > 0 ? hand(Resized(w, h)) : [m, ui, st] as const,
+        // (sizes and places in units of the compositor, the images in
+        // pixels: times the scale of its screen)
+        wl.Size(w, h) => {
+            if (w <= 0 || h <= 0) {
+                return [m, ui, st] as const;
+            }
+            const [mm, u, s2] = hand(Resized(w * st.scale, h * st.scale));
+            return [mm, u, { ...s2, lw: w, lh: h }] as const;
+        },
+        wl.OutputScale(obj, k) => {
+            if (obj != st.output || k < 1 || k == st.scale) {
+                return [m, ui, st] as const;
+            }
+            const set = net.write(c, wl.scaleRequest(k));
+            const [u1, m1] = steps(ui, m, [Scaled(f32(k)), Resized(st.lw * k, st.lh * k)], now, update);
+            return [m1, { ...u1, asked: [] }, { ...st, scale: k }] as const;
+        },
         wl.Configure(serial) => {
             const acked = net.write(c, wl.request(wl.XDG_SURFACE, 4u32, wl.le32(serial)));
             const [u2, s2] = drawWayland(c, f, m, view, ui, { ...st, shown: true });
@@ -752,10 +783,10 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
             const pong = net.write(c, wl.request(wl.WM_BASE, 3u32, wl.le32(serial)));
             return [m, ui, st] as const;
         },
-        wl.Pointer(x, y) => hand(Moved(f32(x), f32(y))),
+        wl.Pointer(x, y) => hand(Moved(f32(x) * f32(st.scale), f32(y) * f32(st.scale))),
         // its entry: its serial kept (the shape of the pointer set with it)
         wl.Enter(serial, x, y) => {
-            const [mm, u, s2] = hand(Moved(f32(x), f32(y)));
+            const [mm, u, s2] = hand(Moved(f32(x) * f32(st.scale), f32(y) * f32(st.scale)));
             return [mm, u, shapeShown(c, { ...s2, entry: serial, shape: -1 }, u.cursor)] as const;
         },
         wl.Leave => [m, ui, { ...st, entry: 0u32 }] as const,
