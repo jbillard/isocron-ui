@@ -54,6 +54,9 @@ export type Vm = {
     // the library running that keep values of the machine out of it, which
     // a collection would move: none collects while one runs)
     gcAt: i64, pinned: i64,
+    // (the function of the closures `string.gmatch` gives: a step of the
+    // generic `for` over one made in the loop, -1 none)
+    gmProto: i64,
 };
 
 const BIAS: i64 = 524288;
@@ -215,6 +218,13 @@ function placeOf(vm: Vm, info: TabInfo, k: V): i64 {
         return info.arr + k.i - 1;
     }
     return k.t == T_NIL || k.t == T_NUM ? -1 : slotIn(vm, info, k);
+}
+
+// the place in a walk after the key `k` of the hashes of `info`
+// (NOT_A_KEY: none)
+function slotPlace(vm: Vm, info: TabInfo, k: V): i64 {
+    const at = slotIn(vm, info, k);
+    return at < 0 ? NOT_A_KEY : -(at - info.hash) - 2;
 }
 
 // the slot of the key `k` in the hashes of `t` (-1: none)
@@ -390,6 +400,24 @@ function walkFrom(vm: Vm, t: i64, pos: i64): [i64, V, V] {
         return walkFrom(vm, t, pos - 1);
     }
     return [pos - 1, { t: vm.skT[at], i: vm.skI[at], f: vm.skF[at] }, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }] as const;
+}
+
+// the place of the next value from `pos` in a walk of the table `info`
+// (`walkFrom`), its kinds of keys and values alone given: `info.cap` past
+// the hashes at the end
+function nextPlace(svT: i64[], skT: i64[], info: TabInfo, pos: i64): i64 {
+    if (pos >= 0) {
+        if (pos < info.len) {
+            return svT[info.arr + pos] == T_NIL ? nextPlace(svT, skT, info, pos + 1) : pos;
+        }
+        return nextPlace(svT, skT, info, -1);
+    }
+    const slot = -pos - 1;
+    if (slot >= info.cap) {
+        return pos;
+    }
+    const at = info.hash + slot;
+    return skT[at] == T_NIL || svT[at] == T_NIL ? nextPlace(svT, skT, info, pos - 1) : pos;
 }
 
 // a key of no table (the places of the hashes are -1, -2, ...: none
@@ -1105,6 +1133,13 @@ function run(vm: Vm, stop: i64): Vm {
                 }
             }
             const line = vm.lines[pc];
+            // (a function of the library: called from here, not through
+            // `enter`, one passing of the machine less)
+            if (vm.regs[ra].t == T_BUILTIN) {
+                const id = vm.regs[ra].i;
+                const [v1, nres] = libCall({ ...vm, pc: next }, id, ra, n, line);
+                return run(v1.err ? v1 : results(v1, ra, ra, nres, c - 1), stop);
+            }
             return run(enter({ ...vm, pc: next }, ra, n, c - 1, line), stop);
         },
         30 => {
@@ -1128,7 +1163,45 @@ function run(vm: Vm, stop: i64): Vm {
         },
         31 => run(forPrep({ ...vm, pc: next }, ra, b, vm.base + c), stop),
         32 => run(forLoop({ ...vm, pc: next }, ra, b, vm.base + c), stop),
-        33 => run(tforCall({ ...vm, pc: next }, ra, c), stop),
+        33 => {
+            // (`next` and the step of `ipairs` over a table of no
+            // metatable: here, without a call)
+            const f = vm.regs[ra];
+            const tv = vm.regs[ra + 1];
+            if (f.t == T_BUILTIN && tv.t == T_TAB && vm.tabs[tv.i].meta < 0 && ra + 5 <= vm.regs.length) {
+                const info = vm.tabs[tv.i];
+                const ctl = vm.regs[ra + 2];
+                if (f.i == B_IPAIRS_STEP && ctl.t == T_INT) {
+                    const i = ctl.i + 1;
+                    if (i >= 1 && i <= info.len && vm.svT[info.arr + i - 1] != T_NIL) {
+                        const at = info.arr + i - 1;
+                        return run({ ...vm, regs: vm.regs.with(ra + 3, { t: T_INT, i: i, f: 0.0 }).with(ra + 4, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+                    }
+                    if (i > info.len && info.cap == 0) {
+                        return run({ ...vm, regs: vm.regs.with(ra + 3, nilV()), pc: next }, stop);
+                    }
+                }
+                if (f.i == B_NEXT) {
+                    // (the place after the key: a key of the array part, or
+                    // a key of the hashes found)
+                    const from = ctl.t == T_NIL ? 0 : (ctl.t == T_INT && ctl.i >= 1 && ctl.i <= info.len ? ctl.i : (ctl.t == T_STR ? (info.cap == 0 ? NOT_A_KEY : slotPlace(vm, info, ctl)) : NOT_A_KEY));
+                    if (from != NOT_A_KEY) {
+                        const pos = nextPlace(vm.svT, vm.skT, info, from);
+                        if (pos >= 0) {
+                            const at = info.arr + pos;
+                            return run({ ...vm, regs: vm.regs.with(ra + 3, { t: T_INT, i: pos + 1, f: 0.0 }).with(ra + 4, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+                        }
+                        const slot = -pos - 1;
+                        if (slot >= info.cap) {
+                            return run({ ...vm, regs: vm.regs.with(ra + 3, nilV()), pc: next }, stop);
+                        }
+                        const at = info.hash + slot;
+                        return run({ ...vm, regs: vm.regs.with(ra + 3, { t: vm.skT[at], i: vm.skI[at], f: vm.skF[at] }).with(ra + 4, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+                    }
+                }
+            }
+            return run(tforCall({ ...vm, pc: next }, ra, c), stop);
+        },
         34 => {
             const more = vm.regs[ra + 3].t != T_NIL;
             const v = reg(vm, ra + 3);
@@ -1368,6 +1441,35 @@ function tforCall(vm: Vm, a: i64, nvars: i64): Vm {
         const v = rawGet(vm, vm.regs[a + 1].i, intV(i));
         return v.t == T_NIL ? setReg(vm, a + 3, nilV()) : setReg(setReg(vm, a + 3, intV(i)), a + 4, v);
     }
+    // (the closure of `string.gmatch`: its step here, on its state)
+    if (f == T_FUN && vm.clProto[vm.regs[a].i] == vm.gmProto) {
+        const k = vm.regs[a].i;
+        const u0 = vm.ups[vm.clUp[k]];
+        const u1 = vm.ups[vm.clUp[k] + 1];
+        const st = vm.cT[u1] == T_TAB ? vm.cI[u1] : (vm.cT[u0] == T_TAB ? vm.cI[u0] : -1);
+        // (its four values in the array part of its state, read there)
+        const info = st >= 0 ? vm.tabs[st] : vm.tabs[0];
+        if (st >= 0 && info.len == 4) {
+            const at = info.arr;
+            const sv = { t: vm.svT[at], i: vm.svI[at], f: 0.0 };
+            const pv = { t: vm.svT[at + 1], i: vm.svI[at + 1], f: 0.0 };
+            const posv = { t: vm.svT[at + 2], i: vm.svI[at + 2], f: 0.0 };
+            const lastv = { t: vm.svT[at + 3], i: vm.svI[at + 3], f: 0.0 };
+            if (sv.t == T_STR && pv.t == T_STR && posv.t == T_INT && lastv.t == T_INT) {
+                const fx0 = { err: false, msg: "", chunk: chunkOf(vm) };
+                const [fx, pos, last, rs] = gmatchF(fx0, bytes(vm.strs[sv.i]), bytes(vm.strs[pv.i]), posv.i, lastv.i, vm.lines[vm.pc - 1]);
+                const v0 = { ...vm, svI: vm.svI.with(at + 2, pos).with(at + 3, last) };
+                if (fx.err) {
+                    const [v1e, ke] = newStr(v0, fx.msg);
+                    return { ...v1e, err: true, errT: T_STR, errI: ke, errF: 0.0 };
+                }
+                const v1 = roomRegs(v0, a + 3 + max(nvars, rs.length) + 1);
+                // (the captures into the variables, nils after them)
+                const v2 = writeValues(v1, a + 3, rs, 0);
+                return fold(iota(max(0, nvars - rs.length)), v2, (acc, j) => setReg(acc, a + 3 + rs.length + j, nilV()));
+            }
+        }
+    }
     // (a call: the function and its two values copied after them)
     const v1 = roomRegs(vm, a + 7 + nvars);
     const v2 = setReg(setReg(setReg(v1, a + 3, reg(v1, a)), a + 4, reg(v1, a + 1)), a + 5, reg(v1, a + 2));
@@ -1513,8 +1615,23 @@ function writeValues(vm: Vm, at: i64, xs: Value[n], i: i64): Vm {
     if (i >= n) {
         return vm;
     }
+    // (a number, a boolean or nil: no text to make)
+    if (n == 1) {
+        return match (xs[0]) {
+            Int(x) => setReg(vm, at, intV(x)),
+            Num(x) => setReg(vm, at, numV(x)),
+            Bool(x) => setReg(vm, at, boolV(x)),
+            Nil => setReg(vm, at, nilV()),
+            _ => writeOne(vm, at, xs[0]),
+        };
+    }
     const [v1, v] = fromValue(vm, xs[i]);
     return writeValues(setReg(v1, at + i, v), at, xs, i + 1);
+}
+
+function writeOne(vm: Vm, at: i64, x: Value): Vm {
+    const [v1, v] = fromValue(vm, x);
+    return setReg(v1, at, v);
 }
 
 // ----- texts read where they are ----------------------------------------------
@@ -2927,7 +3044,7 @@ export function newVm(): Vm {
         cT: [], cI: [], cF: [], ncell: 0,
         globals: 0, strings: 0, stringMeta: 0,
         err: false, errT: T_NIL, errI: 0, errF: 0.0,
-        out: [], seed: 88172645463325252, ltop: 0, kIndex: 0, gcAt: GC_MIN, pinned: 0,
+        out: [], seed: 88172645463325252, ltop: 0, kIndex: 0, gcAt: GC_MIN, pinned: 0, gmProto: -1,
     };
     const [v1, g] = newTable(vm0, 0, 64);
     const v2 = fold(iota(BASE_NAMES.length), { ...v1, globals: g }, (acc, i) => setName(acc, g, BASE_NAMES[i], { t: T_BUILTIN, i: i, f: 0.0 }));
@@ -2944,7 +3061,12 @@ export function newVm(): Vm {
     const v12 = { ...setName(v11b, sm, "__index", { t: T_TAB, i: strs, f: 0.0 }), strings: strs, stringMeta: sm, kIndex: ki };
     const [v13, f] = load(v12, PRELUDE, "prelude");
     const [v14, rs] = call(v13, f, [{ t: T_BUILTIN, i: PRIM_GMATCH_STEP, f: 0.0 }]);
-    return v14;
+    // (the function made by `string.gmatch`: the closure its code makes)
+    const gm = rawGetStr(v14, strs, "gmatch");
+    const gp = gm.t == T_FUN ? v14.clProto[gm.i] : -1;
+    const start = gp >= 0 ? v14.pStart[gp] : 0;
+    const at = gp >= 0 ? findIndex(v14.code.slice(start, v14.code.length), (w) => opOf(w) == I_CLOSURE) : -1;
+    return { ...v14, gmProto: at >= 0 ? bOf(v14.code[start + at]) : -1 };
 }
 
 // the chunk `src` named `name` loaded: its function (nil and the error
