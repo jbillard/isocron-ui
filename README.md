@@ -192,24 +192,51 @@ iscc build examples/scripted_app.isc -o scripted_app
 ```
 
 The root `<view>` takes `title`, `width`, `height`, `styles` and `script`
-(files beside it, separated by spaces), `menu` and `onclose`; without an
-argument the application reads `app.ui.xml`. In an `<each>`, `as` and
-`index` name an element of the sequence and its index (from 1). The hand
-of a component, the focus of a field and the messages of the places are
-kept by the application. A file the application does not understand is
-refused at its file and line; an error of Lua while it runs is shown above
-the interface.
+(files beside it, separated by spaces), `images` (the files of PNG an
+expression may name), `menu`, `onclose` and `onkey`; without an argument
+the application reads `app.ui.xml`. In an `<each>`, `as` and `index` name
+an element of the sequence and its index (from 1). The hand of a
+component, the focus of a field and the messages of the places are kept by
+the application. A file the application does not understand is refused at
+its file and line; an error of Lua while it runs is shown above the
+interface. Besides the vocabulary of `uigen`:
+
+- `onkey="..."` of the view: Lua given the keys (`key`: `Enter`,
+  `Escape`, `Backspace`, `Tab`, `Left`, `Up`, `Right`, `Down`, `Delete`,
+  `Home`, `End` or the character, a letter held with Ctrl in small;
+  `ctrl`, `shift`, `alt`) before the field with the focus: a true value
+  takes the key (`if ctrl and key == "p" then ... return true end`).
+- `<field autofocus="true">`: the field takes the focus when it appears.
+- `.name:hover` and `.name:active` in the styles: the class of a box with
+  `onclick` or `ondrag` under the pointer, pressed (refused by `uigen`).
+- `ondrag="..."` of a box: Lua run as the pointer moves with the button
+  held after a press on it, `dx` and `dy` the distance since the press
+  (`onclick="from = width" ondrag="width = from + dx"`).
+- `<image src="icon.png" width="16" height="16">`: an image of PNG read
+  with the view (`src="{expr}"`: one of `images`).
+- `font="mono"` of a text (and of a class): the second font of the
+  application, of fixed width (Consolas under Windows, else DejaVu Sans
+  Mono beside it or in the folders of the system; `--mono=file`).
+- `host.readFile(path, done)` and `host.listFolder(path, done)` in Lua: the
+  file or the folder read after the input that asked it (by the loop of
+  the window: the effects `ReadText`, `ListFolder`), `done` then called
+  with its text, or the sequence of its names (those of folders ending
+  with `/`), or with nil and the reason; asked while the scripts start,
+  read at once.
 
 ## Its files
 
 - `src/app.isc`: `run` and `runWith` (the texts of the menu of a field),
+  `runWithFonts` (several fonts: a text of the face `k` drawn with the
+  `k`-th, `TextStyle.face`), `loadMonoFont`,
   `loadFont` (the file of `--font=`; under Windows Segoe UI, the font of
   its own windows; else, or without it, `DejaVuSans.ttf` beside the program
   or in the current folder, then a font of the system), `fail` (a box of
   messages under Windows); the loops of Windows, Wayland and X11.
 - `src/input.isc`: the inputs (`Click`, `Drag`, `Release`, `Hover`, `Text`,
-  `Key` with its modifiers, `Paste`, `Focus`, `Viewport`, `Tick`) and the
-  effects (`Copy`, `AskPaste`, `Animate`).
+  `Key` with its modifiers, `Paste`, `Focus`, `Viewport`, `Tick`,
+  `TextRead`, `FolderListed`) and the effects (`Copy`, `AskPaste`,
+  `Animate`, `ReadText`, `ListFolder`).
 - `src/edit.isc`: the text of a field (`Editing`: its caret and selection)
   and how the keys, the pointer and the clipboard change it (`edited`).
 - `src/widgets.isc`: the components, those of the plate: `button`

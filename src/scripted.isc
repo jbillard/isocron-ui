@@ -30,11 +30,12 @@ import { V } from "./lua_vm";
 import { parse, Node, Tag, Text, Read, Fault, Attr, attr, has } from "./xml";
 import { parseStyles, Sheet, Bad, Rule, Property } from "./css";
 import { rgb, rgba, Color } from "./paint";
-import { Element, Div, Label, Length, Px, Fill, Auto, Direction, Row, Column, Justify, Packed, Between, style, textStyle, Style, TextStyle, ARROW, POINTER, TEXT } from "./ui";
+import { Element, Div, Label, Image, Length, Px, Fill, Auto, Direction, Row, Column, Justify, Packed, Between, style, textStyle, Style, TextStyle, ARROW, POINTER, TEXT } from "./ui";
 import { Align, Start, Center, End } from "./text";
-import { Editing, editing, edited } from "./edit";
+import { Editing, editing, edited, utf8 } from "./edit";
 import { button, iconButton, textField, checkbox, toggleAt, progress, restyled, Hand } from "./widgets";
-import { Input as HandInput, Effect, Click, Release, Hover, Key, Focus, ENTER, ESCAPE } from "./input";
+import { Input as HandInput, Effect, Click, Drag, Release, Hover, Key, Focus, TextRead, FolderListed, ReadText, ListFolder, ENTER, ESCAPE, BACKSPACE, TAB, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END, WITH_CTRL, WITH_SHIFT, WITH_ALT } from "./input";
+import { decode, Picture } from "./png";
 import * as sys from "sys";
 
 // ----- values ----------------------------------------------------------
@@ -66,15 +67,17 @@ const KIND_ALIGN: i64 = 6;
 const KIND_CURSOR: i64 = 7;
 const KIND_TEXT: i64 = 8;
 const KIND_I64: i64 = 9;
+// the font of a text: sans (0) or mono (1)
+const KIND_FACE: i64 = 10;
 
 const BOX_PROPS: string[] = ["width", "height", "direction", "gap", "padding", "padX", "padY", "justify", "align", "stretch", "background", "border", "borderColor", "radius", "shadowBlur", "shadowY", "shadowColor", "clip", "scroll", "cursor", "focusable", "tip", "outline", "outlineColor"];
 const BOX_KINDS: i64[] = [1, 1, 4, 0, 0, 0, 0, 5, 6, 3, 2, 0, 2, 0, 0, 0, 2, 3, 9, 7, 3, 8, 0, 2];
-const TEXT_PROPS: string[] = ["size", "color", "textAlign"];
-const TEXT_KINDS: i64[] = [0, 2, 6];
+const TEXT_PROPS: string[] = ["size", "color", "textAlign", "font"];
+const TEXT_KINDS: i64[] = [0, 2, 6, 10];
 
 // the arguments of the components (`Prop.k` of a component), their kinds
-const ARG_NAMES: string[] = ["primary", "width", "danger", "hint", "checked", "on", "value", "at"];
-const ARG_KINDS: i64[] = [3, 1, 3, 8, 3, 3, 0, 0];
+const ARG_NAMES: string[] = ["primary", "width", "danger", "hint", "checked", "on", "value", "at", "autofocus"];
+const ARG_KINDS: i64[] = [3, 1, 3, 8, 3, 3, 0, 0, 3];
 
 // the components
 const C_BUTTON: i64 = 0;
@@ -173,6 +176,9 @@ export function valueIn(kind: i64, v: string): PV {
     if (kind == KIND_CURSOR) {
         return v == "arrow" ? PCur(ARROW) : (v == "pointer" ? PCur(POINTER) : (v == "text" ? PCur(TEXT) : PNone));
     }
+    if (kind == KIND_FACE) {
+        return v == "sans" ? PInt(0) : (v == "mono" ? PInt(1) : PNone);
+    }
     return PText(v);
 }
 
@@ -181,7 +187,7 @@ function kindName(kind: i64): string {
     return kind == KIND_F32 ? "a number" : (kind == KIND_I64 ? "an integer" : (kind == KIND_LENGTH ? "auto, fill, fill(n) or a number"
         : (kind == KIND_COLOR ? "#RRGGBB, #RRGGBBAA, rgba(r, g, b, a) or transparent" : (kind == KIND_BOOL ? "true or false"
         : (kind == KIND_DIRECTION ? "row or column" : (kind == KIND_JUSTIFY ? "start, center, end or between"
-        : (kind == KIND_ALIGN ? "start, center or end" : (kind == KIND_CURSOR ? "arrow, pointer or text" : "a text"))))))));
+        : (kind == KIND_ALIGN ? "start, center or end" : (kind == KIND_CURSOR ? "arrow, pointer or text" : (kind == KIND_FACE ? "sans or mono" : "a text")))))))));
 }
 
 function numOf(v: PV, d: f32): f32 {
@@ -325,6 +331,9 @@ function setText(t: TextStyle, k: i64, v: PV): TextStyle {
     if (k == 1) {
         return { ...t, color: colOf(v, t.color) };
     }
+    if (k == 3) {
+        return { ...t, face: intOf(v, t.face) };
+    }
     return match (v) {
         PAl(a) => ({ ...t, align: a }),
         _ => t,
@@ -334,6 +343,15 @@ function setText(t: TextStyle, k: i64, v: PV): TextStyle {
 // the style `s` with the classes of the numbers `cs` (of `classes`)
 function classedBox(s: Style, classes: Cls[n], cs: i64[m]): Style {
     return fold(cs, s, (acc, c) => fold(classes[c].box, acc, (a, p) => setBox(a, p.k, p.v)));
+}
+
+// the style `s` with the classes of `cs` in the state `state` (`hover`,
+// `active`) that the styles give
+function inState(s: Style, classes: Cls[n], cs: i64[m], state: string): Style {
+    return fold(cs, s, (acc, c) => {
+        const k = findIndex(classes, (x) => x.name == `${classes[c].name}:${state}`);
+        return k < 0 ? acc : fold(classes[k].box, acc, (a, p) => setBox(a, p.k, p.v));
+    });
 }
 
 function classedText(t: TextStyle, classes: Cls[n], cs: i64[m]): TextStyle {
@@ -348,16 +366,16 @@ function classedText(t: TextStyle, classes: Cls[n], cs: i64[m]): TextStyle {
 export type Comp = { kind: i64, args: Prop[], classes: i64[], label: Val, click: i64, enter: i64, change: i64, bind: i64, line: i64 };
 
 // an element of the template: a box (its direction, -1 for that of
-// `style()`; its attributes, classes, function of its click, children,
-// line), a text (its attributes, classes, content, line), a component, the
+// `style()`; its attributes, classes, functions of its click and of a drag
+// from it, children, line), a text (its attributes, classes, content, line), a component, the
 // child of an `<each>` for each element of a sequence (the function of the
-// sequence, its child)
-export type Tpl = TBox(i64, Prop[], i64[], i64, Tpl[], i64) | TText(Prop[], i64[], Val, i64) | TComp(Comp) | TEach(i64, Tpl[], i64);
+// sequence, its child), an image (its file, its width and height)
+export type Tpl = TBox(i64, Prop[], i64[], i64, i64, Tpl[], i64) | TText(Prop[], i64[], Val, i64) | TComp(Comp) | TEach(i64, Tpl[], i64) | TImage(Val, Prop[], i64);
 
 // what reading the view makes: the code of Lua of its expressions and
 // handlers (the table of their functions), their number, the globals of
 // its fields, its faults
-type G = { file: string, classes: string[], code: string, line: i64, n: i64, binds: string[], faults: string[] };
+type G = { file: string, classes: string[], code: string, line: i64, n: i64, binds: string[], faults: string[], images: string[] };
 
 function fault(g: G, line: i64, m: string): G {
     return { ...g, faults: concat(g.faults, [`${g.file}:${line}: ${m}`]) };
@@ -481,26 +499,41 @@ function tplOf(g: G, scope: string[n], node: Node): [G, Tpl[]] {
 function tagTpl(g: G, scope: string[n], name: string, attrs: Attr[m], kids: Node[k], line: i64): [G, Tpl[]] {
     if (name == "box" || name == "row" || name == "column") {
         const dir = name == "row" ? 1 : (name == "column" ? 2 : -1);
-        const g0 = onlyAttrs(g, attrs, "a box", concat(BOX_PROPS, ["class", "onclick"]), line);
+        const g0 = onlyAttrs(g, attrs, "a box", concat(BOX_PROPS, ["class", "onclick", "ondrag"]), line);
         const [g1, cs] = classesOf(g0, attrs, line);
         const [g2, ps] = propsOf(g1, scope, attrs, BOX_PROPS, BOX_KINDS, line);
         const [g3, click] = handlerOf(g2, scope, attrs, "onclick", line);
-        const [g4, ts] = kidsTpl(g3, scope, kids, 0, []);
-        return [g4, [TBox(dir, ps, cs, click, ts, line)]] as const;
+        // (a drag: `dx` and `dy` the pointer moved since the press)
+        const [g3a, drag] = handlerOf(g3, concat(scope, ["dx", "dy"]), attrs, "ondrag", line);
+        const [g4, ts] = kidsTpl(g3a, scope, kids, 0, []);
+        return [g4, [TBox(dir, ps, cs, click, drag, ts, line)]] as const;
     }
     if (name == "text") {
-        const g0 = onlyAttrs(g, attrs, "<text>", ["size", "color", "textAlign", "class"], line);
+        const g0 = onlyAttrs(g, attrs, "<text>", ["size", "color", "textAlign", "font", "class"], line);
         const [g1, cs] = classesOf(g0, attrs, line);
         const [g2, ps] = propsOf(g1, scope, attrs, TEXT_PROPS, TEXT_KINDS, line);
         const [g3, t] = textVal(g2, scope, rawText(kids), line);
         return [g3, [TText(ps, cs, t, line)]] as const;
+    }
+    if (name == "image") {
+        // (its file read when the view is: one given by an expression is
+        // among those of `images` of the view)
+        const g0 = onlyAttrs(g, attrs, "<image>", ["src", "width", "height"], line);
+        const src = attr(attrs, "src");
+        if (src == "") {
+            return [fault(g0, line, "<image> needs src=\"a file of PNG\""), []] as const;
+        }
+        const g1 = isExpr(src) || findIndex(g0.images, (x) => x == src) >= 0 ? g0 : { ...g0, images: concat(g0.images, [src]) };
+        const [g2, v] = textVal(g1, scope, isExpr(src) ? `{${src.slice(1, src.length - 1)}}` : src, line);
+        const [g3, ps] = propsOf(g2, scope, attrs, ["src", "width", "height"], [KIND_TEXT, KIND_F32, KIND_F32], line);
+        return [g3, [TImage(v, filter(ps, (p) => p.k > 0), line)]] as const;
     }
     if (name == "each") {
         return eachTpl(g, scope, attrs, kids, line);
     }
     const kind = findIndex(COMP_TAGS, (x) => x == name);
     if (kind < 0) {
-        return [fault(g, line, `the element <${name}> is unknown (box, row, column, text, button, iconbutton, field, checkbox, toggle, progress, each)`), []] as const;
+        return [fault(g, line, `the element <${name}> is unknown (box, row, column, text, image, button, iconbutton, field, checkbox, toggle, progress, each)`), []] as const;
     }
     return compTpl(g, scope, kind, name, attrs, kids, line);
 }
@@ -508,7 +541,7 @@ function tagTpl(g: G, scope: string[n], name: string, attrs: Attr[m], kids: Node
 // the arguments each component takes
 function argsKnown(kind: i64): string[] {
     return kind == C_BUTTON ? ["primary", "width", "onclick"] : (kind == C_ICON ? ["danger", "onclick"]
-        : (kind == C_FIELD ? ["hint", "width", "bind", "onenter", "onchange"] : (kind == C_CHECK ? ["checked", "onclick"]
+        : (kind == C_FIELD ? ["hint", "width", "bind", "onenter", "onchange", "autofocus"] : (kind == C_CHECK ? ["checked", "onclick"]
         : (kind == C_TOGGLE ? ["on", "at", "onclick"] : ["value", "width"]))));
 }
 
@@ -608,7 +641,7 @@ function isNone(v: PV): boolean {
 // a place of the view that answers: a box (the focus taken from a field), a
 // component, or a field (its global); its functions; the values of its
 // loops
-export type H = { kind: i64, click: i64, enter: i64, change: i64, bind: i64, args: V[] };
+export type H = { kind: i64, click: i64, drag: i64, enter: i64, change: i64, bind: i64, args: V[] };
 
 const H_BOX: i64 = 0;
 const H_COMP: i64 = 1;
@@ -619,11 +652,49 @@ const H_FIELD: i64 = 2;
 // made, its places (their messages their numbers), the field with the
 // focus (its number among the binds), the place under the pointer and the
 // one pressed, the error of the last input, its window, the function run
-// when it is closed
+// when it is closed, the one given the keys (`onkey`), the fields made the
+// last time
 export type App = {
-    vm: lua.Vm, file: string, tpl: Tpl[], classes: Cls[], binds: string[], eds: Editing[], tree: Element, hs: H[],
+    vm: lua.Vm, cx: Cx, tpl: Tpl[], eds: Editing[], tree: Element, hs: H[],
     focus: i64, hover: i64, pressed: i64, err: string, title: string, width: i64, height: i64, menu: string[], close: i64,
+    key: i64, seen: boolean[], pressX: f32, pressY: f32,
 };
+
+// what making the elements reads: the file of the view, its classes, the
+// globals of its fields, its images and the names of their files
+export type Cx = { file: string, classes: Cls[], binds: string[], pics: Picture[], names: string[] };
+
+// what the scripts are given before they run: `host.readFile(path, done)`
+// and `host.listFolder(path, done)` ask a file or a folder, read after the
+// input that asked them (when the view is read, at once); `done` is then
+// called with the text of the file or the sequence of the names in the
+// folder (those of folders ending with `/`), or with nil and the reason
+const HOST_LUA: string = join([
+    "host = { requests = {}, pending = {} }",
+    "function host.readFile(path, done)",
+    "  host.requests[#host.requests + 1] = { \"read\", path, done }",
+    "end",
+    "function host.listFolder(path, done)",
+    "  host.requests[#host.requests + 1] = { \"list\", path, done }",
+    "end",
+    "function host.take()",
+    "  local out = {}",
+    "  for _, r in ipairs(host.requests) do",
+    "    out[#out + 1] = r[1]",
+    "    out[#out + 1] = r[2]",
+    "    host.pending[#host.pending + 1] = r[3]",
+    "  end",
+    "  host.requests = {}",
+    "  return out",
+    "end",
+    "function host.deliver(result, err)",
+    "  local done = table.remove(host.pending, 1)",
+    "  if done then",
+    "    done(result, err)",
+    "  end",
+    "end",
+    ""
+], "\n");
 
 // the global that keeps the table of the functions of the view
 const REG: string = "__isocron_view";
@@ -648,6 +719,22 @@ action stylesIn(paths: string[n], i: i64, acc: Rule[], faults: string[]): [Rule[
         Ok(t) => match (parseStyles(t)) {
             Bad(m, line) => stylesIn(paths, i + 1, acc, concat(faults, [`${paths[i]}:${line}: ${m}`])),
             Sheet(rs) => stylesIn(paths, i + 1, concat(acc, rs), concat(faults, faultsIn(paths[i], rs, 0, []))),
+        },
+    };
+}
+
+// the images of the files `names` (beside the view, in the folder `dir`)
+// read, or the faults
+action picturesIn(dir: string, names: string[n], i: i64, acc: Picture[], faults: string[]): [Picture[], string[]] {
+    if (i >= n) {
+        return [acc, faults] as const;
+    }
+    const empty = { width: 0, height: 0, pixels: [] };
+    return match (sys.readFile(dir + names[i])) {
+        Err(e) => picturesIn(dir, names, i + 1, concat(acc, [empty]), concat(faults, [`${dir}${names[i]}: ${sys.message(e)}`])),
+        Ok(b) => match (decode(b)) {
+            Ok(pic) => picturesIn(dir, names, i + 1, concat(acc, [pic]), faults),
+            Err(m) => picturesIn(dir, names, i + 1, concat(acc, [empty]), concat(faults, [`${dir}${names[i]}: ${m}`])),
         },
     };
 }
@@ -692,20 +779,27 @@ export action load(path: string): Result<App, string> {
 action loaded(path: string, rattrs: Attr[n], rkids: Node[m], rline: i64): Result<App, string> {
     const dir = folderOf(path);
     const [rules, sfaults] = stylesIn(map(namesIn(attr(rattrs, "styles"), " "), (x) => dir + x), 0, [], []);
-    const classes = map(rules, (r) => classOf(r));
-    const known = ["title", "width", "height", "styles", "script", "menu", "onclose"];
-    const g0 = onlyAttrs({ file: path, classes: map(classes, (c) => c.name), code: "local F = {} ", line: 1, n: 0, binds: [], faults: [] }, rattrs, "<view>", known, rline);
+    // (a class with states and no rule of its own: an empty one)
+    const read = map(rules, (r) => classOf(r));
+    const bases = map(filter(read, (c) => c.name.indexOf(":") >= 0), (c) => c.name.slice(0, c.name.indexOf(":")));
+    const classes = concat(read, map(filter(bases, (x) => findIndex(read, (c) => c.name == x) < 0), (x) => ({ name: x, box: [], text: [] })));
+    const known = ["title", "width", "height", "styles", "script", "menu", "onclose", "onkey", "images"];
+    const g0 = onlyAttrs({ file: path, classes: map(classes, (c) => c.name), code: "local F = {} ", line: 1, n: 0, binds: [], faults: [], images: namesIn(attr(rattrs, "images"), " ") }, rattrs, "<view>", known, rline);
     const tags = filter(rkids, (k) => match (k) {
         Tag(name, a, c, l) => true,
         Text(t, l) => false,
     });
     const [g1, ts] = tags.length == 1 ? tplOf(g0, [], tags[0]) : [fault(g0, rline, `<view> holds one element (it has ${tags.length})`), []] as const;
-    const [g2, close] = handlerOf(g1, [], rattrs, "onclose", rline);
-    const faults = concat(sfaults, g2.faults);
+    const [g2a, close] = handlerOf(g1, [], rattrs, "onclose", rline);
+    const [g2, key] = handlerOf(g2a, ["key", "ctrl", "shift", "alt"], rattrs, "onkey", rline);
+    const [pics, ifaults] = picturesIn(dir, g2.images, 0, [], []);
+    const faults = concat(concat(sfaults, g2.faults), ifaults);
     if (faults.length > 0 || ts.length != 1) {
         return Err(join(faults, "\n"));
     }
-    const ran = scriptsRun(lua.newVm(), map(namesIn(attr(rattrs, "script"), " "), (x) => dir + x), 0);
+    const [h0, hf] = lua.load(lua.newVm(), HOST_LUA, "host");
+    const [h1, hr] = lua.call(h0, hf, []);
+    const ran = scriptsRun(h1, map(namesIn(attr(rattrs, "script"), " "), (x) => dir + x), 0);
     return match (ran) {
         Err(e) => Err(e),
         Ok(v0) => {
@@ -724,20 +818,96 @@ action loaded(path: string, rattrs: Attr[n], rkids: Node[m], rline: i64): Result
             };
             const menu = has(rattrs, "menu") ? namesIn(attr(rattrs, "menu"), ",") : ["Couper", "Copier", "Coller", "Tout sélectionner"];
             const a = {
-                vm: v3, file: path, tpl: ts, classes: classes, binds: g2.binds, eds: map(g2.binds, (b) => editing("")), tree: Div(style(), []), hs: [],
+                vm: v3, cx: { file: path, classes: classes, binds: g2.binds, pics: pics, names: g2.images }, tpl: ts, eds: map(g2.binds, (b) => editing("")), tree: Div(style(), []), hs: [],
                 focus: -1, hover: -1, pressed: -1, err: "", title: has(rattrs, "title") ? attr(rattrs, "title") : "Isocron", width: dim("width", 480), height: dim("height", 400), menu: menu, close: close,
+                key: key, seen: map(g2.binds, (x) => false), pressX: 0.0f32, pressY: 0.0f32,
             };
-            return Ok(rebuilt(a));
+            return Ok(rebuilt(filesAtOnce(a)));
         },
     };
+}
+
+// the files and folders the scripts asked read at once (when the view is
+// read), each given to its function, until they ask none
+action filesAtOnce(a: App): App {
+    const [a1, fx] = requested(a);
+    return fx.length == 0 ? a1 : filesAtOnce(answeredAll(a1, fx, 0));
+}
+
+action answeredAll(a: App, fx: Effect[n], k: i64): App {
+    return k >= n ? a : answeredAll(delivered(a, answerOf(fx[k])), fx, k + 1);
+}
+
+// the answer to the effect `e` (a file read, a folder listed)
+action answerOf(e: Effect): HandInput {
+    return match (e) {
+        ReadText(p) => match (sys.readText(p)) {
+            Ok(t) => TextRead(p, t, true),
+            Err(x) => TextRead(p, sys.message(x), false),
+        },
+        ListFolder(p) => match (sys.listDir(p)) {
+            Ok(names) => {
+                const sep = p.endsWith("/") || p.endsWith("\\") || p == "" ? "" : "/";
+                return FolderListed(p, map(names, (x) => sys.isDir(p + sep + x) ? x + "/" : x), true);
+            },
+            Err(x) => FolderListed(p, [sys.message(x)], false),
+        },
+        _ => TextRead("", "", false),
+    };
+}
+
+// the files and folders the scripts asked (`host.readFile`,
+// `host.listFolder` since the last time): the effects that ask them
+function requested(a: App): [App, Effect[]] {
+    const host = lua.global(a.vm, "host");
+    const take = lua.fieldOf(a.vm, host, "take");
+    const [v1, rs] = lua.call(a.vm, take, []);
+    if (lua.failed(v1) || rs.length == 0) {
+        return [{ ...a, vm: lua.failed(v1) ? lua.recover(v1) : v1 }, []] as const;
+    }
+    const t = rs[0];
+    const n = lua.sequenceLength(v1, t) / 2;
+    const fx = map(iota(n), (k) => {
+        const kind = lua.plainText(v1, lua.element(v1, t, 2 * k + 1));
+        const path = lua.plainText(v1, lua.element(v1, t, 2 * k + 2));
+        return kind == "read" ? ReadText(path) : ListFolder(path);
+    });
+    return [{ ...a, vm: v1 }, fx] as const;
+}
+
+// the answer `i` (a file read, a folder listed) given to the function that
+// asked it
+function delivered(a: App, i: HandInput): App {
+    const host = lua.global(a.vm, "host");
+    const deliver = lua.fieldOf(a.vm, host, "deliver");
+    const [v1, args] = match (i) {
+        TextRead(p, t, ok) => {
+            const [w1, s] = lua.stringV(a.vm, t);
+            return [w1, ok ? [s, lua.nilValue()] : [lua.nilValue(), s]] as const;
+        },
+        FolderListed(p, names, ok) => {
+            if (!ok) {
+                const [w1, s] = lua.stringV(a.vm, names.length > 0 ? names[0] : "");
+                return [w1, [lua.nilValue(), s]] as const;
+            }
+            const [w1, tv] = lua.stringsTable(a.vm, names);
+            return [w1, [tv, lua.nilValue()]] as const;
+        },
+        _ => [a.vm, [lua.nilValue(), lua.nilValue()]] as const,
+    };
+    const [v2, rs] = lua.call(v1, deliver, args);
+    if (lua.failed(v2)) {
+        return { ...a, vm: lua.recover(v2), err: a.err == "" ? lua.errorText(v2) : a.err };
+    }
+    return { ...a, vm: v2 };
 }
 
 // ----- the elements made -------------------------------------------------
 
 // what making the elements carries: the machine (its collector held), the
 // places made, the first error, the editing of the fields, the focus and
-// the hand
-type B = { vm: lua.Vm, hs: H[], err: string, eds: Editing[], focus: i64, hover: i64, pressed: i64 };
+// the hand, the fields made the last time and those made now
+type B = { vm: lua.Vm, hs: H[], err: string, eds: Editing[], focus: i64, hover: i64, pressed: i64, seen: boolean[], now: boolean[] };
 
 // the function `f` of the view called with `args`: its first value (nil
 // after an error, the first one kept)
@@ -839,32 +1009,47 @@ function argOf(b: B, file: string, c: Comp, k: i64, kind: i64, d: PV, args: V[n]
 }
 
 // the elements of the template `t`, the values of its loops `args`
-function made(b: B, file: string, classes: Cls[n], binds: string[k], t: Tpl, args: V[m]): [B, Element[]] {
+function made(b: B, cx: Cx, t: Tpl, args: V[m]): [B, Element[]] {
     return match (t) {
-        TBox(dir, ps, cs, click, kids, line) => {
+        TBox(dir, ps, cs, click, drag, kids, line) => {
             const base = dir == 1 ? { ...style(), direction: Row } : (dir == 2 ? { ...style(), direction: Column } : style());
-            const [b1, st] = applied(b, file, classedBox(base, classes, cs), ps, BOX_PROPS, BOX_KINDS, args, line, setBox);
-            const [b2, id] = click >= 0 ? place(b1, { kind: H_BOX, click: click, enter: -1, change: -1, bind: -1, args: args }) : [b1, -1] as const;
-            const [b3, es] = madeAll(b2, file, classes, binds, kids, args, 0, []);
-            return [b3, [Div(id >= 0 ? { ...st, onClick: id } : st, es)]] as const;
+            const [b1, id] = click >= 0 || drag >= 0 ? place(b, { kind: H_BOX, click: click, drag: drag, enter: -1, change: -1, bind: -1, args: args }) : [b, -1] as const;
+            const [b2, st] = applied(b1, cx.file, classedBox(base, cx.classes, cs), ps, BOX_PROPS, BOX_KINDS, args, line, setBox);
+            // (its classes in their states over it: under the pointer, pressed)
+            const hovered = id >= 0 && id == b2.hover ? inState(st, cx.classes, cs, "hover") : st;
+            const shown = id >= 0 && id == b2.pressed ? inState(hovered, cx.classes, cs, "active") : hovered;
+            const [b3, es] = madeAll(b2, cx, kids, args, 0, []);
+            return [b3, [Div(id >= 0 ? { ...shown, onClick: id } : shown, es)]] as const;
         },
         TText(ps, cs, val, line) => {
-            const [b1, em] = argText(b, file, ps, 0, PNum(14.0f32), args, line);
-            const [b2, color] = argText(b1, file, ps, 1, PCol(rgb(0x111827u32)), args, line);
+            const [b1, em] = argText(b, cx.file, ps, 0, PNum(14.0f32), args, line);
+            const [b2, color] = argText(b1, cx.file, ps, 1, PCol(rgb(0x111827u32)), args, line);
             const base = textStyle(numOf(em, 14.0f32), colOf(color, rgb(0x111827u32)));
-            const [b3, al] = argText(b2, file, ps, 2, PNone, args, line);
-            const aligned = match (al) {
+            const [b3, al] = argText(b2, cx.file, ps, 2, PNone, args, line);
+            const aligned0 = match (al) {
                 PAl(a) => ({ ...base, align: a }),
                 _ => base,
             };
-            const [b4, s] = texted(b3, val, args);
-            return [b4, [Label(classedText(aligned, classes, cs), s)]] as const;
+            const [b3a, fc] = argText(b3, cx.file, ps, 3, PInt(0), args, line);
+            const aligned = { ...aligned0, face: intOf(fc, 0) };
+            const [b4, s] = texted(b3a, val, args);
+            return [b4, [Label(classedText(aligned, cx.classes, cs), s)]] as const;
         },
-        TComp(c) => comp(b, file, classes, binds, c, args),
+        TComp(c) => comp(b, cx, c, args),
+        TImage(src, ps, line) => {
+            const [b1, name] = texted(b, src, args);
+            const [b2, w] = argText2(b1, cx.file, ps, 1, args, line);
+            const [b3, h] = argText2(b2, cx.file, ps, 2, args, line);
+            const k = findIndex(cx.names, (x) => x == name);
+            if (k < 0) {
+                return [{ ...b3, err: b3.err == "" ? `${cx.file}:${line}: the image \`${name}\` is not read (name it in images="..." of the view)` : b3.err }, []] as const;
+            }
+            return [b3, [Image(cx.pics[k], w, h)]] as const;
+        },
         TEach(f, kid, line) => {
             const [b1, seq] = called(b, f, args);
             const n = lua.sequenceLength(b1.vm, seq);
-            return eachMade(b1, file, classes, binds, kid[0], args, seq, n, 1, []);
+            return eachMade(b1, cx, kid[0], args, seq, n, 1, []);
         },
     };
 }
@@ -882,31 +1067,41 @@ function argText(b: B, file: string, ps: Prop[n], k: i64, d: PV, args: V[m], lin
     };
 }
 
-function eachMade(b: B, file: string, classes: Cls[n], binds: string[k], kid: Tpl, args: V[m], seq: V, count: i64, i: i64, acc: Element[]): [B, Element[]] {
+// the size `k` (1 width, 2 height) of an image, 0 (its own) when not given
+function argText2(b: B, file: string, ps: Prop[n], k: i64, args: V[m], line: i64): [B, f32] {
+    const at = findIndex(ps, (p) => p.k == k);
+    if (at < 0) {
+        return [b, 0.0f32] as const;
+    }
+    const [b1, pv] = valued(b, file, k == 1 ? "width" : "height", KIND_F32, ps[at].v, args, line);
+    return [b1, numOf(pv, 0.0f32)] as const;
+}
+
+function eachMade(b: B, cx: Cx, kid: Tpl, args: V[m], seq: V, count: i64, i: i64, acc: Element[]): [B, Element[]] {
     if (i > count) {
         return [b, acc] as const;
     }
     const inner = concat(args, [lua.element(b.vm, seq, i), lua.integerValue(i)]);
-    const [b1, es] = made(b, file, classes, binds, kid, inner);
-    return eachMade(b1, file, classes, binds, kid, args, seq, count, i + 1, concat(acc, es));
+    const [b1, es] = made(b, cx, kid, inner);
+    return eachMade(b1, cx, kid, args, seq, count, i + 1, concat(acc, es));
 }
 
-function madeAll(b: B, file: string, classes: Cls[n], binds: string[k], ts: Tpl[j], args: V[m], i: i64, acc: Element[]): [B, Element[]] {
+function madeAll(b: B, cx: Cx, ts: Tpl[j], args: V[m], i: i64, acc: Element[]): [B, Element[]] {
     if (i >= j) {
         return [b, acc] as const;
     }
-    const [b1, es] = made(b, file, classes, binds, ts[i], args);
-    return madeAll(b1, file, classes, binds, ts, args, i + 1, concat(acc, es));
+    const [b1, es] = made(b, cx, ts[i], args);
+    return madeAll(b1, cx, ts, args, i + 1, concat(acc, es));
 }
 
 // a component made, its classes applied to its box
-function comp(b: B, file: string, classes: Cls[n], binds: string[k], c: Comp, args: V[m]): [B, Element[]] {
+function comp(b: B, cx: Cx, c: Comp, args: V[m]): [B, Element[]] {
     const kind = c.kind;
     const [b1, label] = texted(b, c.label, args);
-    const h = { kind: kind == C_FIELD ? H_FIELD : H_COMP, click: c.click, enter: c.enter, change: c.change, bind: c.bind, args: args };
+    const h = { kind: kind == C_FIELD ? H_FIELD : H_COMP, click: c.click, drag: -1, enter: c.enter, change: c.change, bind: c.bind, args: args };
     const [b2, id] = kind == C_PROGRESS || (kind != C_FIELD && c.click < 0) ? [b1, -1] as const : place(b1, h);
-    const [b3, e] = compElement(b2, file, c, kind, label, id, binds, args);
-    return [b3, [c.classes.length == 0 ? e : restyled(e, (s) => classedBox(s, classes, c.classes))]] as const;
+    const [b3, e] = compElement(b2, cx.file, c, kind, label, id, cx.binds, args);
+    return [b3, [c.classes.length == 0 ? e : restyled(e, (s) => classedBox(s, cx.classes, c.classes))]] as const;
 }
 
 function compElement(b: B, file: string, c: Comp, kind: i64, label: string, id: i64, binds: string[k], args: V[m]): [B, Element] {
@@ -926,7 +1121,10 @@ function compElement(b: B, file: string, c: Comp, kind: i64, label: string, id: 
         const g = lua.global(b2.vm, binds[c.bind]);
         const text = lua.isString(g) ? lua.plainText(b2.vm, g) : "";
         const ed = b2.eds[c.bind].text == text ? b2.eds[c.bind] : editing(text);
-        const b3 = { ...b2, eds: b2.eds.with(c.bind, ed) };
+        // (`autofocus`: the focus given to the field when it appears)
+        const [b2a, auto] = argOf(b2, file, c, 8, KIND_BOOL, PBool(false), args);
+        const takes = boolOf(auto, false) && !b2a.seen[c.bind];
+        const b3 = { ...b2a, eds: b2a.eds.with(c.bind, ed), now: b2a.now.with(c.bind, true), focus: takes ? c.bind : b2a.focus };
         return [b3, textField(ed, b3.focus == c.bind, textOfPV(hint), id, lenOf(width, Fill(1.0f32)))] as const;
     }
     if (kind == C_CHECK) {
@@ -947,9 +1145,11 @@ function compElement(b: B, file: string, c: Comp, kind: i64, label: string, id: 
 // first when it has grown: the values of the places made after it)
 export function rebuilt(a: App): App {
     const v0 = lua.held(lua.collectIfDue(a.vm), 1);
-    const b0 = { vm: v0, hs: [], err: "", eds: a.eds, focus: a.focus, hover: a.hover, pressed: a.pressed };
-    const [b1, es] = made(b0, a.file, a.classes, a.binds, a.tpl[0], []);
-    return { ...a, vm: lua.held(b1.vm, -1), hs: b1.hs, eds: b1.eds, tree: es.length > 0 ? es[0] : Div(style(), []), err: a.err == "" ? b1.err : a.err };
+    const b0 = { vm: v0, hs: [], err: "", eds: a.eds, focus: a.focus, hover: a.hover, pressed: a.pressed, seen: a.seen, now: map(a.seen, (x) => false) };
+    const [b1, es] = made(b0, a.cx, a.tpl[0], []);
+    // (the focus of a field no longer made lost)
+    const focus = b1.focus >= 0 && !b1.now[b1.focus] ? -1 : b1.focus;
+    return { ...a, vm: lua.held(b1.vm, -1), hs: b1.hs, eds: b1.eds, focus: focus, seen: b1.now, tree: es.length > 0 ? es[0] : Div(style(), []), err: a.err == "" ? b1.err : a.err };
 }
 
 // the elements of the application: an error shown above them
@@ -964,12 +1164,39 @@ export function view(a: App): Element {
 // the function `f` of the view run with `args` (nothing for -1): the
 // application with its error
 function ran(a: App, f: i64, args: V[n]): App {
+    const [a1, v] = ranValue(a, f, args);
+    return a1;
+}
+
+// `ran`, the value of the function too (nil for -1)
+function ranValue(a: App, f: i64, args: V[n]): [App, V] {
     if (f < 0) {
-        return a;
+        return [a, lua.nilValue()] as const;
     }
-    const b = { vm: a.vm, hs: [], err: "", eds: a.eds, focus: a.focus, hover: a.hover, pressed: a.pressed };
+    const b = { vm: a.vm, hs: [], err: "", eds: a.eds, focus: a.focus, hover: a.hover, pressed: a.pressed, seen: a.seen, now: a.seen };
     const [b1, v] = called(b, f, args);
-    return { ...a, vm: b1.vm, err: a.err == "" ? b1.err : a.err };
+    return [{ ...a, vm: b1.vm, err: a.err == "" ? b1.err : a.err }, v] as const;
+}
+
+// the name of the key `k` given to `onkey`: Enter, Escape, Backspace, Tab,
+// Left, Up, Right, Down, Delete, Home, End, else its character (a letter
+// held with Ctrl: its small letter)
+function keyName(k: i64): string {
+    return k == ENTER ? "Enter" : (k == ESCAPE ? "Escape" : (k == BACKSPACE ? "Backspace" : (k == TAB ? "Tab"
+        : (k == LEFT ? "Left" : (k == UP ? "Up" : (k == RIGHT ? "Right" : (k == DOWN ? "Down"
+        : (k == DELETE ? "Delete" : (k == HOME ? "Home" : (k == END ? "End" : stringOf(utf8(k))))))))))));
+}
+
+// the key `k` given to `onkey` (its name, Ctrl, Shift, Alt): whether it
+// took it (a true value)
+function keyed(a: App, k: i64, mods: i64): [App, boolean] {
+    if (a.key < 0) {
+        return [a, false] as const;
+    }
+    const [v1, name] = lua.stringV(a.vm, keyName(k));
+    const args = [name, lua.booleanValue((mods & WITH_CTRL) != 0), lua.booleanValue((mods & WITH_SHIFT) != 0), lua.booleanValue((mods & WITH_ALT) != 0)];
+    const [a1, v] = ranValue({ ...a, vm: v1 }, a.key, args);
+    return [a1, lua.truthy(v)] as const;
 }
 
 // the field of the place `h` edited by the input `i`: its global set when
@@ -980,7 +1207,7 @@ function fieldEdited(a: App, h: H, i: HandInput, p: i64): [App, Effect[]] {
         return [{ ...a, eds: a.eds.with(h.bind, ed) }, fx] as const;
     }
     const [v1, s] = lua.stringV(a.vm, ed.text);
-    const a1 = { ...a, vm: lua.setGlobal(v1, a.binds[h.bind], s), eds: a.eds.with(h.bind, ed) };
+    const a1 = { ...a, vm: lua.setGlobal(v1, a.cx.binds[h.bind], s), eds: a.eds.with(h.bind, ed) };
     return [ran(a1, h.change, h.args), fx] as const;
 }
 
@@ -993,11 +1220,15 @@ function focusedPlace(a: App): i64 {
 export function update(a0: App, i: HandInput): [App, Effect[]] {
     const a = { ...a0, err: "" };
     const [a1, fx] = answered(a, i);
-    return [rebuilt(a1), fx] as const;
+    // (the files and folders its Lua asked: read by the loop of the window)
+    const [a2, files] = requested(a1);
+    return [rebuilt(a2), concat(fx, files)] as const;
 }
 
 function answered(a: App, i: HandInput): [App, Effect[]] {
     return match (i) {
+        TextRead(p, t, ok) => [delivered(a, i), []] as const,
+        FolderListed(p, names, ok) => [delivered(a, i), []] as const,
         Hover(p) => [{ ...a, hover: p }, []] as const,
         Click(p, x, y, at, clicks, mods) => {
             if (p < 0 || p >= a.hs.length) {
@@ -1007,29 +1238,44 @@ function answered(a: App, i: HandInput): [App, Effect[]] {
             if (h.kind == H_FIELD) {
                 return fieldEdited({ ...a, focus: h.bind, pressed: p }, h, i, p);
             }
-            const a1 = { ...a, pressed: p, focus: h.kind == H_BOX ? -1 : a.focus };
+            const a1 = { ...a, pressed: p, focus: h.kind == H_BOX ? -1 : a.focus, pressX: x, pressY: y };
             return [ran(a1, h.click, h.args), []] as const;
+        },
+        // (a drag from a box with `ondrag`; else the selection of a field)
+        Drag(p, x, y, at) => {
+            if (p >= 0 && p < a.hs.length && a.hs[p].drag >= 0) {
+                return [ran(a, a.hs[p].drag, concat(a.hs[p].args, [lua.floatValue(f64(x - a.pressX)), lua.floatValue(f64(y - a.pressY))])), []] as const;
+            }
+            const fp = focusedPlace(a);
+            return fp < 0 ? [a, []] as const : fieldEdited(a, a.hs[fp], i, fp);
         },
         Release(p) => [{ ...a, pressed: -1 }, []] as const,
         Focus(p) => [{ ...a, focus: p >= 0 && p < a.hs.length && a.hs[p].kind == H_FIELD ? a.hs[p].bind : -1 }, []] as const,
-        Key(k, mods) => {
-            const fp = focusedPlace(a);
-            if (fp < 0) {
-                return [a, []] as const;
-            }
-            if (k == ENTER) {
-                return [ran(a, a.hs[fp].enter, a.hs[fp].args), []] as const;
-            }
-            if (k == ESCAPE) {
-                return [{ ...a, focus: -1 }, []] as const;
-            }
-            return fieldEdited(a, a.hs[fp], i, fp);
+        Key(k0, mods0) => {
+            const [a0, took] = keyed(a, k0, mods0);
+            return took ? [a0, []] as const : keyAnswered(a0, i, k0);
         },
         _ => {
             const fp = focusedPlace(a);
             return fp < 0 ? [a, []] as const : fieldEdited(a, a.hs[fp], i, fp);
         },
     };
+}
+
+// a key not taken by `onkey`: to the field with the focus (Enter runs its
+// `onenter`, Escape takes the focus from it)
+function keyAnswered(a: App, i: HandInput, k: i64): [App, Effect[]] {
+    const fp = focusedPlace(a);
+    if (fp < 0) {
+        return [a, []] as const;
+    }
+    if (k == ENTER) {
+        return [ran(a, a.hs[fp].enter, a.hs[fp].args), []] as const;
+    }
+    if (k == ESCAPE) {
+        return [{ ...a, focus: -1 }, []] as const;
+    }
+    return fieldEdited(a, a.hs[fp], i, fp);
 }
 
 // the application closed: its `onclose` run, what its Lua printed

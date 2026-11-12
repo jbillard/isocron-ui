@@ -44,10 +44,10 @@ export type Bitmap = { x: f32, y: f32, w: f32, h: f32, iw: i64, ih: i64, pixels:
 // them)
 // a glyph whose image is not made yet: the glyph `glyph` of the font at
 // `em` pixels a em, its pen at `x` and `quarter` quarters of a pixel (0 to
-// 3), on the baseline `base`, in the colour `color` (`resolved` of
-// atlas.isc makes it a `Glyph`, from the images kept: it draws nothing
-// itself)
-export type GlyphKey = { glyph: i64, em: f32, quarter: i64, x: i64, base: i64, color: Color };
+// 3), on the baseline `base`, in the colour `color`, of the font `face`
+// among those of the application (`resolved` of atlas.isc makes it a
+// `Glyph`, from the images kept: it draws nothing itself)
+export type GlyphKey = { glyph: i64, em: f32, quarter: i64, x: i64, base: i64, color: Color, face: i64 };
 
 export type Primitive = Box(Quad) | Blur(Shadow) | Glyph(Sprite) | Raster(Bitmap) | Pending(GlyphKey) | Clip(f32, f32, f32, f32) | Unclip;
 

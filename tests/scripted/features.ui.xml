@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The additions of the generic application, driven by
+     tests/scripted_check.isc: a text in the font of fixed width, a row lit
+     under the pointer (`:hover`), Ctrl+P that opens a field taking the
+     focus (`onkey`, `autofocus`), an image, a file read by Lua, a sash
+     dragged (`ondrag`). -->
+<view title="features" width="400" height="300" styles="features.style"
+      script="features.lua" onkey="return key_(key, ctrl)" images="dot.png">
+  <column stretch="false">
+    <row onclick="" class="item">
+      <text font="mono">iiii</text>
+    </row>
+    <row onclick="" class="item">
+      <text font="mono">MMMM</text>
+    </row>
+    <row onclick="" class="item">
+      <text>iiii</text>
+    </row>
+    <image src="{icon}" width="8" height="8"/>
+    <text>{content}</text>
+    <box width="{width}" height="10" onclick="from = width" ondrag="width = math.max(20, from + dx)" class="sash"/>
+    <each items="{palette and {1} or {}}" as="p">
+      <field bind="query" hint="Commande" autofocus="true" onenter="ran = query"/>
+    </each>
+  </column>
+</view>

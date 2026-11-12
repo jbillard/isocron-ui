@@ -1,0 +1,12 @@
+.item {
+    padding: 2;
+    width: auto;
+}
+
+.item:hover {
+    background: #E5E7EB;
+}
+
+.sash:active {
+    background: #3B82F6;
+}

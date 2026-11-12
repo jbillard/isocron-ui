@@ -1,9 +1,15 @@
 ((true, true, 17), (true, true, 17), (true, true, 21), (true, true, 17), (true, true, 13))
 (, , newTask)
 [[[ ] Pain de mie]]
-tag: tests/scripted/tag.ui.xml:3: the element <label> is unknown (box, row, column, text, button, iconbutton, field, checkbox, toggle, progress, each)
+tag: tests/scripted/tag.ui.xml:3: the element <label> is unknown (box, row, column, text, image, button, iconbutton, field, checkbox, toggle, progress, each)
 value: tests/scripted/value.ui.xml:2: `large` is not a value of `gap` (a number)
-style: tests/scripted/bad.style:3: the property `margin` is unknown (width, height, direction, gap, padding, padX, padY, justify, align, stretch, background, border, borderColor, radius, shadowBlur, shadowY, shadowColor, clip, scroll, cursor, focusable, tip, outline, outlineColor, size, color, textAlign)
+style: tests/scripted/bad.style:3: the property `margin` is unknown (width, height, direction, gap, padding, padX, padY, justify, align, stretch, background, border, borderColor, radius, shadowBlur, shadowY, shadowColor, clip, scroll, cursor, focusable, tip, outline, outlineColor, size, color, textAlign, font)
 syntax: tests/scripted/syntax.ui.xml:3: unexpected symbol near ')'
 script: tests/scripted/missing.lua: not found: tests/scripted/missing.lua
 runtime: shown: tests/scripted/runtime.ui.xml:4: attempt to index a nil value (global 'nothing')
+[(0, 37), (1, 37), (2, 19)]
+(bonjour depuis un fichier, )
+(229,231,235,255, 0,0,0,0)
+(0, 5, go, go)
+(59,130,246,255, 0,0,0,0, 130.0)
+([read tests/scripted/hello.txt], relu : texte, )

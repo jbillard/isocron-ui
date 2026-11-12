@@ -26,7 +26,8 @@
 // (width, height, direction, gap, padding, padX, padY, justify, align,
 // stretch, background, border, borderColor, radius, shadowBlur, shadowY,
 // shadowColor, clip, scroll, cursor, focusable, tip, outline,
-// outlineColor), and for a text size, color, textAlign; `class` names
+// outlineColor), and for a text size, color, textAlign, font (sans or
+// mono: the first font of the application or its second); `class` names
 // classes of the styles, `id` the message of a click. A value `{expr}` is
 // an expression of Isocron.
 import { parse, Node, Tag, Text, Read, Fault, Attr, attr, has } from "../../src/xml";
@@ -121,11 +122,14 @@ const KIND_TEXT: i64 = 8;
 const KIND_I64: i64 = 9;
 // a message: an integer, a name of constant, or an expression
 const KIND_NAME: i64 = 10;
+// the font of a text: sans (the first of the application) or mono (its
+// second)
+const KIND_FACE: i64 = 11;
 
 const BOX_PROPS: string[] = ["width", "height", "direction", "gap", "padding", "padX", "padY", "justify", "align", "stretch", "background", "border", "borderColor", "radius", "shadowBlur", "shadowY", "shadowColor", "clip", "scroll", "cursor", "focusable", "tip", "outline", "outlineColor"];
 const BOX_KINDS: i64[] = [1, 1, 4, 0, 0, 0, 0, 5, 6, 3, 2, 0, 2, 0, 0, 0, 2, 3, 9, 7, 3, 8, 0, 2];
-const TEXT_PROPS: string[] = ["size", "color", "textAlign"];
-const TEXT_KINDS: i64[] = [0, 2, 6];
+const TEXT_PROPS: string[] = ["size", "color", "textAlign", "font"];
+const TEXT_KINDS: i64[] = [0, 2, 6, 11];
 
 // the value `v` of the kind `kind` as code, or "" when it is not one
 function valueOf(kind: i64, v: string): string {
@@ -199,6 +203,9 @@ function valueOf(kind: i64, v: string): string {
     if (kind == KIND_TEXT) {
         return quoted(v);
     }
+    if (kind == KIND_FACE) {
+        return v == "sans" ? "0" : (v == "mono" ? "1" : "");
+    }
     return "";
 }
 
@@ -207,7 +214,7 @@ function kindName(kind: i64): string {
     return kind == KIND_F32 ? "a number" : (kind == KIND_I64 ? "an integer" : (kind == KIND_LENGTH ? "auto, fill, fill(n) or a number"
         : (kind == KIND_COLOR ? "#RRGGBB, #RRGGBBAA, rgba(r, g, b, a) or transparent" : (kind == KIND_BOOL ? "true or false"
         : (kind == KIND_DIRECTION ? "row or column" : (kind == KIND_JUSTIFY ? "start, center, end or between"
-        : (kind == KIND_ALIGN ? "start, center or end" : (kind == KIND_CURSOR ? "arrow, pointer or text" : "a text"))))))));
+        : (kind == KIND_ALIGN ? "start, center or end" : (kind == KIND_CURSOR ? "arrow, pointer or text" : (kind == KIND_FACE ? "sans or mono" : "a text")))))))));
 }
 
 // the field `name` set to `v` as code (`name: value`), or a fault
@@ -217,13 +224,18 @@ function propOf(file: string, names: string[n], kinds: i64[n], name: string, v: 
         return Faults([`${file}:${line}: the property \`${name}\` is unknown (${join(names, ", ")})`]);
     }
     const code = valueOf(kinds[k], v);
-    return code == "" ? Faults([`${file}:${line}: \`${v}\` is not a value of \`${name}\` (${kindName(kinds[k])})`]) : Code(`${name == "textAlign" ? "align" : (name == "size" ? "em" : name)}: ${code}`);
+    return code == "" ? Faults([`${file}:${line}: \`${v}\` is not a value of \`${name}\` (${kindName(kinds[k])})`]) : Code(`${name == "textAlign" ? "align" : (name == "size" ? "em" : (name == "font" ? "face" : name))}: ${code}`);
 }
 
 // ----- styles ------------------------------------------------------------
 
 // the function of the class `r` (`cls_NAME`): a style with its properties
 function classFunction(file: string, r: Rule): Made {
+    // (a class in a state, under the pointer or pressed: the generic
+    // application's, which knows the place of the pointer)
+    if (r.name.indexOf(":") >= 0) {
+        return Faults([`${file}:${r.props.length > 0 ? r.props[0].line : 1}: \`.${r.name}\`: the states of a class (:hover, :active) are those of the generic application (src/scripted.isc), not of a view compiled`]);
+    }
     const box = filter(r.props, (p) => findIndex(BOX_PROPS, (x) => x == p.name) >= 0 || findIndex(TEXT_PROPS, (x) => x == p.name) < 0);
     const text = filter(r.props, (p) => findIndex(TEXT_PROPS, (x) => x == p.name) >= 0 && findIndex(BOX_PROPS, (x) => x == p.name) < 0);
     const fields = allOf(map(box, (p) => propOf(file, BOX_PROPS, BOX_KINDS, p.name, p.value, p.line)), ", ");
@@ -314,9 +326,10 @@ function tagOf(g: Gen, name: string, attrs: Attr[n], kids: Node[m], line: i64): 
         return both(boxStyle(g, attrs, direction, line), childrenOf(g, kids), (st, cs) => `Div(${st}, ${cs})`);
     }
     if (name == "text") {
-        const checked = onlyAttrs(g, attrs, "text", ["size", "color", "textAlign", "class"], line);
+        const checked = onlyAttrs(g, attrs, "text", ["size", "color", "textAlign", "font", "class"], line);
         const base = `textStyle(${argOf(attrs, "size", KIND_F32, "14.0f32")}, ${argOf(attrs, "color", KIND_COLOR, "rgb(0x111827u32)")})`;
-        const aligned = has(attrs, "textAlign") ? `{ ...${base}, align: ${argOf(attrs, "textAlign", KIND_ALIGN, "Start")} }` : base;
+        const aligned0 = has(attrs, "textAlign") ? `{ ...${base}, align: ${argOf(attrs, "textAlign", KIND_ALIGN, "Start")} }` : base;
+        const aligned = has(attrs, "font") ? `{ ...${aligned0}, face: ${argOf(attrs, "font", KIND_FACE, "0")} }` : aligned0;
         return both(checked, classed(g, attrs, aligned, "text_", line), (c, st) => `Label(${st}, ${textOf(kids)})`);
     }
     if (name == "button") {

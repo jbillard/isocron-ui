@@ -24,9 +24,10 @@ export function emptyAtlas(): Atlas {
     return { slots: fill(SLOTS, -1), keys: [], lefts: [], tops: [], ws: [], hs: [], starts: [], pixels: [] };
 }
 
-// the key of a glyph: its glyph, its size in 64ths of a pixel, its quarter
+// the key of a glyph: its font, its glyph, its size in 64ths of a pixel,
+// its quarter
 function keyOf(g: GlyphKey): i64 {
-    return (g.glyph << 24) | (i64(g.em * 64.0f32 + 0.5f32) << 2) | g.quarter;
+    return (g.face << 52) | (g.glyph << 24) | (i64(g.em * 64.0f32 + 0.5f32) << 2) | g.quarter;
 }
 
 // the first slot of the key `k` (positive, below 2^62)
@@ -71,7 +72,7 @@ function lastAtMost(starts: i64[n], p: i64, lo: i64, hi: i64): i64 {
 function pendingOf(p: Primitive): GlyphKey {
     return match (p) {
         Pending(g) => g,
-        _ => ({ glyph: -1, em: 0.0f32, quarter: 0, x: 0, base: 0, color: { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 } }),
+        _ => ({ glyph: -1, em: 0.0f32, quarter: 0, x: 0, base: 0, color: { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 }, face: 0 }),
     };
 }
 
@@ -86,7 +87,7 @@ function isPending(p: Primitive): boolean {
 // the atlas `a0` keeps taken from it, the others drawn (each once, all at
 // the same time) and kept; the atlas after them (emptied first when it
 // holds more than MOST pixels or half its slots)
-export function resolved(f: Font, a0: Atlas, ps: Primitive[n]): [Primitive[n], Atlas] {
+export function resolved(fs: Font[k], a0: Atlas, ps: Primitive[n]): [Primitive[n], Atlas] {
     const pend = filter(iota(n), (i) => isPending(ps[i]));
     if (pend.length == 0) {
         return [ps, a0] as const;
@@ -98,7 +99,7 @@ export function resolved(f: Font, a0: Atlas, ps: Primitive[n]): [Primitive[n], A
     const firsts = filter(iota(keys.length), (j) => found[j] < 0 && findIndex(keys, (k) => k == keys[j]) == j);
     const made = map(firsts, (j) => {
         const g = pendingOf(ps[pend[j]]);
-        return rasterize(f, g.glyph, g.em, f32(g.quarter) * 0.25f32);
+        return rasterize(fs[min(g.face, k - 1)], g.glyph, g.em, f32(g.quarter) * 0.25f32);
     });
     const sizes = map(made, (r) => {
         const [l, t, w, h, mask] = r;

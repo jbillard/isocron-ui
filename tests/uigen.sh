@@ -22,10 +22,11 @@ fault attr 'tests/uigen/attr.ui.xml:2: the attribute `colour` is unknown for a b
 fault value 'tests/uigen/value.ui.xml:2: `large` is not a value of `gap` (a number)'
 fault class 'tests/uigen/class.ui.xml:2: the class `b` is not in the styles'
 fault syntax 'tests/uigen/syntax.ui.xml:4: `</row>` closes `text`'
+fault state 'tests/uigen/state.style:6: `.a:hover`: the states of a class (:hover, :active) are those of the generic application (src/scripted.isc), not of a view compiled'
 fault property 'tests/uigen/badstyle.style:3: the property `margin` is unknown (width, height, direction, gap, padding, padX, padY, justify, align, stretch, background, border, borderColor, radius, shadowBlur, shadowY, shadowColor, clip, scroll, cursor, focusable, tip, outline, outlineColor)'
 # made, then refused by iscc: the model has no field `nothing`
 "$iscc" run tools/uigen/uigen.isc tests/uigen/field.ui.xml tests/uigen/field_view.isc > /dev/null
 checked="$("$iscc" check tests/uigen/field_view.isc 2>&1 || true)"
 rm -f tests/uigen/field_view.isc
 echo "$checked" | grep -q 'nothing' || { echo "FAILED: a field unknown not refused by iscc: $checked"; exit 1; }
-echo "ok: the view made from todo.ui.xml up to date; 6 faulty files refused at their lines; a field unknown refused by iscc ($(echo "$checked" | head -1))"
+echo "ok: the view made from todo.ui.xml up to date; 7 faulty files refused at their lines; a field unknown refused by iscc ($(echo "$checked" | head -1))"

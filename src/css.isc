@@ -1,6 +1,8 @@
 // A reader of files of styles in the manner of CSS, for the interfaces read
 // at compile time (tools/uigen): rules of classes, `.name { property:
-// value; ... }`, several classes sharing a rule (`.a, .b { ... }`),
+// value; ... }`, several classes sharing a rule (`.a, .b { ... }`), a
+// class in a state (`.name:hover`, `.name:active`: the generic
+// application's, src/scripted.isc),
 // comments `/* ... */`. Each property keeps its line, for the faults told
 // with it; what a property means is the generator's (a name or a value it
 // does not know: a fault there).
@@ -47,6 +49,17 @@ function className(s: string): boolean {
     return b.length > 0 && count(b, (c) => (c >= 97u8 && c <= 122u8) || (c >= 65u8 && c <= 90u8) || (c >= 48u8 && c <= 57u8) || c == 95u8 || c == 45u8) == b.length;
 }
 
+// a class, or a class in a state: under the pointer (`name:hover`),
+// pressed (`name:active`)
+function selectorName(s: string): boolean {
+    const colon = s.indexOf(":");
+    if (colon < 0) {
+        return className(s);
+    }
+    const state = s.slice(colon + 1, s.length);
+    return className(s.slice(0, colon)) && (state == "hover" || state == "active");
+}
+
 // the file of styles `text`
 export function parseStyles(text: string): Styles {
     const [s, ok] = uncommented(text);
@@ -74,9 +87,9 @@ function rulesFrom(s: string, at: i64, acc: Rule[]): Styles {
         return Bad("`}` without its `{`", lineOf(s, at + max(0, close)));
     }
     const selectors = map(split(rest.slice(0, open), ","), (x) => x.trim());
-    const bad = findIndex(selectors, (x) => !x.startsWith(".") || !className(x.slice(1, x.length)));
+    const bad = findIndex(selectors, (x) => !x.startsWith(".") || !selectorName(x.slice(1, x.length)));
     if (bad >= 0) {
-        return Bad(`\`${selectors[bad]}\` is not a class (\`.name\`)`, lineOf(s, at + rest.indexOf(selectors[bad])));
+        return Bad(`\`${selectors[bad]}\` is not a class (\`.name\`, \`.name:hover\`, \`.name:active\`)`, lineOf(s, at + rest.indexOf(selectors[bad])));
     }
     const bodyAt = at + open + 1;
     return match (propsFrom(s, bodyAt, at + close, [])) {

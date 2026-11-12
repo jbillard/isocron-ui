@@ -106,7 +106,7 @@ export type Style = {
 
 // how a text looks: its size (`em`, pixels a em), its colour, how its lines are
 // placed in its width, the height of a line
-export type TextStyle = { em: f32, color: Color, align: Align, lineHeight: f32 };
+export type TextStyle = { em: f32, color: Color, align: Align, lineHeight: f32, face: i64 };
 
 // an element: a box and its children, a text, or the line of a field (its
 // text, caret and selection; with the focus, its caret and its selection
@@ -237,7 +237,7 @@ function padsOf(st: Style): [f32, f32] {
 // a text of `em` pixels a em in the colour `c`, its lines at the start
 // of its width, 1.4 em apart
 export function textStyle(em: f32, c: Color): TextStyle {
-    return { em: em, color: c, align: Start, lineHeight: em * 1.4f32 };
+    return { em: em, color: c, align: Start, lineHeight: em * 1.4f32, face: 0 };
 }
 
 function isRow(d: Direction): boolean {
@@ -274,18 +274,18 @@ function sized(l: Length, content: f32): f32 {
 // pixels of width: a text cut in lines of that width, a box around its
 // children (their sizes along its main axis added with the gaps, the
 // largest across) and its padding, or the sizes its style fixes
-function measure(f: Font, e: Element, room: f32): [f32, f32] {
+function measure(fs: Font[k], e: Element, room: f32): [f32, f32] {
     return match (e) {
-        Label(ts, s) => measureParagraph(f, ts.em, s, room, ts.lineHeight),
+        Label(ts, s) => measureParagraph(fs[faceOf(ts, k)], ts.em, s, room, ts.lineHeight),
         // a line and room for the caret after it
-        Input(ts, ed, focused, hint) => [lineWidth(f, ts.em, ed.text == "" ? hint : ed.text) + 2.0f32, ts.lineHeight] as const,
+        Input(ts, ed, focused, hint) => [lineWidth(fs[faceOf(ts, k)], ts.em, ed.text == "" ? hint : ed.text) + 2.0f32, ts.lineHeight] as const,
         Image(p, w, h) => [w > 0.0f32 ? w : f32(p.width), h > 0.0f32 ? h : f32(p.height)] as const,
         Canvas(w, h, ps) => [w, h] as const,
         Div(st, cs) => {
             const row = isRow(st.direction);
             const [px, py] = padsOf(st);
             const inner = sized(st.width, room) - 2.0f32 * px;
-            const sizes = map(cs, (c) => measure(f, c, inner));
+            const sizes = map(cs, (c) => measure(fs, c, inner));
             const gaps = cs.length > 1 ? f32(cs.length - 1) * st.gap : 0.0f32;
             const along = fold(sizes, gaps, (a, s) => {
                 const [w, h] = s;
@@ -300,6 +300,11 @@ function measure(f: Font, e: Element, room: f32): [f32, f32] {
             return [sized(st.width, w), sized(st.height, h)] as const;
         },
     };
+}
+
+// the font of the style `ts` among `k` (the first for one beyond them)
+function faceOf(ts: TextStyle, k: i64): i64 {
+    return ts.face >= 0 && ts.face < k ? ts.face : 0;
 }
 
 // the baseline of the first line of a text in a box at `y`: the line's
@@ -329,18 +334,23 @@ export function place(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32): [Pri
     return placeScrolled(f, e, x, y, w, h, []);
 }
 
+// `place` with the fonts `fs` (the face of a text its number among them)
+export function placeFonts(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f32): [Primitive[], Hit[]] {
+    return placeFrame(fs, e, x, y, w, h, { offsets: [], caretOn: true, hotBar: -1, scale: 1.0f32, deferred: false });
+}
+
 // `place`, the boxes that scroll moved by the offsets `offsets` (by their
 // numbers; none: 0), each offset within its range (the height of its
 // content past its own)
 export function placeScrolled(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, offsets: f32[]): [Primitive[], Hit[]] {
-    return placeFrame(f, e, x, y, w, h, { offsets: offsets, caretOn: true, hotBar: -1, scale: 1.0f32, deferred: false });
+    return placeFrame([f], e, x, y, w, h, { offsets: offsets, caretOn: true, hotBar: -1, scale: 1.0f32, deferred: false });
 }
 
 // the line of a field (its text, caret and selection `ed`; with the focus,
 // its selection and caret drawn) in the box (x, y, w, h), in the middle of
 // its height: moved left as far as its caret needs to be seen, cut to the
 // box; its place gives the pen at each boundary of its characters
-function placeInput(f: Font, ts: TextStyle, ed: Editing, focused: boolean, hint: string, x: f32, y: f32, w: f32, h: f32, caretOn: boolean, deferred: boolean): [Primitive[], Hit[]] {
+function placeInput(f: Font, face: i64, ts: TextStyle, ed: Editing, focused: boolean, hint: string, x: f32, y: f32, w: f32, h: f32, caretOn: boolean, deferred: boolean): [Primitive[], Hit[]] {
     const [marks, xs] = stops(f, ts.em, ed.text);
     const at = (o: i64) => {
         const k = findIndex(marks, (m) => m >= o);
@@ -355,7 +365,7 @@ function placeInput(f: Font, ts: TextStyle, ed: Editing, focused: boolean, hint:
     const ch = ts.em * 1.25f32;
     const caret: Primitive[] = focused && caretOn ? [Box(quad(floor(ox + cx), top + (ts.lineHeight - ch) * 0.5f32, 1.5f32, ch, caretColor()))] : [];
     // (an empty field shows its hint, its caret before it)
-    const text = ed.text == "" ? lineAs(f, ts.em, hint, ox, baseline(f, ts, top), hintColor(), deferred) : lineAs(f, ts.em, ed.text, ox, baseline(f, ts, top), ts.color, deferred);
+    const text = ed.text == "" ? lineAs(f, ts.em, hint, ox, baseline(f, ts, top), hintColor(), deferred, face) : lineAs(f, ts.em, ed.text, ox, baseline(f, ts, top), ts.color, deferred, face);
     const drawn = concat(concat(concat(concat([Clip(x, y, x + w, y + h)], sel), text), caret), [Unclip]);
     // (its `id` 1 with the focus: a caret to blink; its `range` 1 with a
     // selection)
@@ -365,11 +375,11 @@ function placeInput(f: Font, ts: TextStyle, ed: Editing, focused: boolean, hint:
 
 // `placeScrolled`, what the frame `fr` shows besides the view: the caret
 // shown or hidden, the scrollbar under the pointer
-export function placeFrame(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, fr: Frame): [Primitive[], Hit[]] {
+export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f32, fr: Frame): [Primitive[], Hit[]] {
     const offsets = fr.offsets;
     return match (e) {
-        Label(ts, s) => [paragraphAs(f, ts.em, s, x, baseline(f, ts, y), w, ts.lineHeight, ts.align, ts.color, fr.deferred), []] as const,
-        Input(ts, ed, focused, hint) => placeInput(f, ts, ed, focused, hint, x, y, w, h, fr.caretOn, fr.deferred),
+        Label(ts, s) => [paragraphAs(fs[faceOf(ts, k)], ts.em, s, x, baseline(fs[faceOf(ts, k)], ts, y), w, ts.lineHeight, ts.align, ts.color, fr.deferred, faceOf(ts, k)), []] as const,
+        Input(ts, ed, focused, hint) => placeInput(fs[faceOf(ts, k)], faceOf(ts, k), ts, ed, focused, hint, x, y, w, h, fr.caretOn, fr.deferred),
         // (its pixels in its box: its size the box's, given by its parent)
         Image(p, iw, ih) => [[Raster({ x: x, y: y, w: w, h: h, iw: p.width, ih: p.height, pixels: p.pixels })], []] as const,
         // (its primitives within its box)
@@ -392,13 +402,13 @@ export function placeFrame(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, 
             const scrolls = st.scroll >= 0 && !row;
             const gapsAll = n > 1 ? f32(n - 1) * st.gap : 0.0f32;
             const tall = scrolls && fold(cs, gapsAll, (a, c) => {
-                const [mw, mh] = measure(f, c, iw);
+                const [mw, mh] = measure(fs, c, iw);
                 return a + mh;
             }) > ih;
             const cw = tall ? max(0.0f32, iw - 14.0f32 * fr.scale) : iw;
             const mainRoom = row ? cw : ih;
             const crossRoom = row ? ih : cw;
-            const sizes = map(cs, (c) => measure(f, c, cw));
+            const sizes = map(cs, (c) => measure(fs, c, cw));
             // along the main axis: a share of the room left, or the size
             // the child has
             const grows = map(cs, (c) => share(lengthOf(c, row)));
@@ -454,7 +464,7 @@ export function placeFrame(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, 
                 const [fx, fy, fw, fh] = frames[i];
                 return !cuts || (fy < iy + ih && fy + fh > iy && fx < ix + iw && fx + fw > ix);
             });
-            const [cps, chs] = placeFrom(f, map(seenKids, (i) => cs[i]), map(seenKids, (i) => frames[i]), 0, [], [], fr);
+            const [cps, chs] = placeFrom(fs, map(seenKids, (i) => cs[i]), map(seenKids, (i) => frames[i]), 0, [], [], fr);
             if (!st.clip && !scrolls) {
                 return [concat(deco, cps), concat(hits, chs)] as const;
             }
@@ -496,13 +506,13 @@ export function thumb(y: f32, h: f32, range: f32, off: f32, k: f32): [f32, f32] 
 
 // the children `cs` from the `i`-th, each laid out in its frame, after
 // what draws those before (`ps`) and their places (`hs`)
-function placeFrom(f: Font, cs: Element[n], frames: [f32, f32, f32, f32][n], i: i64, ps: Primitive[], hs: Hit[], fr: Frame): [Primitive[], Hit[]] {
+function placeFrom(fs: Font[k], cs: Element[n], frames: [f32, f32, f32, f32][n], i: i64, ps: Primitive[], hs: Hit[], fr: Frame): [Primitive[], Hit[]] {
     if (i >= n) {
         return [ps, hs] as const;
     }
     const [x, y, w, h] = frames[i];
-    const [cp, ch] = placeFrame(f, cs[i], x, y, w, h, fr);
-    return placeFrom(f, cs, frames, i + 1, concat(ps, cp), concat(hs, ch), fr);
+    const [cp, ch] = placeFrame(fs, cs[i], x, y, w, h, fr);
+    return placeFrom(fs, cs, frames, i + 1, concat(ps, cp), concat(hs, ch), fr);
 }
 
 // the place `h` holds the point (px, py)

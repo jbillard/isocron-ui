@@ -8,9 +8,11 @@
 // it is closed; faulty files refused at their file and line.
 import { parse, Font } from "../src/font";
 import { render, rgb } from "../src/paint";
-import { interface, laidOut } from "../src/app";
+import { interface, laidOut, laidOutFonts } from "../src/app";
 import { editing } from "../src/edit";
-import { Input, Click, Release, Key, Text, ENTER } from "../src/input";
+import { Input, Effect, Click, Drag, Release, Hover, Key, Text, TextRead, ReadText, ENTER, WITH_CTRL } from "../src/input";
+import { Element, Div } from "../src/ui";
+import * as lua from "../src/lua_vm";
 import * as todo from "../examples/todo";
 import * as sc from "../src/scripted";
 
@@ -36,6 +38,64 @@ function given(a: sc.App, is: Input[n]): sc.App {
 // the characters of `s` typed
 function typed(s: string): Input[] {
     return map(bytes(s), (c) => Text(i64(c)));
+}
+
+// the background of the `i`-th child of the root of `e`
+function backgroundOf(e: Element, i: i64): string {
+    return match (e) {
+        Div(st, cs) => i < cs.length ? match (cs[i]) {
+            Div(s2, c2) => `${i64(s2.background.r * 255.0f32)},${i64(s2.background.g * 255.0f32)},${i64(s2.background.b * 255.0f32)},${i64(s2.background.a * 255.0f32)}`,
+            _ => "-",
+        } : "-",
+        _ => "-",
+    };
+}
+
+// the global `name` of the Lua of `a` as a text
+function globalOf(a: sc.App, name: string): string {
+    return lua.plainText(a.vm, lua.global(a.vm, name));
+}
+
+// the effects `fx` as texts
+function effects(fx: Effect[n]): string[] {
+    return map(fx, (e) => match (e) {
+        ReadText(p) => `read ${p}`,
+        _ => "other",
+    });
+}
+
+// the additions (tests/scripted/features.ui.xml): the rows of a text in
+// the font of fixed width as wide for `iiii` and `MMMM`, not in the
+// first font; a row lit under the pointer; the file read when the view is
+// read; Ctrl+P opening a field that takes the focus, a command typed and
+// run by Enter; a sash pressed (lit) and dragged 30 pixels; Ctrl+R asking
+// a file, read by the loop, given to Lua
+action features(f: Font): void {
+    const mono = match (parse(readBytes("tests/fonts/DejaVuSansMono.ttf"))) {
+        Ok(m) => m,
+        Err(e) => f,
+    };
+    match (sc.load("tests/scripted/features.ui.xml")) {
+        Err(e) => print(e),
+        Ok(a0) => {
+            const [ps, u] = laidOutFonts(interface(400, 300, 0u64), [f, mono], a0, sc.view, 0u64);
+            print(map(filter(u.hits, (h) => h.id >= 0 && h.id < 3), (h) => [h.id, i64(h.w)] as const));
+            print([globalOf(a0, "content"), a0.err] as const);
+            const [a1, fx1] = sc.update(a0, Hover(0));
+            print([backgroundOf(a1.tree, 0), backgroundOf(a1.tree, 1)] as const);
+            const [a2, fx2] = sc.update(a1, Key(112, WITH_CTRL));
+            const a3 = given(a2, [Text(103), Text(111), Key(ENTER, 0)]);
+            print([a2.focus, a2.hs.length, globalOf(a3, "query"), globalOf(a3, "ran")] as const);
+            const [a4, fx4] = sc.update(a3, Click(3, 5.0f32, 5.0f32, -1, 1, 0));
+            const pressedBg = backgroundOf(a4.tree, 5);
+            const [a5, fx5] = sc.update(a4, Drag(3, 35.0f32, 6.0f32, -1));
+            const [a6, fx6] = sc.update(a5, Release(3));
+            print([pressedBg, backgroundOf(a6.tree, 5), globalOf(a6, "width")] as const);
+            const [a7, fx7] = sc.update(a6, Key(114, WITH_CTRL));
+            const [a8, fx8] = sc.update(a7, TextRead("tests/scripted/hello.txt", "texte", true));
+            print([effects(fx7), globalOf(a8, "content"), a8.err] as const);
+        },
+    };
 }
 
 // the faulty views of tests/scripted/ read: their faults (each at its file
@@ -68,10 +128,11 @@ action main(args: string[k]): i32 {
                 const a4 = given(a3, [Click(a3.hs.length - 1, 5.0f32, 5.0f32, -1, 1, 0), Release(a3.hs.length - 1)]);
                 const m4 = { ...m3, items: [{ text: "Pain de mie", done: false }] };
                 print([same(f, a0, m0), same(f, a1, m1), same(f, a2, m2), same(f, a3, m3), same(f, a4, m4)] as const);
-                print([a1.err, a4.err, a4.binds[0]] as const);
+                print([a1.err, a4.err, a4.cx.binds[0]] as const);
                 const [e, out] = sc.closed(a4);
                 print(out);
                 faults(["tag", "value", "style", "syntax", "script", "runtime"], 0);
+                features(f);
                 return 0;
             },
             Err(e) => {

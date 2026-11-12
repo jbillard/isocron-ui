@@ -85,10 +85,17 @@ export function spacingAccent(k: i64): i64 {
 //   `uniformList` of widgets.isc)
 // - `Tick(ms)`: the time of a frame (milliseconds of the clock of the
 //   system), after `Animate`
-export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i64) | Release(i64) | Hover(i64) | Text(i64) | Key(i64, i64) | Paste(string) | Focus(i64) | Viewport(i64, f32, f32) | Tick(i64);
+// - `TextRead(path, text, ok)`: the text of the file `path` asked by
+//   `ReadText` (`ok` false: the reason it could not be read instead)
+// - `FolderListed(path, names, ok)`: the names in the folder `path` asked
+//   by `ListFolder`, those of folders ending with `/` (`ok` false: none,
+//   the reason as the only name)
+export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i64) | Release(i64) | Hover(i64) | Text(i64) | Key(i64, i64) | Paste(string) | Focus(i64) | Viewport(i64, f32, f32) | Tick(i64) | TextRead(string, string, boolean) | FolderListed(string, string[], boolean);
 
 // what an application asks after an input: a text copied to the clipboard,
 // the text of the clipboard (it comes as `Paste`), the next frame of an
 // animation (it comes as `Tick`, about 16 ms later: asked again at each
-// `Tick` while the animation lasts, the window drawn again each time)
-export type Effect = Copy(string) | AskPaste | Animate;
+// `Tick` while the animation lasts, the window drawn again each time), the
+// text of a file (it comes as `TextRead`), the names in a folder (as
+// `FolderListed`), each answered in the order asked
+export type Effect = Copy(string) | AskPaste | Animate | ReadText(string) | ListFolder(string);

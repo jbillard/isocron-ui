@@ -3616,6 +3616,30 @@ export function integerValue(i: i64): V {
     return intV(i);
 }
 
+export function booleanValue(b: boolean): V {
+    return { t: b ? T_TRUE : T_FALSE, i: 0, f: 0.0 };
+}
+
+export function floatValue(x: f64): V {
+    return numV(x);
+}
+
+// a new table of the strings `xs` (a sequence from 1)
+export function stringsTable(vm: Vm, xs: string[n]): [Vm, V] {
+    const [v1, t] = newTable(vm, n, 0);
+    const v2 = fold(iota(n), v1, (acc, i) => {
+        const [a1, s] = strV(acc, xs[i]);
+        return rawSet(a1, t, intV(i + 1), s);
+    });
+    return [v2, { t: T_TAB, i: t, f: 0.0 }] as const;
+}
+
+// the field `name` of the table `t` without metatable (nil for a value
+// that is not a table)
+export function fieldOf(vm: Vm, t: V, name: string): V {
+    return t.t == T_TAB ? rawGetStr(vm, t.i, name) : nilV();
+}
+
 // ----- the collector -------------------------------------------------------------
 
 // the collector: the new tables, store, strings, closures, upvalues and

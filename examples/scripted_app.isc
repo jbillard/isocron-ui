@@ -2,10 +2,10 @@
 // nothing of it compiled (src/scripted.isc): its elements in XML, its
 // styles, its behaviour in Lua. What its Lua prints is written when its
 // window is closed.
-// usage: scripted_app [VIEW.ui.xml] [--font=file]
+// usage: scripted_app [VIEW.ui.xml] [--font=file] [--mono=file]
 //   (app.ui.xml in the current folder by default)
 //   scripted_app examples/scripted/todo.ui.xml
-import { runWith, loadFont, fail } from "../src/app";
+import { runWithFonts, loadFont, loadMonoFont, fail } from "../src/app";
 import * as sc from "../src/scripted";
 
 action main(args: string[k]): i32 {
@@ -14,7 +14,13 @@ action main(args: string[k]): i32 {
     return match (loadFont(args)) {
         Ok(f) => match (sc.load(path)) {
             Ok(a) => {
-                const end = runWith(a.title, a.width, a.height, a.menu, f, a, sc.view, sc.update);
+                // (the texts in `mono` with the font of fixed width when
+                // there is one, else with the first)
+                const fonts = match (loadMonoFont(args)) {
+                    Ok(mono) => [f, mono],
+                    Err(e) => [f],
+                };
+                const end = runWithFonts(a.title, a.width, a.height, a.menu, fonts, a, sc.view, sc.update);
                 const [e2, out] = sc.closed(end);
                 if (out.length > 0) {
                     print(join(out, "\n"));

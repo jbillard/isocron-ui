@@ -1,0 +1,3 @@
+<view styles="state.style">
+  <box class="a"/>
+</view>

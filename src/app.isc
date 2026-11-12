@@ -22,7 +22,7 @@ import { rgb, rgba, render, Primitive, Box, quad, rounded, bordered, transparent
 import { Font, parse } from "./font";
 import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU, FOCUS, WHEEL, tipOf } from "./ui";
 import { POINTER as POINTER_SHAPE, TEXT as TEXT_SHAPE } from "./ui";
-import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Focus, Viewport, Tick, Copy, AskPaste, Animate, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./input";
+import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Focus, Viewport, Tick, TextRead, FolderListed, Copy, AskPaste, Animate, ReadText, ListFolder, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./input";
 import { DEAD, DEAD_ACCENTS, composed, spacingAccent } from "./input";
 import { Keymap, parseKeymap, charOf } from "./xkb";
 import * as cursors from "./cursors";
@@ -139,6 +139,50 @@ function told<M>(ui: Ui, m: M, i: Input, update: (M, Input) => [M, Effect[]]): [
     });
     const animates = count(fx, (e) => e == Animate) > 0;
     return [{ ...ui, clipboard: copied, asked: concat(ui.asked, fx), redraw: true, animating: ui.animating || animates }, nm] as const;
+}
+
+// an effect that reads a file or a folder
+function isFileAsk(e: Effect): boolean {
+    return match (e) {
+        ReadText(p) => true,
+        ListFolder(p) => true,
+        _ => false,
+    };
+}
+
+// the files and folders the model asked (`ReadText`, `ListFolder` among
+// `ui.asked`) read, each told to the model in the order asked (`TextRead`,
+// `FolderListed`), until it asks none; the other effects left in `asked`
+@noInline
+action filesDone<M>(ui: Ui, m: M, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    const asks = filter(ui.asked, (e) => isFileAsk(e));
+    if (asks.length == 0) {
+        return [ui, m] as const;
+    }
+    const [u1, m1] = filesAnswered({ ...ui, asked: filter(ui.asked, (e) => !isFileAsk(e)) }, m, asks, 0, update);
+    return filesDone(u1, m1, update);
+}
+
+action filesAnswered<M>(ui: Ui, m: M, asks: Effect[n], k: i64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    if (k >= n) {
+        return [ui, m] as const;
+    }
+    const answer = match (asks[k]) {
+        ReadText(p) => match (sys.readText(p)) {
+            Ok(t) => TextRead(p, t, true),
+            Err(e) => TextRead(p, sys.message(e), false),
+        },
+        ListFolder(p) => match (sys.listDir(p)) {
+            Ok(names) => {
+                const sep = p.endsWith("/") || p.endsWith("\\") || p == "" ? "" : "/";
+                return FolderListed(p, map(names, (x) => sys.isDir(p + sep + x) ? x + "/" : x), true);
+            },
+            Err(e) => FolderListed(p, [sys.message(e)], false),
+        },
+        _ => Tick(0),
+    };
+    const [u1, m1] = told(ui, m, answer, update);
+    return filesAnswered(u1, m1, asks, k + 1, update);
 }
 
 // an effect that copies a text
@@ -340,19 +384,19 @@ function menuPressed<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect
 // of 1), over the view
 // the tooltip `text` below and right of the pointer, within the window: a
 // dark box of a line of 12 units
-function tipLaidOut(ui: Ui, f: Font, text: string): Primitive[] {
+function tipLaidOut(ui: Ui, fs: Font[nf], text: string): Primitive[] {
     const k = ui.scale;
-    const w = lineWidth(f, 12.0f32 * k, text) + 16.0f32 * k;
+    const w = lineWidth(fs[0], 12.0f32 * k, text) + 16.0f32 * k;
     const h = (12.0f32 * 1.4f32 + 8.0f32) * k;
     const x = max(0.0f32, min(ui.x + 12.0f32 * k, f32(ui.w) - w - 2.0f32));
     const below = ui.y + 22.0f32 * k;
     const y = below + h < f32(ui.h) ? below : max(0.0f32, ui.y - h - 6.0f32 * k);
     const box = Div({ ...style(), padX: 8.0f32, padY: 4.0f32, background: rgb(0x111827u32), radius: 4.0f32, shadowBlur: 6.0f32, shadowY: 2.0f32, shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.2f32) }, [Label(textStyle(12.0f32, rgb(0xFFFFFFu32)), text)]);
-    const [ps, hits] = placeFrame(f, scaledElement(box, k), x, y, w, h, { offsets: [], caretOn: false, hotBar: -1, scale: k, deferred: true });
+    const [ps, hits] = placeFrame(fs, scaledElement(box, k), x, y, w, h, { offsets: [], caretOn: false, hotBar: -1, scale: k, deferred: true });
     return ps;
 }
 
-function menuLaidOut(ui: Ui, f: Font): [Primitive[], Hit[]] {
+function menuLaidOut(ui: Ui, fs: Font[nf]): [Primitive[], Hit[]] {
     const n = min(4, ui.labels.length);
     const enabled = (k: i64) => k >= 2 || ui.menuCut;
     const entries = map(iota(n), (k) => Div({
@@ -382,7 +426,7 @@ function menuLaidOut(ui: Ui, f: Font): [Primitive[], Hit[]] {
         shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.18f32),
         cursor: ARROW,
     }, entries);
-    const [ps, hits] = placeFrame(f, scaledElement(box, ui.scale), x, y, w, h, { offsets: [], caretOn: false, hotBar: -1, scale: ui.scale, deferred: true });
+    const [ps, hits] = placeFrame(fs, scaledElement(box, ui.scale), x, y, w, h, { offsets: [], caretOn: false, hotBar: -1, scale: ui.scale, deferred: true });
     // (its entries as entries of a menu; its box a place of its own, which
     // a click closes the menu on)
     const own = map(hits, (p) => p.kind == CLICK ? { ...p, kind: MENU, range: enabled(p.id) ? 1.0f32 : 0.0f32 } : p);
@@ -520,23 +564,28 @@ function ringOf(h: Hit, k: f32): Primitive {
 // the focus: a caret to blink)
 @noInline
 export function laidOut<M>(ui: Ui, f: Font, m: M, view: (M) => Element, now: u64): [Primitive[], Ui] {
+    return laidOutFonts(ui, [f], m, view, now);
+}
+
+// `laidOut` with the fonts `fs` (`runWithFonts`)
+export function laidOutFonts<M>(ui: Ui, fs: Font[nf], m: M, view: (M) => Element, now: u64): [Primitive[], Ui] {
     const shown = caretShown(ui, now);
     // (its glyphs `Pending`: their images those the atlas keeps, the others
     // drawn once and kept)
     const e = view(m);
-    const [vps, vhits] = placeFrame(f, scaledElement(e, ui.scale), 0.0f32, 0.0f32, f32(ui.w), f32(ui.h), { offsets: ui.offsets, caretOn: shown, hotBar: ui.hotBar, scale: ui.scale, deferred: true });
+    const [vps, vhits] = placeFrame(fs, scaledElement(e, ui.scale), 0.0f32, 0.0f32, f32(ui.w), f32(ui.h), { offsets: ui.offsets, caretOn: shown, hotBar: ui.hotBar, scale: ui.scale, deferred: true });
     const caret = count(vhits, (h) => h.kind == FIELD && h.id == 1) > 0;
     // the ring of the focus of the keyboard around its place, then the menu,
     // over the view
     const fk = focusIndex(vhits, ui.focus);
     const ring = ui.ring && fk >= 0 ? [ringOf(vhits[fk], ui.scale)] : [];
-    const [mps, mhits] = ui.menu ? menuLaidOut(ui, f) : [[], []] as const;
+    const [mps, mhits] = ui.menu ? menuLaidOut(ui, fs) : [[], []] as const;
     // the tooltip of the place under the pointer, half a second after it
     // came there (none while a button is held or the menu is open)
     const tip = ui.hover >= 0 && ui.pressed < 0 && !ui.menu && !ui.tipOff ? tipOf(e, ui.hover) : "";
     const due = tip != "" && now >= ui.hoverSince + TIP_DELAY;
-    const tps = due ? tipLaidOut(ui, f, tip) : [];
-    const [ps, atlas] = resolved(f, ui.atlas, concat(concat(concat(vps, ring), tps), mps));
+    const tps = due ? tipLaidOut(ui, fs, tip) : [];
+    const [ps, atlas] = resolved(fs, ui.atlas, concat(concat(concat(vps, ring), tps), mps));
     const hits = concat(vhits, mhits);
     // the place under the pointer, its shape, as the new places have them
     const hover = ui.pressed >= 0 ? ui.cursor : cursorAt(hits, ui.x, ui.y);
@@ -585,6 +634,30 @@ export action loadFont(args: string[k]): Result<Font, string> {
     return firstFont(["DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/dejavu/DejaVuSans.ttf", "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf"], 0, "");
 }
 
+// the font of fixed width of an application (its second, for code): the
+// file of `--mono=file` among its arguments; else under Windows Consolas
+// (its font of fixed width), then DejaVuSansMono.ttf beside the program or
+// in the current folder; under Linux DejaVuSansMono.ttf in the current
+// folder, then in the usual folders
+export action loadMonoFont(args: string[k]): Result<Font, string> {
+    const at = findIndex(args, (a) => a.startsWith("--mono="));
+    if (at >= 0) {
+        return firstFont([args[at].slice(7, args[at].length)], 0, "");
+    }
+    if (sys.platform() == "windows") {
+        const beside = match (win.programPath()) {
+            Ok(p) => [`${p.slice(0, p.lastIndexOf("\\") + 1)}DejaVuSansMono.ttf`],
+            Err(e) => [],
+        };
+        const root = match (sys.env("WINDIR")) {
+            Some(w) => w,
+            None => "C:\\Windows",
+        };
+        return firstFont(concat([`${root}\\Fonts\\consola.ttf`], concat(beside, ["DejaVuSansMono.ttf"])), 0, "");
+    }
+    return firstFont(["DejaVuSansMono.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/TTF/DejaVuSansMono.ttf", "/usr/share/fonts/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf"], 0, "");
+}
+
 // a failure of the application `title` shown: under Windows in a box of
 // messages (a program without a console has no other place to show it),
 // elsewhere printed
@@ -607,35 +680,41 @@ export action run<M>(title: string, width: i64, height: i64, f: Font, m: M, view
 // `run`, the texts of the entries of the menu of a field given (cut, copy,
 // paste, select all)
 export action runWith<M>(title: string, width: i64, height: i64, labels: string[], f: Font, m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+    return runWithFonts(title, width, height, labels, [f], m, view, update);
+}
+
+// `runWith` with the fonts `fs`: a text whose style has the face `k` drawn
+// with `fs[k]` (the first for a face beyond them)
+export action runWithFonts<M>(title: string, width: i64, height: i64, labels: string[], fs: Font[nf], m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
     if (sys.platform() == "windows") {
-        return runWindows(title, width, height, labels, f, m, view, update);
+        return runWindows(title, width, height, labels, fs, m, view, update);
     }
     // Wayland when its compositor is named, else X11 (the server of
     // DISPLAY), as GPUI chooses
     const wayland = sys.env("WAYLAND_DISPLAY") ?? "";
     if (wayland != "" || (sys.env("DISPLAY") ?? "") == "") {
-        return runWayland(title, width, height, labels, f, m, view, update);
+        return runWayland(title, width, height, labels, fs, m, view, update);
     }
-    return runX11(title, width, height, labels, f, m, view, update);
+    return runX11(title, width, height, labels, fs, m, view, update);
 }
 
 // ----- Windows ---------------------------------------------------------
 
 // the view of `m` laid out in the window, drawn and shown: the interface
 // with its places
-action frame<M>(w: win.Window, f: Font, m: M, view: (M) => Element, ui: Ui): Ui {
-    const [ps, next] = laidOut(ui, f, m, view, clock());
+action frame<M>(w: win.Window, fs: Font[nf], m: M, view: (M) => Element, ui: Ui): Ui {
+    const [ps, next] = laidOutFonts(ui, fs, m, view, clock());
     const shown = win.show(w, render(ui.w, ui.h, rgb(0xFFFFFFu32), ps), ui.w, ui.h);
     return next;
 }
 
-action runWindows<M>(title: string, width: i64, height: i64, labels: string[], f: Font, m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+action runWindows<M>(title: string, width: i64, height: i64, labels: string[], fs: Font[nf], m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
     return match (win.open(title, width, height)) {
         Ok(w) => {
             const [cw, ch] = win.clientSize(w);
             // the pixels of a unit: the density of its screen
-            const ui = frame(w, f, m, view, { ...interface(cw, ch, clock()), labels: labels, scale: f32(win.dpi(w)) / 96.0f32 });
-            const end = loopWindows(w, f, m, ui, 0, ARROW, view, update);
+            const ui = frame(w, fs, m, view, { ...interface(cw, ch, clock()), labels: labels, scale: f32(win.dpi(w)) / 96.0f32 });
+            const end = loopWindows(w, fs, m, ui, 0, ARROW, view, update);
             win.close(w);
             return end;
         },
@@ -711,7 +790,8 @@ action feedWindows<M>(w: win.Window, ui: Ui, m: M, evs: Ev[n], i: i64, now: u64,
     if (i >= n || ui.closed) {
         return [ui, m] as const;
     }
-    const [u1, m1] = step(ui, m, evs[i], now, update);
+    const [u0, m0] = step(ui, m, evs[i], now, update);
+    const [u1, m1] = filesDone(u0, m0, update);
     // (ISC_UI_TRACE set: each event of the hand printed, with its time and
     // the clicks counted)
     if (sys.env("ISC_UI_TRACE") != None) {
@@ -740,14 +820,15 @@ action askedWindows<M>(w: win.Window, ui: Ui, m: M, fx: Effect[n], k: i64, now: 
             const [u1, m1] = step(ui, m, Pasted(text), now, update);
             return askedWindows(w, { ...u1, asked: [] }, m1, fx, k + 1, now, update);
         },
-        // (the frames of an animation: the loop asks them)
-        Animate => askedWindows(w, ui, m, fx, k + 1, now, update),
+        // (the frames of an animation: the loop asks them; the files read
+        // before, by `filesDone`)
+        _ => askedWindows(w, ui, m, fx, k + 1, now, update),
     };
 }
 
 // the events of the window until it is closed, the caret blinking between
 // them, the shape of the pointer (`shape`: that set) following the places
-action loopWindows<M>(w: win.Window, f: Font, m: M, ui: Ui, high: i64, shape: i64, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+action loopWindows<M>(w: win.Window, fs: Font[nf], m: M, ui: Ui, high: i64, shape: i64, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
     return match (win.events(w, wakeIn(ui, clock()))) {
         Ok(evs) => {
             const now = clock();
@@ -759,11 +840,11 @@ action loopWindows<M>(w: win.Window, f: Font, m: M, ui: Ui, high: i64, shape: i6
             // what time asks: the caret blinked, a frame of an animation, a
             // tooltip due; drawn again
             const [u1, m1, due] = timed(u0, m0, now, update);
-            const next = due && u1.w > 0 && u1.h > 0 ? frame(w, f, m1, view, u1) : u1;
+            const next = due && u1.w > 0 && u1.h > 0 ? frame(w, fs, m1, view, u1) : u1;
             if (next.cursor != shape) {
                 win.setCursor(w, next.cursor);
             }
-            return loopWindows(w, f, m1, next, nh, next.cursor, view, update);
+            return loopWindows(w, fs, m1, next, nh, next.cursor, view, update);
         },
         Err(e) => m,
     };
@@ -902,7 +983,8 @@ action offered(c: net.Conn, st: State, text: string): State {
 // the program's clipboard
 @noInline
 action feedWayland<M>(c: net.Conn, ui: Ui, m: M, now: u64, st: State, update: (M, Input) => [M, Effect[]], ev: Ev): [M, Ui, State] {
-    const [u1, m1] = step(ui, m, ev, now, update);
+    const [u0, m0] = step(ui, m, ev, now, update);
+    const [u1, m1] = filesDone(u0, m0, update);
     const copied = count(u1.asked, (e) => isCopy(e)) > 0;
     const asks = count(u1.asked, (e) => e == AskPaste) > 0;
     const st1 = copied ? offered(c, st, u1.clipboard) : st;
@@ -960,8 +1042,8 @@ action globals(c: net.Conn, pending: u8[], g: wl.Globals): wl.Globals {
 // the view of `m` drawn into a new memory shared with the compositor and
 // shown as the `images`-th image, the previous one destroyed; the
 // interface with its places
-action drawWayland<M>(c: net.Conn, f: Font, m: M, view: (M) => Element, ui: Ui, st: State): [Ui, State] {
-    const [ps, next] = laidOut(ui, f, m, view, clock());
+action drawWayland<M>(c: net.Conn, fs: Font[nf], m: M, view: (M) => Element, ui: Ui, st: State): [Ui, State] {
+    const [ps, next] = laidOutFonts(ui, fs, m, view, clock());
     const pool = st.next;
     const buffer = st.next + 1u32;
     return match (unix.shared(ui.w * ui.h * 4)) {
@@ -994,7 +1076,7 @@ action keymapOf(fd: i32, bytes: i64): Keymap {
     return km;
 }
 
-action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f: Font, m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+action runWayland<M>(title: string, width: i64, height: i64, labels: string[], fs: Font[nf], m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
     const path = wl.socketPath(sys.env("WAYLAND_DISPLAY") ?? "", sys.env("XDG_RUNTIME_DIR") ?? "/tmp");
     return match (unix.connect(path)) {
         Ok(c) => {
@@ -1042,7 +1124,7 @@ action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f
             if (sys.env("ISC_UI_TRACE") != None) {
                 print(["Wayland fractional scale", fractional] as const);
             }
-            const end = loopWayland(c, f, m, { ...interface(width, height, clock()), labels: labels }, st2, view, update);
+            const end = loopWayland(c, fs, m, { ...interface(width, height, clock()), labels: labels }, st2, view, update);
             net.close(c);
             return end;
         },
@@ -1072,7 +1154,7 @@ function keyEvent(ch: i64, mods: u32): Ev {
 
 // the events of the window until it is closed (or its compositor gone),
 // the caret blinking between them
-action loopWayland<M>(c: net.Conn, f: Font, m: M, ui: Ui, st: State, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+action loopWayland<M>(c: net.Conn, fs: Font[nf], m: M, ui: Ui, st: State, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
     if (st.done || ui.closed) {
         return m;
     }
@@ -1084,8 +1166,8 @@ action loopWayland<M>(c: net.Conn, f: Font, m: M, ui: Ui, st: State, view: (M) =
     };
     if (!ready) {
         const [u1, m1, due] = timed(ui, m, clock(), update);
-        const [u2, s2] = st.shown && due ? drawWayland(c, f, m1, view, u1, st) : [u1, st] as const;
-        return loopWayland(c, f, m1, u2, s2, view, update);
+        const [u2, s2] = st.shown && due ? drawWayland(c, fs, m1, view, u1, st) : [u1, st] as const;
+        return loopWayland(c, fs, m1, u2, s2, view, update);
     }
     const r = match (unix.receiveWithFds(c, 65536, 8)) {
         Ok(got) => got,
@@ -1098,15 +1180,15 @@ action loopWayland<M>(c: net.Conn, f: Font, m: M, ui: Ui, st: State, view: (M) =
     // the descriptors received, taken in their order by the events that
     // carry one (the table of the keyboard, a paste of another program),
     // then closed
-    const [hm, hu, ns] = handle(c, f, m, evs, 0, ui, { ...st, pending: rest, fds: r.fds, fdAt: 0 }, view, update);
+    const [hm, hu, ns] = handle(c, fs, m, evs, 0, ui, { ...st, pending: rest, fds: r.fds, fdAt: 0 }, view, update);
     const closed = map(r.fds, (fd) => unix.closeFd(fd) == Ok(()) ? 1 : 0);
     const [nu, nm, due] = timed(hu, hm, clock(), update);
-    const [u2, s2] = due && ns.shown && !ns.done ? drawWayland(c, f, nm, view, nu, ns) : [nu, ns] as const;
-    return loopWayland(c, f, nm, u2, shapeShown(c, s2, u2.cursor), view, update);
+    const [u2, s2] = due && ns.shown && !ns.done ? drawWayland(c, fs, nm, view, nu, ns) : [nu, ns] as const;
+    return loopWayland(c, fs, nm, u2, shapeShown(c, s2, u2.cursor), view, update);
 }
 
 // the events `evs` from the `i`-th, answered in their order
-action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, st: State, view: (M) => Element, update: (M, Input) => [M, Effect[]]): [M, Ui, State] {
+action handle<M>(c: net.Conn, fs: Font[nf], m: M, evs: wl.Event[n], i: i64, ui: Ui, st: State, view: (M) => Element, update: (M, Input) => [M, Effect[]]): [M, Ui, State] {
     if (i >= evs.length || st.done) {
         return [m, ui, st] as const;
     }
@@ -1115,7 +1197,7 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
     // the table of the keyboard: the descriptor sent with its event
     if (e.obj == wl.KEYBOARD && e.op == 0u32 && e.args.length >= 8) {
         const km = st.fdAt < st.fds.length ? keymapOf(st.fds[st.fdAt], i64(wl.word(e.args, 4))) : st.keymap;
-        return handle(c, f, m, evs, i + 1, ui, { ...st, keymap: km, fdAt: st.fdAt + 1 }, view, update);
+        return handle(c, fs, m, evs, i + 1, ui, { ...st, keymap: km, fdAt: st.fdAt + 1 }, view, update);
     }
     // the serial of an input (its entry, a key, a button): that of the
     // selection made after it
@@ -1125,40 +1207,40 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
     // made: this one's destroyed
     if (st.source != 0u32 && e.obj == st.source && e.op == 1u32) {
         const written = st.fdAt < st.fds.length ? unix.writeFd(st.fds[st.fdAt], bytes(st.text)) : Ok(());
-        return handle(c, f, m, evs, i + 1, ui, { ...st, fdAt: st.fdAt + 1 }, view, update);
+        return handle(c, fs, m, evs, i + 1, ui, { ...st, fdAt: st.fdAt + 1 }, view, update);
     }
     if (st.source != 0u32 && e.obj == st.source && e.op == 2u32) {
         const gone = net.write(c, wl.sourceDestroy(st.source));
-        return handle(c, f, m, evs, i + 1, ui, { ...st, source: 0u32, text: "" }, view, update);
+        return handle(c, fs, m, evs, i + 1, ui, { ...st, source: 0u32, text: "" }, view, update);
     }
     // the fractional scale of the window (`preferred_scale`, in 120ths): the
     // images drawn at it, their size in units kept by the viewport
     if (st.fraction != 0u32 && e.obj == st.fraction && e.op == 0u32 && e.args.length >= 4) {
         const k = f32(wl.word(e.args, 0)) / 120.0f32;
         if (k <= 0.0f32 || k == st.px) {
-            return handle(c, f, m, evs, i + 1, ui, st, view, update);
+            return handle(c, fs, m, evs, i + 1, ui, st, view, update);
         }
         const [u1, m1] = steps(ui, m, [Scaled(k), Resized(i64(f32(st.lw) * k + 0.5f32), i64(f32(st.lh) * k + 0.5f32))], now, update);
-        return handle(c, f, m1, evs, i + 1, { ...u1, asked: [] }, { ...st, px: k }, view, update);
+        return handle(c, fs, m1, evs, i + 1, { ...u1, asked: [] }, { ...st, px: k }, view, update);
     }
     // the selections of the others: an offer made (its types follow), the
     // selection set (an offer, or none)
     if (st.device != 0u32 && e.obj == st.device && e.op == 0u32 && e.args.length >= 4) {
-        return handle(c, f, m, evs, i + 1, ui, { ...st, lastOffer: wl.word(e.args, 0), lastMime: "" }, view, update);
+        return handle(c, fs, m, evs, i + 1, ui, { ...st, lastOffer: wl.word(e.args, 0), lastMime: "" }, view, update);
     }
     if (st.lastOffer != 0u32 && e.obj == st.lastOffer && e.op == 0u32) {
         const [mime, after] = wl.strAt(e.args, 0);
         const better = mime == "text/plain;charset=utf-8" || (st.lastMime == "" && (mime == "text/plain" || mime == "UTF8_STRING"));
-        return handle(c, f, m, evs, i + 1, ui, better ? { ...st, lastMime: mime } : st, view, update);
+        return handle(c, fs, m, evs, i + 1, ui, better ? { ...st, lastMime: mime } : st, view, update);
     }
     if (st.device != 0u32 && e.obj == st.device && e.op == 5u32 && e.args.length >= 4) {
         const id = wl.word(e.args, 0);
         const gone = st.offer != 0u32 && st.offer != id ? net.write(c, wl.offerDestroy(st.offer)) : Ok(());
         const next = id == 0u32 ? { ...st, offer: 0u32, mime: "" } : { ...st, offer: id, mime: id == st.lastOffer ? st.lastMime : "" };
-        return handle(c, f, m, evs, i + 1, ui, next, view, update);
+        return handle(c, fs, m, evs, i + 1, ui, next, view, update);
     }
     if (serial != st.serial) {
-        return handle(c, f, m, evs, i, ui, { ...st, serial: serial }, view, update);
+        return handle(c, fs, m, evs, i, ui, { ...st, serial: serial }, view, update);
     }
     const [nm, nu, ns] = match (wl.input(e)) {
         // (sizes and places in units of the compositor, the images in
@@ -1185,7 +1267,7 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
         },
         wl.Configure(serial) => {
             const acked = net.write(c, wl.request(wl.XDG_SURFACE, 4u32, wl.le32(serial)));
-            const [u2, s2] = drawWayland(c, f, m, view, ui, { ...st, shown: true });
+            const [u2, s2] = drawWayland(c, fs, m, view, ui, { ...st, shown: true });
             return [m, u2, s2] as const;
         },
         wl.Ping(serial) => {
@@ -1235,7 +1317,7 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
         },
         _ => [m, ui, st] as const,
     };
-    return handle(c, f, nm, evs, i + 1, nu, ns, view, update);
+    return handle(c, fs, nm, evs, i + 1, nu, ns, view, update);
 }
 
 // ----- X11 ---------------------------------------------------------------
@@ -1366,8 +1448,8 @@ action stripsX(c: net.Conn, st: XState, px: u32[n], w: i64, h: i64, y: i64, rows
 // the view of `m` laid out, drawn and sent to the window; the interface
 // with its places
 @noInline
-action drawX11<M>(c: net.Conn, f: Font, m: M, view: (M) => Element, ui: Ui, st: XState): Ui {
-    const [ps, next] = laidOut(ui, f, m, view, clock());
+action drawX11<M>(c: net.Conn, fs: Font[nf], m: M, view: (M) => Element, ui: Ui, st: XState): Ui {
+    const [ps, next] = laidOutFonts(ui, fs, m, view, clock());
     const px = render(ui.w, ui.h, rgb(0xFFFFFFu32), ps);
     const shown = st.shm > 0 && st.setup.littleImages && shmShown(c, st, px, ui.w, ui.h);
     const sent = shown || stripsX(c, st, px, ui.w, ui.h, 0, x11.rowsPerRequest(ui.w, st.setup.maxRequest));
@@ -1459,7 +1541,8 @@ action propertyNewX(c: net.Conn, st: XState, seen: x11.Message[]): [boolean, x11
 // selection of another program, else the program's clipboard
 @noInline
 action feedX11<M>(c: net.Conn, ui: Ui, m: M, now: u64, st: XState, update: (M, Input) => [M, Effect[]], ev: Ev): [M, Ui, XState] {
-    const [u1, m1] = step(ui, m, ev, now, update);
+    const [u0, m0] = step(ui, m, ev, now, update);
+    const [u1, m1] = filesDone(u0, m0, update);
     const copied = count(u1.asked, (e) => isCopy(e)) > 0;
     const asks = count(u1.asked, (e) => e == AskPaste) > 0;
     const owned = copied ? net.write(c, x11.setSelectionOwner(st.window, st.atoms[A_CLIPBOARD])) : Ok(());
@@ -1600,7 +1683,7 @@ action handleX<M>(c: net.Conn, m: M, ms: x11.Message[n], i: i64, ui: Ui, st: XSt
 // the events of the window until it is closed (or its server gone), the
 // caret blinking between them: the messages answered, the window drawn
 // again when it changed, the shape of the pointer set
-action loopX11<M>(c: net.Conn, f: Font, m: M, ui: Ui, st: XState, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+action loopX11<M>(c: net.Conn, fs: Font[nf], m: M, ui: Ui, st: XState, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
     if (st.done || ui.closed) {
         return m;
     }
@@ -1612,9 +1695,9 @@ action loopX11<M>(c: net.Conn, f: Font, m: M, ui: Ui, st: XState, view: (M) => E
     }
     const [hm, hu, ns] = handleX(c, m, ms, 0, ui, { ...st, pending: rest, queued: [] }, update);
     const [nu, nm, due] = timed(hu, hm, clock(), update);
-    const u2 = due ? drawX11(c, f, nm, view, nu, ns) : nu;
+    const u2 = due ? drawX11(c, fs, nm, view, nu, ns) : nu;
     const shaped = u2.cursor != ns.shape ? net.write(c, x11.setCursor(ns.window, ns.cursorFirst + u32(u2.cursor))) : Ok(());
-    return loopX11(c, f, nm, { ...u2, redraw: false }, { ...ns, shape: u2.cursor }, view, update);
+    return loopX11(c, fs, nm, { ...u2, redraw: false }, { ...ns, shape: u2.cursor }, view, update);
 }
 
 // MIT-SHM of a version that passes memories by descriptors (1.2 and after)
@@ -1639,7 +1722,7 @@ action connectX(display: string): Result<net.Conn, IoError> {
     return unix.connect(path);
 }
 
-action runX11<M>(title: string, width: i64, height: i64, labels: string[], f: Font, m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+action runX11<M>(title: string, width: i64, height: i64, labels: string[], fs: Font[nf], m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
     const display = sys.env("DISPLAY") ?? "";
     return match (connectX(display)) {
         Ok(c) => {
@@ -1695,7 +1778,7 @@ action runX11<M>(title: string, width: i64, height: i64, labels: string[], f: Fo
                 shm: shmOk ? shmMajor : 0, seg: id(10), incrTo: 0u32, incrProperty: 0u32, incrTarget: 0u32, incrAt: 0, done: false,
             };
             const ui = { ...interface(pw, ph, clock()), labels: labels, scale: scale, redraw: false };
-            const end = loopX11(c, f, m, ui, st, view, update);
+            const end = loopX11(c, fs, m, ui, st, view, update);
             net.close(c);
             return end;
         },
