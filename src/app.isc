@@ -1393,13 +1393,16 @@ action shmShown(c: net.Conn, st: XState, px: u32[n], w: i64, h: i64): boolean {
 @noInline
 action pasteX(c: net.Conn, st: XState): [string, XState] {
     const asked = net.write(c, x11.convertSelection(st.window, st.atoms[A_CLIPBOARD], st.atoms[A_UTF8], st.atoms[A_PASTE]));
-    const [found, ev, st1] = eventX(c, st, x11.SELECTION_NOTIFY, []);
+    const [found, ev, st1] = eventX(c, { ...st, queued: [] }, x11.SELECTION_NOTIFY, st.queued);
     if (!found || x11.u32At(ev.bytes, 20) == 0u32) {
         return ["", st1] as const;
     }
     const read = net.write(c, x11.getProperty(st.window, st.atoms[A_PASTE], true));
+    // (a new value of the property before this read is that of the header
+    // of a large selection, not of a part: dropped)
+    const before = filter(st1.queued, (q) => !(q.code == x11.PROPERTY && x11.u32At(q.bytes, 4) == st.window && x11.u32At(q.bytes, 8) == st.atoms[A_PASTE]));
     const [rs, others, rest] = repliesX(c, st1.pending, 1, [], []);
-    const st2 = { ...st1, pending: rest, queued: concat(st1.queued, others) };
+    const st2 = { ...st1, pending: rest, queued: concat(before, others) };
     if (rs.length == 0) {
         return ["", st2] as const;
     }
@@ -1413,7 +1416,9 @@ action pasteX(c: net.Conn, st: XState): [string, XState] {
 // (the next then written), until an empty one; what was read when the
 // program stops (a second without a part)
 action partsX(c: net.Conn, st: XState, got: u8[]): [u8[], XState] {
-    const [found, ev, st1] = propertyNewX(c, st, []);
+    // (the messages kept apart first: the next part may have come with the
+    // reply to the one before)
+    const [found, ev, st1] = propertyNewX(c, { ...st, queued: [] }, st.queued);
     if (!found) {
         return [got, st1] as const;
     }

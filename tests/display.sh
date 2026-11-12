@@ -135,4 +135,20 @@ fractional="$(cd "$out" && ISC_UI_TRACE=1 python3 "$here/../tools/display/sway.p
 [ "$(echo "$fractional" | grep -c 'Wayland fractional scale, true')" = 1 ] || { echo "FAILED: no fractional scale under sway"; exit 1; }
 [ "$(echo "$fractional" | tail -1)" = "[[ ] Écrire la bibliothèque, [ ] Taper du texte dans un champ]" ] || { echo "FAILED: a click at a fractional scale: $(echo "$fractional" | tail -1)"; exit 1; }
 [ "$(python3 "$here/../tools/display/same.py" "$out/sway.png" "$here/reference/todo150start.png")" = "0 " ] || { echo "FAILED: the image at a fractional scale differs"; exit 1; }
-echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx; the keyboard: $tabwl, $tabx; the long list: $longwl, $longx; selections: $selwl, $selx; the live gallery: tooltips and animations; large clipboards; MIT-SHM and strips the same; a fractional scale of 1.5 under sway, the same pixels"
+# the other examples: those that write an image (its size), the minimal
+# application (three clicks on its button) under Wayland and X11 (Weston
+# refuses an output of 120 pixels high: 200); counter_window and
+# gallery_window are of Windows (checked in its machine)
+for e in cards hello_text gallery minimal; do
+    "$iscc" build "examples/$e.isc" -o "$out/$e"
+done
+for pair in "cards 480 320" "hello_text 640 260" "gallery 1280 1040"; do
+    set -- $pair
+    "$out/$1" "$out/$1.png" > /dev/null
+    size="$(python3 -c "import struct, sys; d = open(sys.argv[1], 'rb').read(); print('%d %d' % struct.unpack('>II', d[16:24]))" "$out/$1.png")"
+    [ "$size" = "$2 $3" ] || { echo "FAILED: the image of $1: $size"; exit 1; }
+done
+mw="$(cd "$out" && python3 "$here/../tools/display/play.py" 320 200 clickat:160,40 clickat:160,40 clickat:160,40 endserver -- "$out/minimal" | tail -1)"
+mx="$(cd "$out" && PLAY_X11=1 python3 "$here/../tools/display/play.py" 320 120 clickat:160,40 clickat:160,40 clickat:160,40 endserver -- "$out/minimal" | tail -1)"
+[ "$mw $mx" = "3 3" ] || { echo "FAILED: the minimal application: $mw $mx"; exit 1; }
+echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx; the keyboard: $tabwl, $tabx; the long list: $longwl, $longx; selections: $selwl, $selx; the live gallery: tooltips and animations; large clipboards; MIT-SHM and strips the same; a fractional scale of 1.5 under sway, the same pixels; the examples"
