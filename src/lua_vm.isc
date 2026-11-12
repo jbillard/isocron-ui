@@ -3551,6 +3551,71 @@ export function stringV(vm: Vm, s: string): [Vm, V] {
     return strV(vm, s);
 }
 
+// ----- for a host: its globals, its tables, the collector held -------------------
+
+// the global `name` of the machine
+export function global(vm: Vm, name: string): V {
+    return rawGetStr(vm, vm.globals, name);
+}
+
+// the machine with its global `name` set to `v`
+export function setGlobal(vm: Vm, name: string, v: V): Vm {
+    return setName(vm, vm.globals, name, v);
+}
+
+// the machine whose collector is held (`by` 1) or let go (`by` -1): while
+// held, the values a host keeps out of the machine (tables, strings,
+// functions) stay where they are; the host collects after (`collect`)
+export function held(vm: Vm, by: i64): Vm {
+    return { ...vm, pinned: vm.pinned + by };
+}
+
+// `t[i]` of the table `t` without metatable (nil for a value that is not a
+// table)
+export function element(vm: Vm, t: V, i: i64): V {
+    return t.t == T_TAB ? rawGet(vm, t.i, intV(i)) : nilV();
+}
+
+// the length of the sequence of the table `t` (its elements from 1 that
+// are not nil; 0 for a value that is not a table)
+export function sequenceLength(vm: Vm, t: V): i64 {
+    return t.t == T_TAB ? countFrom(vm, t.i, 1) : 0;
+}
+
+function countFrom(vm: Vm, t: i64, i: i64): i64 {
+    return rawGet(vm, t, intV(i)).t == T_NIL ? i - 1 : countFrom(vm, t, i + 1);
+}
+
+// a value of Lua true in a test (neither nil nor false)
+export function truthy(v: V): boolean {
+    return v.t != T_NIL && v.t != T_FALSE;
+}
+
+export function isString(v: V): boolean {
+    return v.t == T_STR;
+}
+
+// the number of `v` (an integer, a float, or a string of a number), NaN
+// when it is not one
+export function numberOf(vm: Vm, v: V): f64 {
+    const n = toNumber(vm, v);
+    return n.t == T_INT ? f64(n.i) : (n.t == T_NUM ? n.f : 0.0 / 0.0);
+}
+
+// the integer of `v` (an integer, or a float without fraction), -1 when it
+// is not one
+export function integerOf(v: V): i64 {
+    return v.t == T_INT ? v.i : (v.t == T_NUM && v.f == floor(v.f) && abs(v.f) < 9.0e18 ? i64(v.f) : -1);
+}
+
+export function nilValue(): V {
+    return nilV();
+}
+
+export function integerValue(i: i64): V {
+    return intV(i);
+}
+
 // ----- the collector -------------------------------------------------------------
 
 // the collector: the new tables, store, strings, closures, upvalues and
@@ -3726,6 +3791,17 @@ function moveRoots(vm: Vm, g: Gc, roots: V[n], i: i64, acc: V[]): [Gc, V[]] {
 export function collect(vm: Vm, roots: V[n]): [Vm, V[]] {
     const [v1, rs] = collectCore(vm, roots);
     return [{ ...v1, regs: fill(vm.regs.length, { t: T_NIL, i: 0, f: 0.0 }), depth: 0, base: 0, cl: -1, va: 0, vaN: 0, vaTop: 0, ltop: 0, mtop: 0 }, rs] as const;
+}
+
+// the memory of the machine taken back between two calls when it has grown
+// past its bound (the values a host keeps out of it are then to read again:
+// a host keeps its own in globals), the next bound twice what is left
+export function collectIfDue(vm: Vm): Vm {
+    if (vm.pinned != 0 || memorySize(vm) < vm.gcAt) {
+        return vm;
+    }
+    const [v1, rs] = collect(vm, []);
+    return { ...v1, gcAt: max(GC_MIN, memorySize(v1) * 2) };
 }
 
 // the memory taken back while the machine runs, at an instruction that

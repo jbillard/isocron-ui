@@ -1,0 +1,34 @@
+// The generic application: an interface read from files when it starts,
+// nothing of it compiled (src/scripted.isc): its elements in XML, its
+// styles, its behaviour in Lua. What its Lua prints is written when its
+// window is closed.
+// usage: scripted_app [VIEW.ui.xml] [--font=file]
+//   (app.ui.xml in the current folder by default)
+//   scripted_app examples/scripted/todo.ui.xml
+import { runWith, loadFont, fail } from "../src/app";
+import * as sc from "../src/scripted";
+
+action main(args: string[k]): i32 {
+    const files = filter(args, (a) => !a.startsWith("--"));
+    const path = files.length > 0 ? files[0] : "app.ui.xml";
+    return match (loadFont(args)) {
+        Ok(f) => match (sc.load(path)) {
+            Ok(a) => {
+                const end = runWith(a.title, a.width, a.height, a.menu, f, a, sc.view, sc.update);
+                const [e2, out] = sc.closed(end);
+                if (out.length > 0) {
+                    print(join(out, "\n"));
+                }
+                return 0;
+            },
+            Err(e) => {
+                fail("Isocron", e);
+                return 1;
+            },
+        },
+        Err(e) => {
+            fail("Isocron", e);
+            return 1;
+        },
+    };
+}

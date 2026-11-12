@@ -138,6 +138,68 @@ The attributes of a box and the properties of a class are those of
 `Style`; a text has `size`, `color` and `textAlign`; `class` names classes,
 `id` the message of a click. `src/xml.isc` and `src/css.isc` read the files.
 
+## Interfaces read when the program starts
+
+The generic application (`examples/scripted_app.isc`, the module
+`src/scripted.isc`) compiles nothing of an interface: it reads, when it
+starts, a view in XML (the vocabulary of `uigen`), one or more files of
+styles and one or more scripts of Lua, run by the machine of Lua of the
+library (`src/lua_*.isc`: the part of Lua 5.4 an interface needs, its
+tables, closures, metatables, the libraries `string`, `table` and `math`,
+a collector). The values `{...}`
+are expressions of Lua, made functions once when the files are read (an
+error in one is told at its line of the XML); a click runs the Lua of
+`onclick`; a field is the text of a global of Lua (`bind`). The elements
+are made again after each input. `examples/scripted/` holds the list of
+tasks so written (here in part), the same pixels as the one in code
+(`tests/scripted_check.isc`):
+
+```xml
+<view title="Isocron : tâches (Lua)" width="448" height="380" styles="todo.style" script="todo.lua" onclose="report()">
+  <box class="ground" onclick="">
+    <column class="card">
+      <row class="line" gap="8">
+        <field bind="newTask" hint="Nouvelle tâche" onenter="add()"/>
+        <button onclick="add()">Ajouter</button>
+      </row>
+      <each items="{tasks}" as="it" index="k">
+        <row class="task">
+          <checkbox checked="{it.done}" onclick="toggle(k)"/>
+          <text size="13" color="{it.done and '#9CA3AF' or '#111827'}">{it.text}</text>
+        </row>
+      </each>
+      <text size="12" color="#6B7280">{leftText()}</text>
+    </column>
+  </box>
+</view>
+```
+
+```lua
+tasks = { { text = "Écrire la bibliothèque", done = true } }
+newTask = ""
+function add()
+  if newTask ~= "" then
+    tasks[#tasks + 1] = { text = newTask, done = false }
+    newTask = ""
+  end
+end
+function toggle(k) tasks[k].done = not tasks[k].done end
+```
+
+```
+iscc build examples/scripted_app.isc -o scripted_app
+./scripted_app examples/scripted/todo.ui.xml
+```
+
+The root `<view>` takes `title`, `width`, `height`, `styles` and `script`
+(files beside it, separated by spaces), `menu` and `onclose`; without an
+argument the application reads `app.ui.xml`. In an `<each>`, `as` and
+`index` name an element of the sequence and its index (from 1). The hand
+of a component, the focus of a field and the messages of the places are
+kept by the application. A file the application does not understand is
+refused at its file and line; an error of Lua while it runs is shown above
+the interface.
+
 ## Its files
 
 - `src/app.isc`: `run` and `runWith` (the texts of the menu of a field),
@@ -155,6 +217,10 @@ The attributes of a box and the properties of a class are those of
   focus), `checkbox`, `radio`, `toggle` and `toggleAt` (its knob sliding),
   `slider`, `progress`, `segments`, `avatar`, `badge`, `tooltip`;
   `withTip`; `uniformList`.
+- `src/scripted.isc`: an interface read when the program starts (XML,
+  styles, Lua); `src/lua_parse.isc`, `src/lua_code.isc`, `src/lua_vm.isc`,
+  `src/lua_text.isc`: the machine of Lua (its parser, its code of
+  registers, the machine and its library, its texts and patterns).
 - `src/ui.isc`: the elements and their layout (`placeFrame`: what draws
   them and the places the pointer and the keyboard reach). A box that clips
   or scrolls places only the children it shows.
@@ -184,7 +250,9 @@ folder (`tests/fonts/`).
 - `todo_app.isc` (`todo.isc`): a list of tasks: a field, tasks ticked and
   removed, a list that scrolls, the clipboard, the keyboard alone; prints
   its tasks at the end. `todo_xml_app.isc`: the same, its view made from
-  `todo.ui.xml` and `todo.style` (`todo_view.isc`).
+  `todo.ui.xml` and `todo.style` (`todo_view.isc`). `scripted_app.isc`:
+  the generic application, any interface of XML, styles and Lua
+  (`scripted/todo.ui.xml`: the same list of tasks).
 - `long_list_app.isc` (`long_list.isc`): 100 000 tasks (or the number
   given) in a long list; prints those ticked.
 - `gallery_app.isc` (`gallery_live.isc`, `gallery_plate.isc`): the plate of
@@ -204,7 +272,10 @@ folder (`tests/fonts/`).
 with `tests/reference/`, and runs the checks of `tests/*_check.isc` (the
 editing of a field, the steps of the list of tasks, the long list, the
 tooltips and animations, X11, Wayland, PNG, the inflater, text, fonts,
-keyboards, the view made from XML). `tests/uigen.sh` checks the
+keyboards, the view made from XML, the generic application).
+`tests/lua.sh` runs the scripts of `tests/lua/` by the machine of Lua and
+compares their output with that of the reference interpreter (or their
+`.out`). `tests/uigen.sh` checks the
 generator (its module up to date, faulty files refused at their lines).
 `tests/display.sh` plays a hand under Wayland (Weston in
 Docker, the image of `tools/display`, `xdotool`), under X11 (Xvfb in the

@@ -1,0 +1,6 @@
+<view>
+  <column>
+    <text>Bonjour</text>
+    <text>{nothing.x}</text>
+  </column>
+</view>

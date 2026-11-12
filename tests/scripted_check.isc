@@ -1,0 +1,87 @@
+// The list of tasks read when the generic application starts
+// (examples/scripted/todo.ui.xml, todo.style, todo.lua: src/scripted.isc)
+// and the one written in code (examples/todo.isc): at their start, after a
+// click in the field and a text typed, after Enter (the task added, the
+// field emptied by Lua), a task ticked and one removed, and the first task
+// done cleared, the same pixels and the same places (their rectangles: the
+// messages of the places are numbered by each); what its Lua prints when
+// it is closed; faulty files refused at their file and line.
+import { parse, Font } from "../src/font";
+import { render, rgb } from "../src/paint";
+import { interface, laidOut } from "../src/app";
+import { editing } from "../src/edit";
+import { Input, Click, Release, Key, Text, ENTER } from "../src/input";
+import * as todo from "../examples/todo";
+import * as sc from "../src/scripted";
+
+// the pixels and the rectangles of the places of both the same
+function same(f: Font, a: sc.App, m: todo.Model): [boolean, boolean, i64] {
+    const [pa, ua] = laidOut(interface(520, 420, 0u64), f, a, sc.view, 0u64);
+    const [pb, ub] = laidOut(interface(520, 420, 0u64), f, m, todo.view, 0u64);
+    const xa = render(520, 420, rgb(0xFFFFFFu32), pa);
+    const xb = render(520, 420, rgb(0xFFFFFFu32), pb);
+    const ra = map(ua.hits, (h) => [h.kind, i64(h.x), i64(h.y), i64(h.w), i64(h.h)] as const);
+    const rb = map(ub.hits, (h) => [h.kind, i64(h.x), i64(h.y), i64(h.w), i64(h.h)] as const);
+    return [xa.length == xb.length && count(iota(xa.length), (i) => xa[i] != xb[i]) == 0, ra == rb, ra.length] as const;
+}
+
+// the inputs `is` given to the application one after the other
+function given(a: sc.App, is: Input[n]): sc.App {
+    return fold(is, a, (acc, i) => {
+        const [a1, fx] = sc.update(acc, i);
+        return a1;
+    });
+}
+
+// the characters of `s` typed
+function typed(s: string): Input[] {
+    return map(bytes(s), (c) => Text(i64(c)));
+}
+
+// the faulty views of tests/scripted/ read: their faults (each at its file
+// and line); the error of an expression shown by the view
+action faults(names: string[n], i: i64): void {
+    if (i >= n) {
+        return;
+    }
+    match (sc.load(`tests/scripted/${names[i]}.ui.xml`)) {
+        Ok(a) => print(`${names[i]}: shown: ${a.err}`),
+        Err(e) => print(`${names[i]}: ${e}`),
+    };
+    faults(names, i + 1);
+}
+
+// the places of the view, in their order: the ground (0), the field (1),
+// the button that adds (2), the box and the cross of each task (3 + 2k,
+// 4 + 2k), the button that clears
+action main(args: string[k]): i32 {
+    return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => match (sc.load("examples/scripted/todo.ui.xml")) {
+            Ok(a0) => {
+                const m0 = todo.initial();
+                const a1 = given(a0, concat([Click(1, 10.0f32, 10.0f32, 0, 1, 0), Release(1)], typed("Pain de mie")));
+                const m1 = { ...m0, field: editing("Pain de mie"), focused: true };
+                const a2 = given(a1, [Key(ENTER, 0)]);
+                const m2 = { ...m1, items: concat(m0.items, [{ text: "Pain de mie", done: false }]), field: editing("") };
+                const a3 = given(a2, [Click(5, 5.0f32, 5.0f32, -1, 1, 0), Release(5), Click(4, 5.0f32, 5.0f32, -1, 1, 0), Release(4)]);
+                const m3 = { ...m2, items: [{ text: "Taper du texte dans un champ", done: true }, { text: "Pain de mie", done: false }] };
+                const a4 = given(a3, [Click(a3.hs.length - 1, 5.0f32, 5.0f32, -1, 1, 0), Release(a3.hs.length - 1)]);
+                const m4 = { ...m3, items: [{ text: "Pain de mie", done: false }] };
+                print([same(f, a0, m0), same(f, a1, m1), same(f, a2, m2), same(f, a3, m3), same(f, a4, m4)] as const);
+                print([a1.err, a4.err, a4.binds[0]] as const);
+                const [e, out] = sc.closed(a4);
+                print(out);
+                faults(["tag", "value", "style", "syntax", "script", "runtime"], 0);
+                return 0;
+            },
+            Err(e) => {
+                print(e);
+                return 1;
+            },
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

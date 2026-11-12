@@ -1,0 +1,39 @@
+/* The styles of the list of tasks read when it starts (todo.ui.xml) */
+
+/* the ground: the card at the top, in the middle across, an arrow over it */
+.ground {
+    width: fill;
+    height: fill;
+    padding: 24;
+    justify: start;
+    align: center;
+    stretch: false;
+    background: #F3F4F6;
+    cursor: arrow;
+}
+
+.card {
+    width: 400;
+    height: fill;
+    padding: 16;
+    gap: 10;
+    background: #FFFFFF;
+    radius: 12;
+    shadowBlur: 10;
+    shadowY: 4;
+    shadowColor: rgba(0, 0, 0, 0.18);
+}
+
+/* a line of components, centred down */
+.line {
+    align: center;
+    stretch: false;
+}
+
+.task {
+    gap: 8;
+    align: center;
+    stretch: false;
+    padding: 4;
+    radius: 6;
+}

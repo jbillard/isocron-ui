@@ -156,4 +156,10 @@ mx="$(cd "$out" && PLAY_X11=1 python3 "$here/../tools/display/play.py" 320 120 c
 "$iscc" build examples/todo_xml_app.isc -o "$out/todox"
 xmltasks="$(cd "$out" && python3 "$here/../tools/display/play.py" 448 380 clickat:184,89 type:Lait key:Return type:Pain clickat:371,89 clickat:53,128 clickat:184,89 type:Thex key:BackSpace key:Return endserver -- "$out/todox" | tail -1)"
 [ "$xmltasks" = "$tasks" ] || { echo "FAILED: the view made from XML: $xmltasks"; exit 1; }
-echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx; the keyboard: $tabwl, $tabx; the long list: $longwl, $longx; selections: $selwl, $selx; the live gallery: tooltips and animations; large clipboards; MIT-SHM and strips the same; a fractional scale of 1.5 under sway, the same pixels; the examples; the view made from XML"
+# the generic application (examples/scripted_app.isc) running the list of
+# tasks read when it starts (examples/scripted/: XML, styles, Lua): the
+# same hand, the same tasks (printed by its Lua when the window is closed)
+"$iscc" build examples/scripted_app.isc -o "$out/scripted"
+scripted="$(cd "$out" && python3 "$here/../tools/display/play.py" 448 380 clickat:184,89 type:Lait key:Return type:Pain clickat:371,89 clickat:53,128 clickat:184,89 type:Thex key:BackSpace key:Return endserver -- "$out/scripted" "$here/../examples/scripted/todo.ui.xml" | tail -1)"
+[ "$scripted" = "$tasks" ] || { echo "FAILED: the generic application: $scripted"; exit 1; }
+echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx; the keyboard: $tabwl, $tabx; the long list: $longwl, $longx; selections: $selwl, $selx; the live gallery: tooltips and animations; large clipboards; MIT-SHM and strips the same; a fractional scale of 1.5 under sway, the same pixels; the examples; the view made from XML; the generic application (XML, styles and Lua read when it starts)"

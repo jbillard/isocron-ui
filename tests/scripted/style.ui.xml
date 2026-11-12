@@ -1,0 +1,3 @@
+<view styles="bad.style">
+  <box class="a"/>
+</view>

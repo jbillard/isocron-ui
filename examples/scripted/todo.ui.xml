@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The list of tasks read when the generic application starts
+     (examples/scripted_app.isc): its elements here, its styles in
+     todo.style, what it does in todo.lua. The same elements as
+     examples/todo.ui.xml, compiled by tools/uigen, but nothing of it
+     compiled: the values {...} are expressions of Lua. -->
+<view title="Isocron : tâches (Lua)" width="448" height="380"
+      styles="todo.style" script="todo.lua" onclose="report()">
+  <!-- a click beside the card takes the focus from the field -->
+  <box class="ground" onclick="">
+    <column class="card">
+      <text size="18" color="#111827">Tâches</text>
+      <row class="line" gap="8">
+        <field bind="newTask" hint="Nouvelle tâche" width="fill" onenter="add()"/>
+        <button primary="true" width="auto" onclick="add()">Ajouter</button>
+      </row>
+      <!-- the tasks in a column that scrolls (the first offset the
+           application keeps) -->
+      <box height="fill" scroll="0">
+        <each items="{tasks}" as="it" index="k">
+          <row class="task">
+            <checkbox checked="{it.done}" onclick="toggle(k)"/>
+            <box width="fill">
+              <text size="13" color="{it.done and '#9CA3AF' or '#111827'}">{it.text}</text>
+            </box>
+            <iconbutton danger="true" onclick="remove(k)">×</iconbutton>
+          </row>
+        </each>
+      </box>
+      <row class="line" justify="between">
+        <text size="12" color="#6B7280">{leftText()}</text>
+        <button primary="false" onclick="clearDone()">Effacer les terminées</button>
+      </row>
+    </column>
+  </box>
+</view>

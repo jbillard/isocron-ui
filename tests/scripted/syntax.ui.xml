@@ -1,0 +1,5 @@
+<view>
+  <box>
+    <text>{1 +}</text>
+  </box>
+</view>
