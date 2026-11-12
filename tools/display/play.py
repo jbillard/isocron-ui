@@ -43,11 +43,14 @@ def main():
     run_dir = tempfile.mkdtemp()
     os.chmod(run_dir, 0o700)
     name = "isocron-ui-play-%d" % os.getpid()
+    # PLAY_SCALE: the scale of the screen of Weston (its output twice as
+    # many pixels a unit with 2), the screen of Xvfb as large in pixels
+    scale = int(os.environ.get("PLAY_SCALE", "1"))
     server = (
         "Xvfb :1 -screen 0 %dx%dx24 -nolisten tcp & sleep 1; "
         "DISPLAY=:1 exec weston --backend=x11-backend.so --use-pixman --shell=kiosk-shell.so "
-        "--socket=wayland-test --width=%d --height=%d --idle-time=0 --debug 2>/run/display/weston.log"
-    ) % (width, height, width, height)
+        "--socket=wayland-test --width=%d --height=%d --scale=%d --idle-time=0 --debug 2>/run/display/weston.log"
+    ) % (width * scale, height * scale, width, height, scale)
     subprocess.run(
         ["docker", "run", "-d", "--rm", "--name", name, "--user", "%d:%d" % (os.getuid(), os.getgid()),
          "-v", "%s:/run/display" % run_dir, "-e", "XDG_RUNTIME_DIR=/run/display",

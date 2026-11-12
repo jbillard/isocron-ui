@@ -36,4 +36,8 @@ scrolled="$(cd "$out" && python3 "$here/../tools/display/play.py" 520 420 clicka
 # menu again, "Coller"
 edited="$(cd "$out" && python3 "$here/../tools/display/play.py" 520 420 clickat:211,124 "type:Bonjour le monde" dblclickat:140,124 type:la key:ctrl+a rclickat:211,124 clickat:311,170 key:End rclickat:211,124 clickat:311,198 key:Return endserver -- "$out/todo" | tail -1)"
 [ "$edited" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Bonjour la mondeBonjour la monde]" ] || { echo "FAILED: edited: $edited"; exit 1; }
+# a screen of scale 2 (Weston's output twice the pixels): the list drawn
+# at it, a click at the place of the field in pixels, a word typed
+scaled2="$(cd "$out" && PLAY_SCALE=2 python3 "$here/../tools/display/play.py" 520 420 clickat:422,248 type:Pain key:Return endserver -- "$out/todo" | tail -1)"
+[ "$scaled2" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Pain]" ] || { echo "FAILED: scale 2: $scaled2"; exit 1; }
 echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited"
