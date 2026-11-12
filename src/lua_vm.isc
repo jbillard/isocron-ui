@@ -43,7 +43,7 @@ export type Vm = {
     base: i64, pc: i64, cl: i64, va: i64, vaN: i64, mtop: i64,
     frames: Frame[], depth: i64,
     vas: V[], vaTop: i64,
-    tabs: TabInfo[], ntab: i64, skT: i64[], skI: i64[], skF: f64[], svT: i64[], svI: i64[], svF: f64[], stop: i64,
+    tabs: TabInfo[], ntab: i64, keys: V[], vals: V[], stop: i64,
     strs: string[], strH: i64[], nstr: i64,
     clProto: i64[], clUp: i64[], ncl: i64, ups: i64[], nup: i64,
     cells: V[], ncell: i64,
@@ -170,12 +170,8 @@ function pow2From(p: i64, n: i64): i64 {
 function alloc(vm: Vm, n: i64): [Vm, i64] {
     const at = vm.stop;
     const need = at + n;
-    const v1 = { ...vm, skT: growI(vm.skT, need) };
-    const v2 = { ...v1, skI: growI(v1.skI, need) };
-    const v3 = { ...v2, skF: growF(v2.skF, need) };
-    const v4 = { ...v3, svT: growI(v3.svT, need) };
-    const v5 = { ...v4, svI: growI(v4.svI, need) };
-    return [{ ...v5, svF: growF(v5.svF, need), stop: need }, at] as const;
+    const v1 = { ...vm, keys: growV(vm.keys, need) };
+    return [{ ...v1, vals: growV(v1.vals, need), stop: need }, at] as const;
 }
 
 export function newTable(vm: Vm, narr: i64, nhash: i64): [Vm, i64] {
@@ -198,41 +194,41 @@ function keyHash(vm: Vm, k: V): i64 {
 
 // (the arrays it reads alone given: a call that takes the whole machine
 // copies it, some 110 words)
-function probe(skT: i64[], skI: i64[], skF: f64[], strH: i64[], strs: string[], base: i64, mask: i64, k: V, i: i64, left: i64): i64 {
+function probe(keys: V[], strH: i64[], strs: string[], base: i64, mask: i64, k: V, i: i64, left: i64): i64 {
     if (left == 0) {
         return -1;
     }
     const at = base + i;
-    const t = skT[at];
+    const t = keys[at].t;
     if (t == T_NIL) {
         return -1;
     }
-    const same = t == k.t && (t == T_STR ? (skI[at] == k.i || (strH[skI[at]] == strH[k.i] && strs[skI[at]] == strs[k.i])) : (t == T_NUM ? skF[at] == k.f : (t == T_TRUE || t == T_FALSE || skI[at] == k.i)));
-    return same ? at : probe(skT, skI, skF, strH, strs, base, mask, k, (i + 1) & mask, left - 1);
+    const same = t == k.t && (t == T_STR ? (keys[at].i == k.i || (strH[keys[at].i] == strH[k.i] && strs[keys[at].i] == strs[k.i])) : (t == T_NUM ? keys[at].f == k.f : (t == T_TRUE || t == T_FALSE || keys[at].i == k.i)));
+    return same ? at : probe(keys, strH, strs, base, mask, k, (i + 1) & mask, left - 1);
 }
 
 // the slot of the key `k` (normalized) in the hashes of the table `info`
 // (-1: none)
 function slotIn(vm: Vm, info: TabInfo, k: V): i64 {
-    return slotK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, info, k);
+    return slotK(vm.keys, vm.strH, vm.strs, info, k);
 }
 
 // `slotIn` on the arrays it reads alone (a function given the whole machine
 // copies it at each call)
-function slotK(skT: i64[], skI: i64[], skF: f64[], strH: i64[], strs: string[], info: TabInfo, k: V): i64 {
+function slotK(keys: V[], strH: i64[], strs: string[], info: TabInfo, k: V): i64 {
     if (info.cap == 0) {
         return -1;
     }
     const h = k.t == T_STR ? strH[k.i] : (k.t == T_INT ? mix(k.i) : (k.t == T_NUM ? (abs(k.f) < 1e15 ? mix(i64(k.f * 1024.0)) : 12345) : mix(k.i * 16 + k.t)));
-    return probe(skT, skI, skF, strH, strs, info.hash, info.cap - 1, k, h & (info.cap - 1), info.cap);
+    return probe(keys, strH, strs, info.hash, info.cap - 1, k, h & (info.cap - 1), info.cap);
 }
 
 // `placeOf` on the arrays it reads alone
-function placeK(skT: i64[], skI: i64[], skF: f64[], strH: i64[], strs: string[], info: TabInfo, k: V): i64 {
+function placeK(keys: V[], strH: i64[], strs: string[], info: TabInfo, k: V): i64 {
     if (k.t == T_INT && k.i >= 1 && k.i <= info.len) {
         return info.arr + k.i - 1;
     }
-    return k.t == T_NIL || k.t == T_NUM ? -1 : slotK(skT, skI, skF, strH, strs, info, k);
+    return k.t == T_NIL || k.t == T_NUM ? -1 : slotK(keys, strH, strs, info, k);
 }
 
 // the slot of the value of the key `k` in the table `info`, in its array
@@ -257,7 +253,7 @@ function hashSlot(vm: Vm, t: i64, k: V): i64 {
 }
 
 function slotV(vm: Vm, at: i64): V {
-    return at < 0 ? nilV() : { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] };
+    return at < 0 ? nilV() : { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f };
 }
 
 // `t[k]` without metatable
@@ -266,7 +262,7 @@ export function rawGet(vm: Vm, t: i64, k0: V): V {
     const info = vm.tabs[t];
     if (k.t == T_INT && k.i >= 1 && k.i <= info.len) {
         const at = info.arr + k.i - 1;
-        return { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] };
+        return { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f };
     }
     return k.t == T_NIL ? nilV() : slotV(vm, hashSlot(vm, t, k));
 }
@@ -277,7 +273,7 @@ export function rawSet(vm: Vm, t: i64, k0: V, v: V): Vm {
     const info = vm.tabs[t];
     if (k.t == T_INT && k.i >= 1 && k.i <= info.len) {
         const at = info.arr + k.i - 1;
-        const v1 = { ...vm, svT: vm.svT.with(at, v.t), svI: vm.svI.with(at, v.i), svF: vm.svF.with(at, v.f) };
+        const v1 = { ...vm, vals: vm.vals.with(at, { t: v.t, i: v.i, f: v.f }) };
         return v.t == T_NIL && k.i == info.len ? shrink(v1, t) : v1;
     }
     if (k.t == T_INT && k.i == info.len + 1 && v.t != T_NIL) {
@@ -293,7 +289,7 @@ function shrink(vm: Vm, t: i64): Vm {
 }
 
 function lastNonNil(vm: Vm, arr: i64, j: i64): i64 {
-    return j <= 0 ? 0 : (vm.svT[arr + j - 1] == T_NIL ? lastNonNil(vm, arr, j - 1) : j);
+    return j <= 0 ? 0 : (vm.vals[arr + j - 1].t == T_NIL ? lastNonNil(vm, arr, j - 1) : j);
 }
 
 function append(vm: Vm, t: i64, v: V): Vm {
@@ -301,7 +297,7 @@ function append(vm: Vm, t: i64, v: V): Vm {
     const v1 = info.len < info.acap ? vm : regrowArr(vm, t, max(4, info.acap * 2));
     const i1 = v1.tabs[t];
     const at = i1.arr + i1.len;
-    return { ...v1, svT: v1.svT.with(at, v.t), svI: v1.svI.with(at, v.i), svF: v1.svF.with(at, v.f), tabs: v1.tabs.with(t, { ...i1, len: i1.len + 1 }) };
+    return { ...v1, vals: v1.vals.with(at, { t: v.t, i: v.i, f: v.f }), tabs: v1.tabs.with(t, { ...i1, len: i1.len + 1 }) };
 }
 
 function regrowArr(vm: Vm, t: i64, cap: i64): Vm {
@@ -312,7 +308,7 @@ function regrowArr(vm: Vm, t: i64, cap: i64): Vm {
         return { ...v0, tabs: v0.tabs.with(t, { ...info, acap: cap }) };
     }
     const [v1, base] = alloc(vm, cap);
-    const v2 = fold(iota(info.len), v1, (acc, i) => ({ ...acc, svT: acc.svT.with(base + i, acc.svT[info.arr + i]), svI: acc.svI.with(base + i, acc.svI[info.arr + i]), svF: acc.svF.with(base + i, acc.svF[info.arr + i]) }));
+    const v2 = fold(iota(info.len), v1, (acc, i) => ({ ...acc, vals: acc.vals.with(base + i, { t: acc.vals[info.arr + i].t, i: acc.vals[info.arr + i].i, f: acc.vals[info.arr + i].f }) }));
     return { ...v2, tabs: v2.tabs.with(t, { ...info, arr: base, acap: cap }) };
 }
 
@@ -323,17 +319,17 @@ function migrate(vm: Vm, t: i64): Vm {
         return vm;
     }
     const at = hashSlot(vm, t, intV(info.len + 1));
-    if (at < 0 || vm.svT[at] == T_NIL) {
+    if (at < 0 || vm.vals[at].t == T_NIL) {
         return vm;
     }
-    const v = { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] };
-    return migrate(append({ ...vm, svT: vm.svT.with(at, T_NIL) }, t, v), t);
+    const v = { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f };
+    return migrate(append({ ...vm, vals: vm.vals.with(at, { t: T_NIL, i: 0, f: 0.0 }) }, t, v), t);
 }
 
 function hashSet(vm: Vm, t: i64, k: V, v: V): Vm {
     const at = hashSlot(vm, t, k);
     if (at >= 0) {
-        return { ...vm, svT: vm.svT.with(at, v.t), svI: vm.svI.with(at, v.i), svF: vm.svF.with(at, v.f) };
+        return { ...vm, vals: vm.vals.with(at, { t: v.t, i: v.i, f: v.f }) };
     }
     if (v.t == T_NIL) {
         return vm;
@@ -347,41 +343,41 @@ function hashSet(vm: Vm, t: i64, k: V, v: V): Vm {
 function place(vm: Vm, t: i64, k: V, v: V): Vm {
     const info = vm.tabs[t];
     const at = emptySlot(vm, info.hash, info.cap - 1, keyHash(vm, k) & (info.cap - 1));
-    const v1 = { ...vm, skT: vm.skT.with(at, k.t), skI: vm.skI.with(at, k.i), skF: vm.skF.with(at, k.f) };
-    return { ...v1, svT: v1.svT.with(at, v.t), svI: v1.svI.with(at, v.i), svF: v1.svF.with(at, v.f), tabs: v1.tabs.with(t, { ...info, used: info.used + 1 }) };
+    const v1 = { ...vm, keys: vm.keys.with(at, { t: k.t, i: k.i, f: k.f }) };
+    return { ...v1, vals: v1.vals.with(at, { t: v.t, i: v.i, f: v.f }), tabs: v1.tabs.with(t, { ...info, used: info.used + 1 }) };
 }
 
 function emptySlot(vm: Vm, base: i64, mask: i64, i: i64): i64 {
-    return emptyIn(vm.skT, base, mask, i);
+    return emptyIn(vm.keys, base, mask, i);
 }
 
 // (the array of the kinds of the keys alone given)
-function emptyIn(skT: i64[], base: i64, mask: i64, i: i64): i64 {
-    return skT[base + i] == T_NIL ? base + i : emptyIn(skT, base, mask, (i + 1) & mask);
+function emptyIn(keys: V[], base: i64, mask: i64, i: i64): i64 {
+    return keys[base + i].t == T_NIL ? base + i : emptyIn(keys, base, mask, (i + 1) & mask);
 }
 
 // the value of the method `k` of the table `info`: its own, or that of the
 // table `__index` of its metatable (-1: none of those, the general way)
 function methodSlot(vm: Vm, info: TabInfo, k: V): i64 {
     const at = placeOf(vm, info, k);
-    if (at >= 0 && vm.svT[at] != T_NIL) {
+    if (at >= 0 && vm.vals[at].t != T_NIL) {
         return at;
     }
     if (info.meta < 0) {
         return -1;
     }
     const h = slotIn(vm, vm.tabs[info.meta], { t: T_STR, i: vm.kIndex, f: 0.0 });
-    if (h < 0 || vm.svT[h] != T_TAB) {
+    if (h < 0 || vm.vals[h].t != T_TAB) {
         return -1;
     }
-    const hi = vm.tabs[vm.svI[h]];
+    const hi = vm.tabs[vm.vals[h].i];
     const at2 = placeOf(vm, hi, k);
-    return at2 >= 0 && vm.svT[at2] != T_NIL ? at2 : -1;
+    return at2 >= 0 && vm.vals[at2].t != T_NIL ? at2 : -1;
 }
 
 function rehash(vm: Vm, t: i64): Vm {
     const info = vm.tabs[t];
-    const live = info.cap == 0 ? 0 : count(iota(info.cap), (i) => vm.skT[info.hash + i] != T_NIL && vm.svT[info.hash + i] != T_NIL);
+    const live = info.cap == 0 ? 0 : count(iota(info.cap), (i) => vm.keys[info.hash + i].t != T_NIL && vm.vals[info.hash + i].t != T_NIL);
     const cap = pow2From(4, (live + 1) * 2);
     const [v1, base] = alloc(vm, cap);
     const v2 = { ...v1, tabs: v1.tabs.with(t, { ...info, hash: base, cap: cap, used: 0 }) };
@@ -393,13 +389,13 @@ function reinsert(vm: Vm, t: i64, old: i64, oldCap: i64, i: i64): Vm {
         return vm;
     }
     const at = old + i;
-    const kt = vm.skT[at];
-    const vt = vm.svT[at];
+    const kt = vm.keys[at].t;
+    const vt = vm.vals[at].t;
     if (kt == T_NIL || vt == T_NIL) {
         return reinsert(vm, t, old, oldCap, i + 1);
     }
-    const k = { t: kt, i: vm.skI[at], f: vm.skF[at] };
-    const v = { t: vt, i: vm.svI[at], f: vm.svF[at] };
+    const k = { t: kt, i: vm.keys[at].i, f: vm.keys[at].f };
+    const v = { t: vt, i: vm.vals[at].i, f: vm.vals[at].f };
     return reinsert(place(vm, t, k, v), t, old, oldCap, i + 1);
 }
 
@@ -411,7 +407,7 @@ function walkFrom(vm: Vm, t: i64, pos: i64): [i64, V, V] {
     if (pos >= 0) {
         if (pos < info.len) {
             const at = info.arr + pos;
-            return vm.svT[at] == T_NIL ? walkFrom(vm, t, pos + 1) : [pos + 1, intV(pos + 1), { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }] as const;
+            return vm.vals[at].t == T_NIL ? walkFrom(vm, t, pos + 1) : [pos + 1, intV(pos + 1), { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }] as const;
         }
         return walkFrom(vm, t, -1);
     }
@@ -420,28 +416,28 @@ function walkFrom(vm: Vm, t: i64, pos: i64): [i64, V, V] {
         return [pos, nilV(), nilV()] as const;
     }
     const at = info.hash + slot;
-    if (vm.skT[at] == T_NIL || vm.svT[at] == T_NIL) {
+    if (vm.keys[at].t == T_NIL || vm.vals[at].t == T_NIL) {
         return walkFrom(vm, t, pos - 1);
     }
-    return [pos - 1, { t: vm.skT[at], i: vm.skI[at], f: vm.skF[at] }, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }] as const;
+    return [pos - 1, { t: vm.keys[at].t, i: vm.keys[at].i, f: vm.keys[at].f }, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }] as const;
 }
 
 // the place of the next value from `pos` in a walk of the table `info`
 // (`walkFrom`), its kinds of keys and values alone given: `info.cap` past
 // the hashes at the end
-function nextPlace(svT: i64[], skT: i64[], info: TabInfo, pos: i64): i64 {
+function nextPlace(vals: V[], keys: V[], info: TabInfo, pos: i64): i64 {
     if (pos >= 0) {
         if (pos < info.len) {
-            return svT[info.arr + pos] == T_NIL ? nextPlace(svT, skT, info, pos + 1) : pos;
+            return vals[info.arr + pos].t == T_NIL ? nextPlace(vals, keys, info, pos + 1) : pos;
         }
-        return nextPlace(svT, skT, info, -1);
+        return nextPlace(vals, keys, info, -1);
     }
     const slot = -pos - 1;
     if (slot >= info.cap) {
         return pos;
     }
     const at = info.hash + slot;
-    return skT[at] == T_NIL || svT[at] == T_NIL ? nextPlace(svT, skT, info, pos - 1) : pos;
+    return keys[at].t == T_NIL || vals[at].t == T_NIL ? nextPlace(vals, keys, info, pos - 1) : pos;
 }
 
 // a key of no table (the places of the hashes are -1, -2, ...: none
@@ -689,11 +685,11 @@ function probeName(vm: Vm, base: i64, mask: i64, name: string, h: i64, i: i64, l
         return -1;
     }
     const at = base + i;
-    const t = vm.skT[at];
+    const t = vm.keys[at].t;
     if (t == T_NIL) {
         return -1;
     }
-    return t == T_STR && vm.strH[vm.skI[at]] == h && vm.strs[vm.skI[at]] == name ? at : probeName(vm, base, mask, name, h, (i + 1) & mask, left - 1);
+    return t == T_STR && vm.strH[vm.keys[at].i] == h && vm.strs[vm.keys[at].i] == name ? at : probeName(vm, base, mask, name, h, (i + 1) & mask, left - 1);
 }
 
 // `o[k]` into the register `r`, with `__index`
@@ -903,11 +899,11 @@ function core(vm: Vm, stop: i64): Vm {
             return core({ ...vm, cells: vm.cells.with(cell, { t: v.t, i: v.i, f: v.f }), pc: next }, stop);
         },
         7 => {
-            const at = slotK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, vm.tabs[vm.globals], { t: T_STR, i: vm.consts[b].i, f: 0.0 });
+            const at = slotK(vm.keys, vm.strH, vm.strs, vm.tabs[vm.globals], { t: T_STR, i: vm.consts[b].i, f: 0.0 });
             if (at < 0) {
                 return core({ ...vm, regs: vm.regs.with(ra, { t: T_NIL, i: 0, f: 0.0 }), pc: next }, stop);
             }
-            return core({ ...vm, regs: vm.regs.with(ra, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+            return core({ ...vm, regs: vm.regs.with(ra, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }), pc: next }, stop);
         },
         9 => {
             const o = vm.regs[vm.base + b];
@@ -916,9 +912,9 @@ function core(vm: Vm, stop: i64): Vm {
                 return vm;
             }
             const info = vm.tabs[o.i];
-            const at = placeK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, info, k);
-            if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
-                return core({ ...vm, regs: vm.regs.with(ra, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+            const at = placeK(vm.keys, vm.strH, vm.strs, info, k);
+            if (at >= 0 && (vm.vals[at].t != T_NIL || info.meta < 0)) {
+                return core({ ...vm, regs: vm.regs.with(ra, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }), pc: next }, stop);
             }
             if (at < 0 && info.meta < 0) {
                 return core({ ...vm, regs: vm.regs.with(ra, { t: T_NIL, i: 0, f: 0.0 }), pc: next }, stop);
@@ -934,13 +930,13 @@ function core(vm: Vm, stop: i64): Vm {
             }
             const t = o.i;
             const info = vm.tabs[t];
-            const at = placeK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, info, k);
-            if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
-                return core({ ...vm, svT: vm.svT.with(at, v.t), svI: vm.svI.with(at, v.i), svF: vm.svF.with(at, v.f), pc: next }, stop);
+            const at = placeK(vm.keys, vm.strH, vm.strs, info, k);
+            if (at >= 0 && (vm.vals[at].t != T_NIL || info.meta < 0)) {
+                return core({ ...vm, vals: vm.vals.with(at, { t: v.t, i: v.i, f: v.f }), pc: next }, stop);
             }
             if (k.t == T_INT && k.i == info.len + 1 && info.len < info.acap && info.cap == 0 && info.meta < 0) {
                 const end = info.arr + info.len;
-                return core({ ...vm, svT: vm.svT.with(end, v.t), svI: vm.svI.with(end, v.i), svF: vm.svF.with(end, v.f), tabs: vm.tabs.with(t, { ...info, len: info.len + 1 }), pc: next }, stop);
+                return core({ ...vm, vals: vm.vals.with(end, { t: v.t, i: v.i, f: v.f }), tabs: vm.tabs.with(t, { ...info, len: info.len + 1 }), pc: next }, stop);
             }
             return vm;
         },
@@ -951,14 +947,14 @@ function core(vm: Vm, stop: i64): Vm {
                 return vm;
             }
             const info = vm.tabs[o.i];
-            const own = placeK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, info, k);
-            const mine = own >= 0 && vm.svT[own] != T_NIL;
-            const h = mine || info.meta < 0 ? -1 : slotK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, vm.tabs[info.meta], { t: T_STR, i: vm.kIndex, f: 0.0 });
-            const at = mine ? own : (h >= 0 && vm.svT[h] == T_TAB ? placeK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, vm.tabs[vm.svI[h]], k) : -1);
-            if (at < 0 || vm.svT[at] == T_NIL) {
+            const own = placeK(vm.keys, vm.strH, vm.strs, info, k);
+            const mine = own >= 0 && vm.vals[own].t != T_NIL;
+            const h = mine || info.meta < 0 ? -1 : slotK(vm.keys, vm.strH, vm.strs, vm.tabs[info.meta], { t: T_STR, i: vm.kIndex, f: 0.0 });
+            const at = mine ? own : (h >= 0 && vm.vals[h].t == T_TAB ? placeK(vm.keys, vm.strH, vm.strs, vm.tabs[vm.vals[h].i], k) : -1);
+            if (at < 0 || vm.vals[at].t == T_NIL) {
                 return vm;
             }
-            return core({ ...vm, regs: vm.regs.with(ra + 1, o).with(ra, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+            return core({ ...vm, regs: vm.regs.with(ra + 1, o).with(ra, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }), pc: next }, stop);
         },
         13 => {
             const x = b < 0 ? { t: vm.consts[-b - 1].t, i: vm.consts[-b - 1].i, f: vm.consts[-b - 1].f } : vm.regs[vm.base + b];
@@ -1159,9 +1155,9 @@ function core(vm: Vm, stop: i64): Vm {
                 return vm;
             }
             const info = vm.tabs[o.i];
-            const at = slotK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, info, { t: T_STR, i: vm.consts[c].i, f: 0.0 });
-            if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
-                return core({ ...vm, regs: vm.regs.with(ra, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+            const at = slotK(vm.keys, vm.strH, vm.strs, info, { t: T_STR, i: vm.consts[c].i, f: 0.0 });
+            if (at >= 0 && (vm.vals[at].t != T_NIL || info.meta < 0)) {
+                return core({ ...vm, regs: vm.regs.with(ra, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }), pc: next }, stop);
             }
             if (at < 0 && info.meta < 0) {
                 return core({ ...vm, regs: vm.regs.with(ra, { t: T_NIL, i: 0, f: 0.0 }), pc: next }, stop);
@@ -1177,16 +1173,16 @@ function core(vm: Vm, stop: i64): Vm {
             const t = o.i;
             const info = vm.tabs[t];
             const key = { t: T_STR, i: vm.consts[b].i, f: 0.0 };
-            const at = slotK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, info, key);
-            if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
-                return core({ ...vm, svT: vm.svT.with(at, v.t), svI: vm.svI.with(at, v.i), svF: vm.svF.with(at, v.f), pc: next }, stop);
+            const at = slotK(vm.keys, vm.strH, vm.strs, info, key);
+            if (at >= 0 && (vm.vals[at].t != T_NIL || info.meta < 0)) {
+                return core({ ...vm, vals: vm.vals.with(at, { t: v.t, i: v.i, f: v.f }), pc: next }, stop);
             }
             if (at < 0 && info.meta < 0 && info.cap > 0 && (info.used + 1) * 4 <= info.cap * 3) {
-                const e = emptyIn(vm.skT, info.hash, info.cap - 1, vm.strH[key.i] & (info.cap - 1));
+                const e = emptyIn(vm.keys, info.hash, info.cap - 1, vm.strH[key.i] & (info.cap - 1));
                 return core({
                     ...vm,
-                    skT: vm.skT.with(e, T_STR), skI: vm.skI.with(e, key.i), skF: vm.skF.with(e, 0.0),
-                    svT: vm.svT.with(e, v.t), svI: vm.svI.with(e, v.i), svF: vm.svF.with(e, v.f),
+                    keys: vm.keys.with(e, { t: T_STR, i: key.i, f: 0.0 }),
+                    vals: vm.vals.with(e, { t: v.t, i: v.i, f: v.f }),
                     tabs: vm.tabs.with(t, { ...info, used: info.used + 1 }), pc: next,
                 }, stop);
             }
@@ -1209,9 +1205,9 @@ function core(vm: Vm, stop: i64): Vm {
             const ctl = vm.regs[ra + 2];
             if (f.i == B_IPAIRS_STEP && ctl.t == T_INT) {
                 const i = ctl.i + 1;
-                if (i >= 1 && i <= info.len && vm.svT[info.arr + i - 1] != T_NIL) {
+                if (i >= 1 && i <= info.len && vm.vals[info.arr + i - 1].t != T_NIL) {
                     const at = info.arr + i - 1;
-                    return core({ ...vm, regs: vm.regs.with(ra + 3, { t: T_INT, i: i, f: 0.0 }).with(ra + 4, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+                    return core({ ...vm, regs: vm.regs.with(ra + 3, { t: T_INT, i: i, f: 0.0 }).with(ra + 4, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }), pc: next }, stop);
                 }
                 if (i > info.len && info.cap == 0) {
                     return core({ ...vm, regs: vm.regs.with(ra + 3, nilV()), pc: next }, stop);
@@ -1221,29 +1217,29 @@ function core(vm: Vm, stop: i64): Vm {
             if (f.i != B_NEXT) {
                 return vm;
             }
-            const from = ctl.t == T_NIL ? 0 : (ctl.t == T_INT && ctl.i >= 1 && ctl.i <= info.len ? ctl.i : (ctl.t == T_STR && info.cap > 0 ? slotPlaceK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, info, ctl) : NOT_A_KEY));
+            const from = ctl.t == T_NIL ? 0 : (ctl.t == T_INT && ctl.i >= 1 && ctl.i <= info.len ? ctl.i : (ctl.t == T_STR && info.cap > 0 ? slotPlaceK(vm.keys, vm.strH, vm.strs, info, ctl) : NOT_A_KEY));
             if (from == NOT_A_KEY) {
                 return vm;
             }
-            const pos = nextPlace(vm.svT, vm.skT, info, from);
+            const pos = nextPlace(vm.vals, vm.keys, info, from);
             if (pos >= 0) {
                 const at = info.arr + pos;
-                return core({ ...vm, regs: vm.regs.with(ra + 3, { t: T_INT, i: pos + 1, f: 0.0 }).with(ra + 4, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+                return core({ ...vm, regs: vm.regs.with(ra + 3, { t: T_INT, i: pos + 1, f: 0.0 }).with(ra + 4, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }), pc: next }, stop);
             }
             const slot = -pos - 1;
             if (slot >= info.cap) {
                 return core({ ...vm, regs: vm.regs.with(ra + 3, nilV()), pc: next }, stop);
             }
             const at = info.hash + slot;
-            return core({ ...vm, regs: vm.regs.with(ra + 3, { t: vm.skT[at], i: vm.skI[at], f: vm.skF[at] }).with(ra + 4, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+            return core({ ...vm, regs: vm.regs.with(ra + 3, { t: vm.keys[at].t, i: vm.keys[at].i, f: vm.keys[at].f }).with(ra + 4, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }), pc: next }, stop);
         },
         _ => vm,
     };
 }
 
 // `slotPlace` on the arrays it reads alone
-function slotPlaceK(skT: i64[], skI: i64[], skF: f64[], strH: i64[], strs: string[], info: TabInfo, k: V): i64 {
-    const at = slotK(skT, skI, skF, strH, strs, info, k);
+function slotPlaceK(keys: V[], strH: i64[], strs: string[], info: TabInfo, k: V): i64 {
+    const at = slotK(keys, strH, strs, info, k);
     return at < 0 ? NOT_A_KEY : -(at - info.hash) - 2;
 }
 
@@ -1290,15 +1286,15 @@ function run(vm0: Vm, stop: i64): Vm {
             if (at < 0) {
                 return run({ ...vm, regs: vm.regs.with(ra, { t: T_NIL, i: 0, f: 0.0 }), pc: next }, stop);
             }
-            return run({ ...vm, regs: vm.regs.with(ra, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+            return run({ ...vm, regs: vm.regs.with(ra, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }), pc: next }, stop);
         },
         8 => {
             const g = vm.globals;
             const key = { t: T_STR, i: vm.consts[b].i, f: 0.0 };
             const at = slotIn(vm, vm.tabs[g], key);
             // (a global that has a value: written in place)
-            if (at >= 0 && vm.svT[at] != T_NIL && vm.regs[ra].t != T_NIL) {
-                return run({ ...vm, svT: vm.svT.with(at, vm.regs[ra].t), svI: vm.svI.with(at, vm.regs[ra].i), svF: vm.svF.with(at, vm.regs[ra].f), pc: next }, stop);
+            if (at >= 0 && vm.vals[at].t != T_NIL && vm.regs[ra].t != T_NIL) {
+                return run({ ...vm, vals: vm.vals.with(at, { t: vm.regs[ra].t, i: vm.regs[ra].i, f: vm.regs[ra].f }), pc: next }, stop);
             }
             const v = reg(vm, ra);
             return run({ ...rawSet(vm, g, key, v), pc: next }, stop);
@@ -1311,8 +1307,8 @@ function run(vm0: Vm, stop: i64): Vm {
             if (vm.regs[r].t == T_TAB) {
                 const info = vm.tabs[vm.regs[r].i];
                 const at = placeOf(vm, info, k);
-                if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
-                    return run({ ...vm, regs: vm.regs.with(ra, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+                if (at >= 0 && (vm.vals[at].t != T_NIL || info.meta < 0)) {
+                    return run({ ...vm, regs: vm.regs.with(ra, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }), pc: next }, stop);
                 }
                 if (at < 0 && info.meta < 0 && k.t != T_NUM) {
                     return run({ ...vm, regs: vm.regs.with(ra, { t: T_NIL, i: 0, f: 0.0 }), pc: next }, stop);
@@ -1331,12 +1327,12 @@ function run(vm0: Vm, stop: i64): Vm {
                 const t = vm.regs[ra].i;
                 const info = vm.tabs[t];
                 const at = placeOf(vm, info, k);
-                if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
-                    return run({ ...vm, svT: vm.svT.with(at, v.t), svI: vm.svI.with(at, v.i), svF: vm.svF.with(at, v.f), pc: next }, stop);
+                if (at >= 0 && (vm.vals[at].t != T_NIL || info.meta < 0)) {
+                    return run({ ...vm, vals: vm.vals.with(at, { t: v.t, i: v.i, f: v.f }), pc: next }, stop);
                 }
                 if (k.t == T_INT && k.i == info.len + 1 && info.len < info.acap && info.cap == 0 && info.meta < 0) {
                     const end = info.arr + info.len;
-                    return run({ ...vm, svT: vm.svT.with(end, v.t), svI: vm.svI.with(end, v.i), svF: vm.svF.with(end, v.f), tabs: vm.tabs.with(t, { ...info, len: info.len + 1 }), pc: next }, stop);
+                    return run({ ...vm, vals: vm.vals.with(end, { t: v.t, i: v.i, f: v.f }), tabs: vm.tabs.with(t, { ...info, len: info.len + 1 }), pc: next }, stop);
                 }
             }
             const o = reg(vm, ra);
@@ -1354,9 +1350,9 @@ function run(vm0: Vm, stop: i64): Vm {
             if (o.t == T_TAB) {
                 const at = methodSlot(vm, vm.tabs[o.i], k);
                 if (at >= 0) {
-                    const mt = vm.svT[at];
-                    const mi = vm.svI[at];
-                    const mf = vm.svF[at];
+                    const mt = vm.vals[at].t;
+                    const mi = vm.vals[at].i;
+                    const mf = vm.vals[at].f;
                     return run({ ...vm, regs: vm.regs.with(ra + 1, { t: T_TAB, i: o.i, f: 0.0 }).with(ra, { t: mt, i: mi, f: mf }), pc: next }, stop);
                 }
             }
@@ -1574,9 +1570,9 @@ function run(vm0: Vm, stop: i64): Vm {
                 const ctl = vm.regs[ra + 2];
                 if (f.i == B_IPAIRS_STEP && ctl.t == T_INT) {
                     const i = ctl.i + 1;
-                    if (i >= 1 && i <= info.len && vm.svT[info.arr + i - 1] != T_NIL) {
+                    if (i >= 1 && i <= info.len && vm.vals[info.arr + i - 1].t != T_NIL) {
                         const at = info.arr + i - 1;
-                        return run({ ...vm, regs: vm.regs.with(ra + 3, { t: T_INT, i: i, f: 0.0 }).with(ra + 4, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+                        return run({ ...vm, regs: vm.regs.with(ra + 3, { t: T_INT, i: i, f: 0.0 }).with(ra + 4, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }), pc: next }, stop);
                     }
                     if (i > info.len && info.cap == 0) {
                         return run({ ...vm, regs: vm.regs.with(ra + 3, nilV()), pc: next }, stop);
@@ -1587,17 +1583,17 @@ function run(vm0: Vm, stop: i64): Vm {
                     // a key of the hashes found)
                     const from = ctl.t == T_NIL ? 0 : (ctl.t == T_INT && ctl.i >= 1 && ctl.i <= info.len ? ctl.i : (ctl.t == T_STR ? (info.cap == 0 ? NOT_A_KEY : slotPlace(vm, info, ctl)) : NOT_A_KEY));
                     if (from != NOT_A_KEY) {
-                        const pos = nextPlace(vm.svT, vm.skT, info, from);
+                        const pos = nextPlace(vm.vals, vm.keys, info, from);
                         if (pos >= 0) {
                             const at = info.arr + pos;
-                            return run({ ...vm, regs: vm.regs.with(ra + 3, { t: T_INT, i: pos + 1, f: 0.0 }).with(ra + 4, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+                            return run({ ...vm, regs: vm.regs.with(ra + 3, { t: T_INT, i: pos + 1, f: 0.0 }).with(ra + 4, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }), pc: next }, stop);
                         }
                         const slot = -pos - 1;
                         if (slot >= info.cap) {
                             return run({ ...vm, regs: vm.regs.with(ra + 3, nilV()), pc: next }, stop);
                         }
                         const at = info.hash + slot;
-                        return run({ ...vm, regs: vm.regs.with(ra + 3, { t: vm.skT[at], i: vm.skI[at], f: vm.skF[at] }).with(ra + 4, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+                        return run({ ...vm, regs: vm.regs.with(ra + 3, { t: vm.keys[at].t, i: vm.keys[at].i, f: vm.keys[at].f }).with(ra + 4, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }), pc: next }, stop);
                     }
                 }
             }
@@ -1672,8 +1668,8 @@ function run(vm0: Vm, stop: i64): Vm {
             if (vm.regs[r].t == T_TAB) {
                 const info = vm.tabs[vm.regs[r].i];
                 const at = slotIn(vm, info, key);
-                if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
-                    return run({ ...vm, regs: vm.regs.with(ra, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
+                if (at >= 0 && (vm.vals[at].t != T_NIL || info.meta < 0)) {
+                    return run({ ...vm, regs: vm.regs.with(ra, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f }), pc: next }, stop);
                 }
                 if (at < 0 && info.meta < 0) {
                     return run({ ...vm, regs: vm.regs.with(ra, { t: T_NIL, i: 0, f: 0.0 }), pc: next }, stop);
@@ -1689,17 +1685,17 @@ function run(vm0: Vm, stop: i64): Vm {
                 const t = vm.regs[ra].i;
                 const info = vm.tabs[t];
                 const at = slotIn(vm, info, key);
-                if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
-                    return run({ ...vm, svT: vm.svT.with(at, v.t), svI: vm.svI.with(at, v.i), svF: vm.svF.with(at, v.f), pc: next }, stop);
+                if (at >= 0 && (vm.vals[at].t != T_NIL || info.meta < 0)) {
+                    return run({ ...vm, vals: vm.vals.with(at, { t: v.t, i: v.i, f: v.f }), pc: next }, stop);
                 }
                 // (a new key in a table of no metatable whose hashes have
                 // room: placed here)
                 if (at < 0 && info.meta < 0 && info.cap > 0 && (info.used + 1) * 4 <= info.cap * 3) {
-                    const e = emptyIn(vm.skT, info.hash, info.cap - 1, keyHash(vm, key) & (info.cap - 1));
+                    const e = emptyIn(vm.keys, info.hash, info.cap - 1, keyHash(vm, key) & (info.cap - 1));
                     return run({
                         ...vm,
-                        skT: vm.skT.with(e, T_STR), skI: vm.skI.with(e, key.i), skF: vm.skF.with(e, 0.0),
-                        svT: vm.svT.with(e, v.t), svI: vm.svI.with(e, v.i), svF: vm.svF.with(e, v.f),
+                        keys: vm.keys.with(e, { t: T_STR, i: key.i, f: 0.0 }),
+                        vals: vm.vals.with(e, { t: v.t, i: v.i, f: v.f }),
                         tabs: vm.tabs.with(t, { ...info, used: info.used + 1 }), pc: next,
                     }, stop);
                 }
@@ -1852,14 +1848,14 @@ function tforCall(vm: Vm, a: i64, nvars: i64): Vm {
         const info = st >= 0 ? vm.tabs[st] : vm.tabs[0];
         if (st >= 0 && info.len == 4) {
             const at = info.arr;
-            const sv = { t: vm.svT[at], i: vm.svI[at], f: 0.0 };
-            const pv = { t: vm.svT[at + 1], i: vm.svI[at + 1], f: 0.0 };
-            const posv = { t: vm.svT[at + 2], i: vm.svI[at + 2], f: 0.0 };
-            const lastv = { t: vm.svT[at + 3], i: vm.svI[at + 3], f: 0.0 };
+            const sv = { t: vm.vals[at].t, i: vm.vals[at].i, f: 0.0 };
+            const pv = { t: vm.vals[at + 1].t, i: vm.vals[at + 1].i, f: 0.0 };
+            const posv = { t: vm.vals[at + 2].t, i: vm.vals[at + 2].i, f: 0.0 };
+            const lastv = { t: vm.vals[at + 3].t, i: vm.vals[at + 3].i, f: 0.0 };
             if (sv.t == T_STR && pv.t == T_STR && posv.t == T_INT && lastv.t == T_INT) {
                 const fx0 = { err: false, msg: "", chunk: chunkOf(vm) };
                 const [fx, pos, last, rs] = gmatchF(fx0, bytes(vm.strs[sv.i]), bytes(vm.strs[pv.i]), posv.i, lastv.i, vm.lines[vm.pc - 1]);
-                const v0 = { ...vm, svI: vm.svI.with(at + 2, pos).with(at + 3, last) };
+                const v0 = { ...vm, vals: vm.vals.with(at + 2, { t: T_INT, i: pos, f: 0.0 }).with(at + 3, { t: T_INT, i: last, f: 0.0 }) };
                 if (fx.err) {
                     const [v1e, ke] = newStr(v0, fx.msg);
                     return { ...v1e, err: true, errT: T_STR, errI: ke, errF: 0.0 };
@@ -3437,7 +3433,7 @@ export function newVm(): Vm {
         base: 0, pc: 0, cl: -1, va: 0, vaN: 0, mtop: 0,
         frames: fill(16, { base: 0, pc: 0, cl: 0, ret: 0, want: 0, va: 0, vaN: 0 }), depth: 0,
         vas: fill(16, { t: T_NIL, i: 0, f: 0.0 }), vaTop: 0,
-        tabs: [], ntab: 0, skT: [], skI: [], skF: [], svT: [], svI: [], svF: [], stop: 0,
+        tabs: [], ntab: 0, keys: [], vals: [], stop: 0,
         strs: [], strH: [], nstr: 0,
         clProto: [], clUp: [], ncl: 0, ups: [], nup: 0,
         cells: [], ncell: 0,
@@ -3543,7 +3539,7 @@ export function stringV(vm: Vm, s: string): [Vm, V] {
 // cells, being filled; where each old one went (-1: not yet); those copied
 // whose contents remain to copy
 type Gc = {
-    tabs: TabInfo[], ntab: i64, skT: i64[], skI: i64[], skF: f64[], svT: i64[], svI: i64[], svF: f64[], stop: i64,
+    tabs: TabInfo[], ntab: i64, keys: V[], vals: V[], stop: i64,
     strs: string[], strH: i64[], nstr: i64,
     clProto: i64[], clUp: i64[], ncl: i64, ups: i64[], nup: i64,
     cells: V[], ncell: i64,
@@ -3601,8 +3597,8 @@ function movedCell(vm: Vm, g: Gc, c: i64): [Gc, i64] {
 function gcAlloc(g: Gc, n: i64): [Gc, i64] {
     const at = g.stop;
     const need = at + n;
-    const g1 = { ...g, skT: growI(g.skT, need), skI: growI(g.skI, need), skF: growF(g.skF, need) };
-    return [{ ...g1, svT: growI(g1.svT, need), svI: growI(g1.svI, need), svF: growF(g1.svF, need), stop: need }, at] as const;
+    const g1 = { ...g, keys: growV(g.keys, need) };
+    return [{ ...g1, vals: growV(g1.vals, need), stop: need }, at] as const;
 }
 
 // the contents of the queued tables, closures and cells copied, until none
@@ -3630,7 +3626,7 @@ function copyTable(vm: Vm, g: Gc, t: i64, k: i64): Gc {
     // end would grow it again, enough to collect again, at each one)
     const [g1, arr] = gcAlloc(g, info.acap);
     const g2 = copyArr(vm, g1, info.arr, arr, info.len, 0);
-    const live = info.cap == 0 ? 0 : count(iota(info.cap), (i) => vm.skT[info.hash + i] != T_NIL && vm.svT[info.hash + i] != T_NIL);
+    const live = info.cap == 0 ? 0 : count(iota(info.cap), (i) => vm.keys[info.hash + i].t != T_NIL && vm.vals[info.hash + i].t != T_NIL);
     const cap = live == 0 ? 0 : pow2From(4, live * 2);
     const [g3, hash] = cap > 0 ? gcAlloc(g2, cap) : [g2, 0] as const;
     const [g4, meta] = info.meta >= 0 ? moved(vm, g3, { t: T_TAB, i: info.meta, f: 0.0 }) : [g3, { t: T_NIL, i: -1, f: 0.0 }] as const;
@@ -3642,8 +3638,8 @@ function copyArr(vm: Vm, g: Gc, from: i64, to: i64, n: i64, i: i64): Gc {
     if (i >= n) {
         return g;
     }
-    const [g1, v] = moved(vm, g, { t: vm.svT[from + i], i: vm.svI[from + i], f: vm.svF[from + i] });
-    return copyArr(vm, { ...g1, svT: g1.svT.with(to + i, v.t), svI: g1.svI.with(to + i, v.i), svF: g1.svF.with(to + i, v.f) }, from, to, n, i + 1);
+    const [g1, v] = moved(vm, g, { t: vm.vals[from + i].t, i: vm.vals[from + i].i, f: vm.vals[from + i].f });
+    return copyArr(vm, { ...g1, vals: g1.vals.with(to + i, { t: v.t, i: v.i, f: v.f }) }, from, to, n, i + 1);
 }
 
 function copyHash(vm: Vm, g: Gc, k: i64, old: i64, oldCap: i64, i: i64): Gc {
@@ -3651,21 +3647,21 @@ function copyHash(vm: Vm, g: Gc, k: i64, old: i64, oldCap: i64, i: i64): Gc {
         return g;
     }
     const at = old + i;
-    if (vm.skT[at] == T_NIL || vm.svT[at] == T_NIL) {
+    if (vm.keys[at].t == T_NIL || vm.vals[at].t == T_NIL) {
         return copyHash(vm, g, k, old, oldCap, i + 1);
     }
-    const [g1, key] = moved(vm, g, { t: vm.skT[at], i: vm.skI[at], f: vm.skF[at] });
-    const [g2, v] = moved(vm, g1, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] });
+    const [g1, key] = moved(vm, g, { t: vm.keys[at].t, i: vm.keys[at].i, f: vm.keys[at].f });
+    const [g2, v] = moved(vm, g1, { t: vm.vals[at].t, i: vm.vals[at].i, f: vm.vals[at].f });
     const info = g2.tabs[k];
     const h = key.t == T_STR ? g2.strH[key.i] : (key.t == T_INT ? mix(key.i) : (key.t == T_NUM ? (abs(key.f) < 1e15 ? mix(i64(key.f * 1024.0)) : 12345) : mix(key.i * 16 + key.t)));
     const slot = gcEmpty(g2, info.hash, info.cap - 1, h & (info.cap - 1));
-    const g3 = { ...g2, skT: g2.skT.with(slot, key.t), skI: g2.skI.with(slot, key.i), skF: g2.skF.with(slot, key.f) };
-    const g4 = { ...g3, svT: g3.svT.with(slot, v.t), svI: g3.svI.with(slot, v.i), svF: g3.svF.with(slot, v.f), tabs: g3.tabs.with(k, { ...info, used: info.used + 1 }) };
+    const g3 = { ...g2, keys: g2.keys.with(slot, { t: key.t, i: key.i, f: key.f }) };
+    const g4 = { ...g3, vals: g3.vals.with(slot, { t: v.t, i: v.i, f: v.f }), tabs: g3.tabs.with(k, { ...info, used: info.used + 1 }) };
     return copyHash(vm, g4, k, old, oldCap, i + 1);
 }
 
 function gcEmpty(g: Gc, base: i64, mask: i64, i: i64): i64 {
-    return g.skT[base + i] == T_NIL ? base + i : gcEmpty(g, base, mask, (i + 1) & mask);
+    return g.keys[base + i].t == T_NIL ? base + i : gcEmpty(g, base, mask, (i + 1) & mask);
 }
 
 // the old closure `c` into the new one `k`: its upvalues' cells
@@ -3749,7 +3745,7 @@ function gcMaybe(vm: Vm): Vm {
 
 function collectCore(vm: Vm, roots: V[n]): [Vm, V[]] {
     const g0 = {
-        tabs: [], ntab: 0, skT: [], skI: [], skF: [], svT: [], svI: [], svF: [], stop: 0,
+        tabs: [], ntab: 0, keys: [], vals: [], stop: 0,
         strs: [], strH: [], nstr: 0,
         clProto: [], clUp: [], ncl: 0, ups: [], nup: 0,
         cells: [], ncell: 0,
@@ -3765,7 +3761,7 @@ function collectCore(vm: Vm, roots: V[n]): [Vm, V[]] {
     const g = drain(vm, g5, 0, 0, 0);
     const out = {
         ...vm,
-        consts: ks, tabs: g.tabs, ntab: g.ntab, skT: g.skT, skI: g.skI, skF: g.skF, svT: g.svT, svI: g.svI, svF: g.svF, stop: g.stop,
+        consts: ks, tabs: g.tabs, ntab: g.ntab, keys: g.keys, vals: g.vals, stop: g.stop,
         strs: g.strs, strH: g.strH, nstr: g.nstr, clProto: g.clProto, clUp: g.clUp, ncl: g.ncl, ups: g.ups, nup: g.nup,
         cells: g.cells, ncell: g.ncell, globals: gl.i, strings: st.i, stringMeta: sm.i, kIndex: ki.i,
     };
