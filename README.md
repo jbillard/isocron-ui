@@ -2,8 +2,10 @@
 
 A library of graphical interfaces written in Isocron, after GPUI (the library
 of the editor Zed): everything drawn on the processor by Isocron code, a
-window of Windows (the module `win32`) or of Wayland (the module `unix`, no
-C library), the same application on both. The design and its plan:
+window of Windows (the module `win32`), of Wayland or of X11 (the module
+`unix`, no C library: each protocol spoken on its socket), the same
+application on all three. Under Linux, Wayland when `WAYLAND_DISPLAY` names
+a compositor, else the server of X11 of `DISPLAY`. The design and its plan:
 `docs/proposals/gui.md` of the Isocron repository (D631).
 
 ## An application
@@ -56,7 +58,8 @@ action main(args: string[k]): i32 {
   counted (double, triple), drags, the boxes that scroll (the wheel, their
   scrollbars), the caret blinking, the menu of a field (the right button),
   the clipboard (that of the system: Windows, the selection of a Wayland
-  session, read from and given to the other programs), the density of the
+  session, the selection `CLIPBOARD` of X11, read from and given to the
+  other programs), the density of the
   screen (sizes in units of 96 dots per
   inch, multiplied by it). Its steps are one pure function (`step`), tested
   without a screen.
@@ -87,7 +90,10 @@ action main(args: string[k]): i32 {
   of the standard, checked against the decoder of Go on the PngSuite).
 - `src/wayland.isc`, `src/xkb.isc`, `src/cursors.isc`: the protocol of
   Wayland, its keyboard, the images of the pointer drawn when the
-  compositor does not draw them.
+  compositor does not draw them (at the scale of the screen).
+- `src/x11.isc`: the core protocol of X11 (the cookie of `.Xauthority`, the
+  window and its image sent in strips, the table of the keyboard, the
+  pointers of the font `cursor`, the selection, the density of `Xft.dpi`).
 
 ## Tests and examples
 
@@ -95,7 +101,7 @@ action main(args: string[k]): i32 {
 `tests/scenes.isc` interpreted and compiled, compares them byte for byte
 with `tests/reference/`, and runs the checks of `tests/*_check.isc`.
 `tests/display.sh` plays a hand under Wayland (Weston in Docker, the image
-of `tools/display`, `xdotool`). The examples: `examples/minimal.isc`,
+of `tools/display`, `xdotool`) and under X11 (Xvfb in the same image). The examples: `examples/minimal.isc`,
 `examples/todo_app.isc` (a list of tasks), `examples/gallery.isc` (the
 plate: everything the library draws), `examples/counter_window.isc` and
 `examples/gallery_window.isc` (Windows).

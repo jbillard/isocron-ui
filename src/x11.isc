@@ -1,0 +1,436 @@
+// A client of X11 written in Isocron over the module `unix` (D632 of
+// Isocron): the core protocol spoken on the socket of the server, in the
+// order of bytes of this machine (`l`: little-endian, the server answering
+// in it), no library of C. What a window needs: the setup of the
+// connection (with the cookie of `.Xauthority`), atoms, a window and its
+// properties, its image sent by `PutImage` in strips, the shapes of the
+// pointer (the font `cursor`), the table of the keyboard
+// (`GetKeyboardMapping`), the selection `CLIPBOARD`, and the events read
+// from the bytes the server sends.
+import * as unix from "unix";
+import * as net from "net";
+import * as sys from "sys";
+import { Keymap } from "./xkb";
+
+// ----- the wire --------------------------------------------------------
+
+// the 2 bytes of `v`, the least significant first
+export function le16(v: i64): u8[2] {
+    return [u8(v & 255), u8((v >> 8) & 255)];
+}
+
+// the 4 bytes of `v`, the least significant first
+export function le32(v: u32): u8[4] {
+    return [u8(v & 255u32), u8((v >> 8u32) & 255u32), u8((v >> 16u32) & 255u32), u8(v >> 24u32)];
+}
+
+// the unsigned 16 bits at `at` of `b`
+export function u16At(b: u8[n], at: i64): i64 {
+    return i64(b[at]) | (i64(b[at + 1]) << 8);
+}
+
+// the signed 16 bits at `at` of `b`
+export function i16At(b: u8[n], at: i64): i64 {
+    const v = u16At(b, at);
+    return v >= 32768 ? v - 65536 : v;
+}
+
+// the 32 bits at `at` of `b`
+export function u32At(b: u8[n], at: i64): u32 {
+    return u32(b[at]) | (u32(b[at + 1]) << 8u32) | (u32(b[at + 2]) << 16u32) | (u32(b[at + 3]) << 24u32);
+}
+
+// the bytes `b` followed by zeros to a multiple of 4
+function padded(b: u8[n]): u8[] {
+    return concat(b, fill((4 - n % 4) % 4, 0u8));
+}
+
+// a request: its opcode, its byte of data, its length in words (with its
+// header), then its body (padded to a multiple of 4 bytes)
+export function request(opcode: i64, data: i64, body: u8[n]): u8[] {
+    const b = padded(body);
+    return concat(concat([u8(opcode), u8(data)], le16(1 + b.length / 4)), b);
+}
+
+// ----- the setup ----------------------------------------------------------
+
+// the first bytes of a client: its order of bytes, the version 11.0 of the
+// protocol, the name and the data of its authorization (none: empty)
+export function setupRequest(authName: string, authData: u8[n]): u8[] {
+    const name = bytes(authName);
+    const head = concat(concat(concat(concat([108u8, 0u8], le16(11)), le16(0)), le16(name.length)), concat(le16(n), [0u8, 0u8]));
+    return concat(concat(head, padded(name)), padded(authData));
+}
+
+// what the server says of itself: the ids this client may give its
+// resources (`idBase` with bits of `idMask`), the longest request (in
+// words), the first screen (its root window, its visual and depth, its
+// size in pixels and millimetres, its white pixel), the codes of its keys,
+// whether its images are little-endian; `failure` not empty: refused
+export type Setup = {
+    idBase: u32,
+    idMask: u32,
+    maxRequest: i64,
+    root: u32,
+    visual: u32,
+    depth: i64,
+    white: u32,
+    widthPx: i64,
+    heightPx: i64,
+    widthMm: i64,
+    minKeycode: i64,
+    maxKeycode: i64,
+    littleImages: boolean,
+    bitsPerPixel: i64,
+    failure: string,
+};
+
+// the bytes of the answer to the setup needed (the 8 of its header, then
+// the length it gives)
+export function setupLength(b: u8[n]): i64 {
+    return n < 8 ? 8 : 8 + 4 * u16At(b, 6);
+}
+
+// the answer to the setup `b` (whole: `setupLength` bytes)
+export function setupOf(b: u8[n]): Setup {
+    const none = {
+        idBase: 0u32, idMask: 0u32, maxRequest: 0, root: 0u32, visual: 0u32, depth: 0, white: 0u32,
+        widthPx: 0, heightPx: 0, widthMm: 0, minKeycode: 8, maxKeycode: 255, littleImages: true, bitsPerPixel: 32, failure: "",
+    };
+    if (n < 8) {
+        return { ...none, failure: "no answer from the server of X11" };
+    }
+    if (b[0] != 1u8) {
+        // refused: the reason (its length at 1, after the 8 bytes)
+        const len = b[0] == 0u8 ? i64(b[1]) : 0;
+        const why = b[0] == 0u8 && 8 + len <= n ? stringOf(b.slice(8, 8 + len)) : "authentication asked";
+        return { ...none, failure: `the server of X11 refused the connection: ${why}` };
+    }
+    const vendor = u16At(b, 24);
+    const formats = i64(b[29]);
+    // the formats of images: the bits of a pixel of depth 24
+    const fAt = 40 + (vendor + 3) / 4 * 4;
+    const bpp = fold(iota(formats), 32, (acc, k) => b[fAt + 8 * k] == 24u8 ? i64(b[fAt + 8 * k + 1]) : acc);
+    const s = fAt + 8 * formats;
+    return {
+        idBase: u32At(b, 12), idMask: u32At(b, 16), maxRequest: u16At(b, 26),
+        root: u32At(b, s), visual: u32At(b, s + 32), depth: i64(b[s + 38]), white: u32At(b, s + 8),
+        widthPx: u16At(b, s + 20), heightPx: u16At(b, s + 22), widthMm: u16At(b, s + 24),
+        minKeycode: i64(b[34]), maxKeycode: i64(b[35]), littleImages: b[30] == 0u8, bitsPerPixel: bpp, failure: "",
+    };
+}
+
+// the number written `s` (-1: not one)
+function numberOf(s: string): i64 {
+    return match (tryParseI64(s)) {
+        Ok(v) => v,
+        Err(e) => -1,
+    };
+}
+
+// the place of the server of `display` (`:0`, `:1.0`, `unix:0`): the
+// socket of its abstract name and that of its file, its number; a display
+// that is a path (`/tmp/.X11-unix/X1`, as XQuartz names its own) as it is;
+// one on another machine (`host:0`): not spoken here (-1)
+export function displayPlace(display: string): [string, string, i64] {
+    if (display.startsWith("/")) {
+        const k = display.lastIndexOf("X");
+        const number = k < 0 ? 0 : numberOf(display.slice(k + 1, display.length));
+        return ["", display, max(0, number)] as const;
+    }
+    const colon = display.lastIndexOf(":");
+    if (colon < 0) {
+        return ["", "", -1] as const;
+    }
+    const host = display.slice(0, colon);
+    if (host != "" && host != "unix") {
+        return ["", "", -1] as const;
+    }
+    const rest = display.slice(colon + 1, display.length);
+    const dot = rest.indexOf(".");
+    const number = numberOf(dot < 0 ? rest : rest.slice(0, dot));
+    if (number < 0) {
+        return ["", "", -1] as const;
+    }
+    const path = `/tmp/.X11-unix/X${number}`;
+    return [`@${path}`, path, number] as const;
+}
+
+// a string of `.Xauthority` at `at`: its length (2 bytes, the most
+// significant first), its bytes; the place after it
+function authString(b: u8[n], at: i64): [u8[], i64] {
+    if (at + 2 > n) {
+        return [[], n] as const;
+    }
+    const len = (i64(b[at]) << 8) | i64(b[at + 1]);
+    const end = min(n, at + 2 + len);
+    return [b.slice(at + 2, end), end] as const;
+}
+
+// the cookie of the display `number` of the machine `host` in the file of
+// authorizations `b` (`.Xauthority`): its entries of the family local (256)
+// for `host`, or of any family (65535), whose number is the display's or
+// none, named `MIT-MAGIC-COOKIE-1`; none: empty
+export function cookie(b: u8[n], host: string, number: i64, at: i64): u8[] {
+    if (at + 2 > n) {
+        return [];
+    }
+    const family = (i64(b[at]) << 8) | i64(b[at + 1]);
+    const [address, a1] = authString(b, at + 2);
+    const [num, a2] = authString(b, a1);
+    const [name, a3] = authString(b, a2);
+    const [data, a4] = authString(b, a3);
+    const here = family == 65535 || (family == 256 && stringOf(address) == host);
+    const display = num.length == 0 || stringOf(num) == `${number}`;
+    if (here && display && stringOf(name) == "MIT-MAGIC-COOKIE-1" && data.length > 0) {
+        return data;
+    }
+    return a4 > at ? cookie(b, host, number, a4) : [];
+}
+
+// the cookie of the display `number` of this machine: the file named by
+// XAUTHORITY, or `.Xauthority` in the folder of the user
+export action localCookie(number: i64): u8[] {
+    const path = sys.env("XAUTHORITY") ?? `${sys.env("HOME") ?? ""}/.Xauthority`;
+    const host = match (sys.readText("/proc/sys/kernel/hostname")) {
+        Ok(t) => t.trim(),
+        Err(e) => "",
+    };
+    return match (sys.readFile(path)) {
+        Ok(b) => cookie(b, host, number, 0),
+        Err(e) => [],
+    };
+}
+
+// ----- messages of the server --------------------------------------------
+
+// a message of the server: an event (its code 2 to 34, the bit of an event
+// sent by a client removed), an error (0), a reply (1), with its bytes
+export type Message = { code: i64, bytes: u8[] };
+
+// the bytes of the message at `at` of `b` (32, or more for a reply or a
+// generic event: its length in words after the 32); 0: not whole yet
+function messageLength(b: u8[n], at: i64): i64 {
+    if (at + 32 > n) {
+        return 0;
+    }
+    const code = i64(b[at]) & 127;
+    const len = code == 1 || code == 35 ? 32 + 4 * i64(u32At(b, at + 4)) : 32;
+    return at + len > n ? 0 : len;
+}
+
+// the places of the whole messages of `b` from `at`
+function messageStarts(b: u8[n], at: i64, acc: i64[]): i64[] {
+    const len = messageLength(b, at);
+    return len == 0 ? acc : messageStarts(b, at + len, concat(acc, [at]));
+}
+
+// the whole messages at the start of `b`, and the bytes after them
+export function messages(b: u8[n]): [Message[], u8[]] {
+    const starts = messageStarts(b, 0, []);
+    const ms = map(starts, (at) => ({ code: i64(b[at]) & 127, bytes: b.slice(at, at + messageLength(b, at)) }));
+    const used = starts.length == 0 ? 0 : starts[starts.length - 1] + messageLength(b, starts[starts.length - 1]);
+    return [ms, b.slice(used, n)] as const;
+}
+
+// the number of the request a reply or an error answers (its low 16 bits)
+export function sequenceOf(m: Message): i64 {
+    return u16At(m.bytes, 2);
+}
+
+// ----- requests ---------------------------------------------------------
+
+// the atom named `name` (`InternAtom`, created when none: its reply)
+export function internAtom(name: string): u8[] {
+    const b = bytes(name);
+    return request(16, 0, concat(concat(le16(b.length), [0u8, 0u8]), b));
+}
+
+// the atom of the reply `m` to `internAtom`
+export function atomOf(m: Message): u32 {
+    return u32At(m.bytes, 8);
+}
+
+// the events a window of the library asks: keys pressed and released,
+// buttons, the pointer entering, leaving and moving, its exposure, its
+// structure (its size), its focus
+export const EVENTS: u32 = 0x1u32 | 0x2u32 | 0x4u32 | 0x8u32 | 0x10u32 | 0x20u32 | 0x40u32 | 0x8000u32 | 0x20000u32 | 0x200000u32;
+
+// the window `id` of `w` by `h` pixels at (0, 0) of `root` (its visual and
+// depth those of its parent), white, with the events `EVENTS`
+export function createWindow(id: u32, root: u32, w: i64, h: i64, white: u32): u8[] {
+    const geometry = concat(concat(concat(le16(0), le16(0)), le16(w)), le16(h));
+    const head = concat(concat(concat(le32(id), le32(root)), geometry), concat(le16(0), le16(1)));
+    // its visual copied from its parent (0); its background and its events
+    return request(1, 0, concat(concat(concat(head, le32(0u32)), le32(0x2u32 | 0x800u32)), concat(le32(white), le32(EVENTS))));
+}
+
+// the property `property` of the window `w` replaced by `data`, of the
+// type `kind`, in bytes (`format` 8) or words (32)
+export function changeProperty(w: u32, property: u32, kind: u32, format: i64, data: u8[n]): u8[] {
+    const units = format == 32 ? n / 4 : n;
+    return request(18, 0, concat(concat(concat(concat(le32(w), le32(property)), le32(kind)), concat([u8(format), 0u8, 0u8, 0u8], le32(u32(units)))), data));
+}
+
+// the words `ws` as the bytes of a property of format 32
+export function words(ws: u32[n]): u8[] {
+    return map(iota(4 * n), (i) => u8((ws[i / 4] >> u32(8 * (i % 4))) & 255u32));
+}
+
+// the atoms named `names` from the `k`-th asked, after the requests `acc`
+export function internAtoms(names: string[], k: i64, acc: u8[]): u8[] {
+    return k >= names.length ? acc : internAtoms(names, k + 1, concat(acc, internAtom(names[k])));
+}
+
+// the pointers `first + k` drawn by the glyphs `glyphs[k]` of the font
+// `font` from the `k`-th, after the requests `acc`
+export function glyphCursors(first: u32, font: u32, glyphs: i64[], k: i64, acc: u8[]): u8[] {
+    return k >= glyphs.length ? acc : glyphCursors(first, font, glyphs, k + 1, concat(acc, glyphCursor(first + u32(k), font, glyphs[k])));
+}
+
+// the property `property` of `w` read (any type, its first 64 KiB),
+// deleted after when `remove` (`GetProperty`: its reply)
+export function getProperty(w: u32, property: u32, remove: boolean): u8[] {
+    return request(20, remove ? 1 : 0, concat(concat(concat(le32(w), le32(property)), le32(0u32)), concat(le32(0u32), le32(16384u32))));
+}
+
+// the value of the reply `m` to `getProperty` (its bytes)
+export function propertyValue(m: Message): u8[] {
+    const format = i64(m.bytes[1]);
+    const units = i64(u32At(m.bytes, 16));
+    const len = format == 32 ? units * 4 : (format == 16 ? units * 2 : units);
+    return m.bytes.slice(32, min(m.bytes.length, 32 + len));
+}
+
+// the window `w` shown (`MapWindow`)
+export function mapWindow(w: u32): u8[] {
+    return request(8, 0, le32(w));
+}
+
+// the context of drawing `gc` of `w`, its exposures of copies off
+export function createGc(gc: u32, w: u32): u8[] {
+    return request(55, 0, concat(concat(concat(le32(gc), le32(w)), le32(0x10000u32)), le32(0u32)));
+}
+
+// the rows `y0` to `y0 + rows` of the image `px` (`w` pixels a row,
+// `0xAARRGGBB`) drawn into `w` at (0, y0) (`PutImage`, format ZPixmap,
+// depth `depth`, 4 bytes a pixel; their order that of the server's images)
+export function putImage(win: u32, gc: u32, px: u32[n], w: i64, y0: i64, rows: i64, depth: i64, little: boolean): u8[] {
+    const head = concat(concat(concat(le32(win), le32(gc)), concat(le16(w), le16(rows))), concat(concat(le16(0), le16(y0)), [0u8, u8(depth), 0u8, 0u8]));
+    const data = map(iota(w * rows * 4), (i) => {
+        const p = px[y0 * w + i / 4];
+        const k = little ? i % 4 : 3 - i % 4;
+        return u8((p >> u32(8 * k)) & 255u32);
+    });
+    return request(72, 2, concat(head, data));
+}
+
+// the rows of an image of `w` pixels a row in one request of at most
+// `maxWords` words (its header 6)
+export function rowsPerRequest(w: i64, maxWords: i64): i64 {
+    return max(1, (maxWords - 6) / max(1, w));
+}
+
+// the font `id` named `name` (`OpenFont`)
+export function openFont(id: u32, name: string): u8[] {
+    const b = bytes(name);
+    return request(45, 0, concat(concat(concat(le32(id), le16(b.length)), [0u8, 0u8]), b));
+}
+
+// the pointer `id` drawn by the glyph `glyph` of the font `font` (its mask
+// the next glyph), black within white (`CreateGlyphCursor`)
+export function glyphCursor(id: u32, font: u32, glyph: i64): u8[] {
+    const chars = concat(le16(glyph), le16(glyph + 1));
+    const colours = concat(concat(concat(le16(0), le16(0)), le16(0)), concat(concat(le16(65535), le16(65535)), le16(65535)));
+    return request(94, 0, concat(concat(concat(concat(le32(id), le32(font)), le32(font)), chars), colours));
+}
+
+// the glyphs of the font `cursor`: the arrow (`left_ptr`), the hand
+// (`hand2`), the bar of text (`xterm`)
+export const GLYPH_ARROW: i64 = 68;
+export const GLYPH_HAND: i64 = 60;
+export const GLYPH_TEXT: i64 = 152;
+
+// the pointer `cursor` shown over the window `w`
+export function setCursor(w: u32, cursor: u32): u8[] {
+    return request(2, 0, concat(concat(le32(w), le32(0x4000u32)), le32(cursor)));
+}
+
+// the symbols of the keys `first` to `first + count - 1`
+// (`GetKeyboardMapping`: its reply)
+export function keyboardMapping(first: i64, count: i64): u8[] {
+    return request(101, 0, [u8(first), u8(count), 0u8, 0u8]);
+}
+
+// the code point of the symbol `sym` of X11 (0: none, a dead key, a
+// modifier): Latin-1 as itself, those of Unicode (0x1000000 and above) as
+// their code, the keys that edit as those of input.isc
+export function symbolChar(sym: u32): i64 {
+    const s = i64(sym);
+    if ((s >= 32 && s <= 126) || (s >= 160 && s <= 255)) {
+        return s;
+    }
+    if (s >= 0x1000100 && s <= 0x110FFFF) {
+        return s - 0x1000000;
+    }
+    return s == 0xFF08 ? 8 : (s == 0xFF09 ? 9 : (s == 0xFF0D || s == 0xFF8D ? 13 : (s == 0xFF1B ? 27
+        : (s == 0xFFFF ? 0x110005 : (s == 0xFF51 ? 0x110001 : (s == 0xFF52 ? 0x110002 : (s == 0xFF53 ? 0x110003
+        : (s == 0xFF54 ? 0x110004 : (s == 0xFF50 ? 0x110006 : (s == 0xFF57 ? 0x110007
+        : (s == 0x20AC ? 0x20AC : (s == 0x13BD ? 0x153 : (s == 0x13BC ? 0x152 : (s == 0xFF80 ? 32 : 0))))))))))))));
+}
+
+// the table of the keyboard of the reply `m` to `keyboardMapping` from the
+// key `first`: for each code, the characters of its four levels (the
+// first two symbols, then those of the third level, AltGr: the fifth and
+// sixth), as the table read from Wayland
+export function keymapOf(m: Message, first: i64): Keymap {
+    const per = i64(m.bytes[1]);
+    const count = per == 0 ? 0 : (m.bytes.length - 32) / 4 / per;
+    const sym = (code: i64, k: i64) => k < per && code >= first && code < first + count ? u32At(m.bytes, 32 + 4 * ((code - first) * per + k)) : 0u32;
+    return { levels: map(iota(1024), (i) => {
+        const code = i / 4;
+        const level = i % 4;
+        const k = level < 2 ? level : level + 2;
+        const c = symbolChar(sym(code, k));
+        // a second level absent under a small letter: its capital (the
+        // rule of X11)
+        const below = symbolChar(sym(code, k - 1));
+        const small = (below >= 97 && below <= 122) || (below >= 224 && below <= 254 && below != 247);
+        return c == 0 && level % 2 == 1 && small ? below - 32 : c;
+    }) };
+}
+
+// the selection `selection` owned by `w` (`SetSelectionOwner`, at the time
+// 0: now)
+export function setSelectionOwner(w: u32, selection: u32): u8[] {
+    return request(22, 0, concat(concat(le32(w), le32(selection)), le32(0u32)));
+}
+
+// the selection `selection` asked of its owner as `target`, written into
+// the property `property` of `w` (`ConvertSelection`)
+export function convertSelection(w: u32, selection: u32, target: u32, property: u32): u8[] {
+    return request(24, 0, concat(concat(concat(le32(w), le32(selection)), concat(le32(target), le32(property))), le32(0u32)));
+}
+
+// the event `SelectionNotify` sent to `requestor`: its `property` written
+// (0: refused)
+export function selectionNotify(requestor: u32, selection: u32, target: u32, property: u32, time: u32): u8[] {
+    const event = concat(concat(concat(concat([31u8, 0u8, 0u8, 0u8], le32(time)), le32(requestor)), concat(le32(selection), le32(target))), concat(le32(property), fill(8, 0u8)));
+    return request(25, 0, concat(concat(le32(requestor), le32(0u32)), event));
+}
+
+// ----- events --------------------------------------------------------------
+
+export const KEY_PRESS: i64 = 2;
+export const BUTTON_PRESS: i64 = 4;
+export const BUTTON_RELEASE: i64 = 5;
+export const MOTION: i64 = 6;
+export const ENTER: i64 = 7;
+export const FOCUS_IN: i64 = 9;
+export const EXPOSE: i64 = 12;
+export const CONFIGURE: i64 = 22;
+export const SELECTION_CLEAR: i64 = 29;
+export const SELECTION_REQUEST: i64 = 30;
+export const SELECTION_NOTIFY: i64 = 31;
+export const CLIENT_MESSAGE: i64 = 33;
+export const MAPPING: i64 = 34;

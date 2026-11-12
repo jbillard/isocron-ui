@@ -1,0 +1,52 @@
+// The parts of the client of X11 that need no server: the places of the
+// displays, the cookies of `.Xauthority`, the messages cut from the bytes
+// received, the answer to the setup, the symbols of the keys and their
+// table, the bytes of requests.
+import { displayPlace, cookie, messages, setupOf, setupLength, symbolChar, keymapOf, internAtom, putImage, rowsPerRequest, le16, le32, words } from "../src/x11";
+import { charOf } from "../src/xkb";
+
+// a string of `.Xauthority`: its length (most significant byte first)
+function authString(s: u8[n]): u8[] {
+    return concat([u8(n >> 8), u8(n & 255)], s);
+}
+
+function entry(family: i64, address: string, number: string, data: u8[n]): u8[] {
+    const head = concat([u8(family >> 8), u8(family & 255)], authString(bytes(address)));
+    return concat(concat(head, authString(bytes(number))), concat(authString(bytes("MIT-MAGIC-COOKIE-1")), authString(data)));
+}
+
+action main(args: string[k]): i32 {
+    // displays: local ones, a screen, a path, one of another machine, junk
+    print(map([":0", ":1.0", "unix:2", "host:0", "/tmp/x/X5", ":abc", "nothing"], (d) => displayPlace(d)));
+    // cookies: this machine's for its display, any machine's, none
+    const auth = concat(concat(entry(256, "otherhost", "1", [1u8, 2u8]), entry(256, "myhost", "1", [9u8, 9u8, 9u8])), entry(65535, "", "", [7u8]));
+    print([cookie(auth, "myhost", 1, 0), cookie(auth, "myhost", 0, 0), cookie(auth, "nohost", 3, 0), cookie([], "myhost", 1, 0)] as const);
+    // messages: an event, a reply of one word more, the start of the next
+    const event = concat([12u8, 0u8, 1u8, 0u8], fill(28, 0u8));
+    const reply = concat(concat([1u8, 0u8, 2u8, 0u8], le32(1u32)), fill(28, 5u8));
+    const [ms, rest] = messages(concat(concat(event, reply), fill(10, 3u8)));
+    print([map(ms, (m) => [m.code, m.bytes.length] as const), rest.length] as const);
+    // the answer to a setup: a vendor of 4 bytes, one format (depth 24, 32
+    // bits a pixel), one screen without depths
+    const head = concat([1u8, 0u8], concat(le16(11), le16(0)));
+    const fields = concat(concat(concat(le32(1u32), le32(0x04000000u32)), concat(le32(0x001FFFFFu32), le32(0u32))), concat(concat(le16(4), le16(65535)), [1u8, 1u8, 0u8, 0u8, 32u8, 32u8, 8u8, 255u8, 0u8, 0u8, 0u8, 0u8]));
+    const screen = concat(concat(concat(le32(0x2A0u32), le32(0x20u32)), concat(le32(0xFFFFFFu32), le32(0u32))), concat(concat(le32(0u32), concat(le16(1920), le16(1080))), concat(concat(le16(508), le16(286)), concat(concat(le16(1), le16(1)), concat(le32(0x21u32), [0u8, 0u8, 24u8, 0u8])))));
+    const body = concat(concat(concat(fields, bytes("Test")), [24u8, 32u8, 32u8, 0u8, 0u8, 0u8, 0u8, 0u8]), screen);
+    const answer = concat(concat(head, le16(body.length / 4)), body);
+    print([setupLength(answer), answer.length] as const);
+    print(setupOf(answer));
+    print(setupOf(concat([0u8, 9u8], concat(fill(6, 0u8), bytes("No access")))).failure);
+    // symbols: Latin-1, Unicode, keys that edit, a dead key, a modifier
+    print(map([0x61u32, 0xE9u32, 0x10020ACu32, 0xFF08u32, 0xFF0Du32, 0xFF51u32, 0xFFFFu32, 0xFE52u32, 0xFFE1u32], (s) => symbolChar(s)));
+    // a table of two symbols a key from the code 38: `a A`, `q` alone (its
+    // capital made), `e` with `€` at the third level
+    const syms = words([0x61u32, 0x41u32, 0u32, 0u32, 0u32, 0u32, 0x71u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0x65u32, 0x45u32, 0u32, 0u32, 0x20ACu32, 0u32]);
+    const mapping = { code: 1, bytes: concat(concat([1u8, 6u8, 0u8, 0u8], le32(u32(syms.length / 4))), concat(fill(24, 0u8), syms)) };
+    const km = keymapOf(mapping, 38);
+    print(map([[38u32, 0u32], [38u32, 1u32], [39u32, 0u32], [39u32, 1u32], [40u32, 128u32], [40u32, 1u32], [41u32, 0u32]], (k) => charOf(km, k[0], k[1])));
+    // requests: an atom asked; an image of 2 by 1 pixels in both orders
+    print(internAtom("CLIPBOARD"));
+    print([putImage(1u32, 2u32, [0x11223344u32, 0x55667788u32], 2, 0, 1, 24, true).slice(24, 32), putImage(1u32, 2u32, [0x11223344u32, 0x55667788u32], 2, 0, 1, 24, false).slice(24, 32)] as const);
+    print([rowsPerRequest(520, 65535), rowsPerRequest(100000, 65535)] as const);
+    return 0;
+}

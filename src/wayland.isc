@@ -203,14 +203,28 @@ function buffersFrom(acc: u8[], pool: u32, first: u32, k: i64, count: i64, side:
     return buffersFrom(concat(acc, made), pool, first, k + 1, count, side);
 }
 
-// the pointer shown as the image of the buffer `buffer` on the surface
-// `surface`, its point at (hx, hy), at the entry `serial`
-// (`wl_pointer.set_cursor`, then the surface attached, damaged, committed)
-export function pointerImageRequest(surface: u32, buffer: u32, side: i64, serial: u32, hx: i64, hy: i64): u8[] {
+// the pointer shown as the image of the buffer `buffer` (`side` by `side`
+// pixels, `scale` pixels a unit) on the surface `surface`, its point at
+// (hx, hy) in units, at the entry `serial` (`wl_pointer.set_cursor`, then
+// the surface attached, its scale set, damaged, committed)
+export function pointerImageRequest(surface: u32, buffer: u32, side: i64, scale: i64, serial: u32, hx: i64, hy: i64): u8[] {
     const set = request(POINTER, 0u32, concat(concat(concat(le32(serial), le32(surface)), i32le(i32(hx))), i32le(i32(hy))));
     const attach = request(surface, 1u32, concat(concat(le32(buffer), i32le(0i32)), i32le(0i32)));
+    const scaled = request(surface, 8u32, i32le(i32(scale)));
     const damage = request(surface, 9u32, concat(concat(concat(i32le(0i32), i32le(0i32)), i32le(i32(side))), i32le(i32(side))));
-    return concat(concat(concat(set, attach), damage), request(surface, 6u32, []));
+    return concat(concat(concat(concat(set, attach), scaled), damage), request(surface, 6u32, []));
+}
+
+// the images of the pointer drawn by the program destroyed: the `count`
+// buffers from `first`, their pool, their surface
+export function pointerImagesDestroy(surface: u32, pool: u32, first: u32, count: i64): u8[] {
+    return destroyedFrom(concat(request(pool, 1u32, []), request(surface, 0u32, [])), first, count);
+}
+
+// the buffers from `first` to `first + count - 1` destroyed before the
+// requests `after`
+function destroyedFrom(after: u8[], first: u32, count: i64): u8[] {
+    return count <= 0 ? after : destroyedFrom(concat(request(first + u32(count - 1), 0u32, []), after), first, count - 1);
 }
 
 // the first screen bound as `id` (`wl_output`, version 2: its scale)

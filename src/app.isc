@@ -16,9 +16,12 @@ import * as win from "win32";
 import * as unix from "unix";
 import * as net from "net";
 import * as wl from "./wayland";
+import * as x11 from "./x11";
+import { IoError, ioError } from "sys";
 import { rgb, rgba, render, Primitive } from "./paint";
 import { Font, parse } from "./font";
 import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU } from "./ui";
+import { POINTER as POINTER_SHAPE, TEXT as TEXT_SHAPE } from "./ui";
 import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./input";
 import { Keymap, parseKeymap, charOf } from "./xkb";
 import * as cursors from "./cursors";
@@ -408,9 +411,14 @@ export action run<M>(title: string, width: i64, height: i64, f: Font, m: M, view
 export action runWith<M>(title: string, width: i64, height: i64, labels: string[], f: Font, m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
     if (sys.platform() == "windows") {
         return runWindows(title, width, height, labels, f, m, view, update);
-    } else {
+    }
+    // Wayland when its compositor is named, else X11 (the server of
+    // DISPLAY), as GPUI chooses
+    const wayland = sys.env("WAYLAND_DISPLAY") ?? "";
+    if (wayland != "" || (sys.env("DISPLAY") ?? "") == "") {
         return runWayland(title, width, height, labels, f, m, view, update);
     }
+    return runX11(title, width, height, labels, f, m, view, update);
 }
 
 // ----- Windows ---------------------------------------------------------
@@ -582,6 +590,7 @@ type State = {
     shapes: u32,
     cursorSurface: u32,
     cursorFirst: u32,
+    cursorScale: i64,
     output: u32,
     scale: i64,
     lw: i64,
@@ -693,6 +702,23 @@ action feedWayland<M>(c: net.Conn, ui: Ui, m: M, now: u64, st: State, update: (M
     return [m2, { ...u2, asked: [] }, st1] as const;
 }
 
+// the images of the pointer drawn here made again at `k` pixels a unit (a
+// surface, a pool, three buffers at the next ids; the pool's id the
+// surface's plus one), those before destroyed
+action cursorImages(c: net.Conn, st: State, k: i64): State {
+    const side = cursors.SIDE * k;
+    return match (unix.shared(3 * side * side * 4)) {
+        Ok(mem) => {
+            const written = unix.writeSharedU32(mem, 0, concat(concat(cursors.imageAt(0, k), cursors.imageAt(1, k)), cursors.imageAt(2, k)));
+            const sent = unix.sendWithFds(c, wl.pointerImageRequests(st.next, st.next + 1u32, st.next + 2u32, 3, side), [unix.sharedFd(mem)]);
+            unix.closeShared(mem);
+            const old = net.write(c, wl.pointerImagesDestroy(st.cursorSurface, st.cursorSurface + 1u32, st.cursorFirst, 3));
+            return { ...st, cursorSurface: st.next, cursorFirst: st.next + 2u32, cursorScale: k, next: st.next + 5u32, shape: -1 };
+        },
+        Err(e) => st,
+    };
+}
+
 // the shape of the pointer `shape` shown at its entry
 action shapeShown(c: net.Conn, st: State, shape: i64): State {
     if (st.entry == 0u32 || shape == st.shape) {
@@ -701,7 +727,7 @@ action shapeShown(c: net.Conn, st: State, shape: i64): State {
     const [hx, hy] = cursors.hotSpot(shape);
     const sent = st.shapes != 0u32
         ? net.write(c, wl.shapeRequest(st.shapes, st.entry, shape))
-        : net.write(c, wl.pointerImageRequest(st.cursorSurface, st.cursorFirst + u32(shape), cursors.SIDE, st.entry, hx, hy));
+        : net.write(c, wl.pointerImageRequest(st.cursorSurface, st.cursorFirst + u32(shape), cursors.SIDE * st.cursorScale, st.cursorScale, st.entry, hx, hy));
     return { ...st, shape: shape };
 }
 
@@ -780,7 +806,7 @@ action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f
             const st = {
                 pending: [], shown: false, next: g.cursorShape != 0u32 ? wl.POOL + 2u32 : wl.POOL + 5u32, pool: 0u32, buffer: 0u32,
                 keymap: parseKeymap(""), mods: 0u32, entry: 0u32, shape: -1,
-                shapes: g.cursorShape != 0u32 ? wl.POOL + 1u32 : 0u32, cursorSurface: wl.POOL, cursorFirst: wl.POOL + 2u32,
+                shapes: g.cursorShape != 0u32 ? wl.POOL + 1u32 : 0u32, cursorSurface: wl.POOL, cursorFirst: wl.POOL + 2u32, cursorScale: 1,
                 output: 0u32, scale: 1, lw: width, lh: height,
                 manager: 0u32, device: 0u32, lastOffer: 0u32, lastMime: "", offer: 0u32, mime: "", source: 0u32, text: "", serial: 0u32, fds: [], fdAt: 0,
                 done: false, failed: "",
@@ -916,7 +942,9 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
             }
             const set = net.write(c, wl.scaleRequest(k));
             const [u1, m1] = steps(ui, m, [Scaled(f32(k)), Resized(st.lw * k, st.lh * k)], now, update);
-            return [m1, { ...u1, asked: [] }, { ...st, scale: k }] as const;
+            // the pointer drawn here: its images at the scale of the screen
+            const st2 = st.shapes == 0u32 ? cursorImages(c, { ...st, scale: k }, k) : { ...st, scale: k };
+            return [m1, { ...u1, asked: [] }, shapeShown(c, st2, u1.cursor)] as const;
         },
         wl.Configure(serial) => {
             const acked = net.write(c, wl.request(wl.XDG_SURFACE, 4u32, wl.le32(serial)));
@@ -957,4 +985,370 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
         _ => [m, ui, st] as const,
     };
     return handle(c, f, nm, evs, i + 1, nu, ns, view, update);
+}
+
+// ----- X11 ---------------------------------------------------------------
+
+// the atoms the window of X11 asks, in their order
+const ATOMS: string[] = ["WM_PROTOCOLS", "WM_DELETE_WINDOW", "_NET_WM_NAME", "UTF8_STRING", "CLIPBOARD", "TARGETS", "ISOCRON_PASTE"];
+const A_PROTOCOLS: i64 = 0;
+const A_DELETE: i64 = 1;
+const A_NET_NAME: i64 = 2;
+const A_UTF8: i64 = 3;
+const A_CLIPBOARD: i64 = 4;
+const A_TARGETS: i64 = 5;
+const A_PASTE: i64 = 6;
+// the atoms every server has (their numbers fixed by the protocol)
+const XA_ATOM: u32 = 4u32;
+const XA_RESOURCE_MANAGER: u32 = 23u32;
+const XA_STRING: u32 = 31u32;
+const XA_WM_NAME: u32 = 39u32;
+
+// what the loop of X11 keeps: the server, the ids of the window, of its
+// context of drawing and of its three pointers, the shape shown, the table
+// of the keyboard, the modifiers held, the bytes of a message not received
+// whole and the messages read not yet answered, the atoms, the selection
+// owned and its text
+type XState = {
+    setup: x11.Setup,
+    window: u32,
+    gc: u32,
+    cursorFirst: u32,
+    shape: i64,
+    keymap: Keymap,
+    mods: i64,
+    pending: u8[],
+    queued: x11.Message[],
+    atoms: u32[],
+    owner: boolean,
+    text: string,
+    done: boolean,
+};
+
+// the bytes `c` received within `ms` ms added to those of `pending`: the
+// whole messages among them, the bytes left; none received: `gone`
+action readX(c: net.Conn, pending: u8[], ms: i64): [x11.Message[], u8[], boolean] {
+    const ready = match (unix.poll([unix.fdOf(c)], ms)) {
+        Ok(rs) => rs[0] != 0i32,
+        Err(e) => true,
+    };
+    if (!ready) {
+        return [[], pending, false] as const;
+    }
+    return match (net.read(c, 1048576)) {
+        Ok(b) => {
+            const [ms2, rest] = x11.messages(concat(pending, b));
+            return [ms2, rest, b.length == 0] as const;
+        },
+        Err(e) => [[], pending, true] as const,
+    };
+}
+
+// the replies of the server until `want` are received (at most a second
+// between two reads), in their order; the other messages kept apart
+action repliesX(c: net.Conn, pending: u8[], want: i64, got: x11.Message[], others: x11.Message[]): [x11.Message[], x11.Message[], u8[]] {
+    if (got.length >= want) {
+        return [got, others, pending] as const;
+    }
+    const [ms, rest, gone] = readX(c, pending, 1000);
+    if (gone || ms.length == 0) {
+        return [got, others, rest] as const;
+    }
+    return repliesX(c, rest, want, concat(got, filter(ms, (m) => m.code == 1)), concat(others, filter(ms, (m) => m.code != 1)));
+}
+
+// the first event of the code `code` read (at most a second without a
+// message), the others kept in the order they came
+action eventX(c: net.Conn, st: XState, code: i64, seen: x11.Message[]): [boolean, x11.Message, XState] {
+    const k = findIndex(seen, (m) => m.code == code);
+    if (k >= 0) {
+        const rest = concat(seen.slice(0, k), seen.slice(k + 1, seen.length));
+        return [true, seen[k], { ...st, queued: concat(st.queued, rest) }] as const;
+    }
+    const [ms, rest, gone] = readX(c, st.pending, 1000);
+    if (gone || ms.length == 0) {
+        return [false, { code: 0, bytes: [] }, { ...st, pending: rest, queued: concat(st.queued, seen) }] as const;
+    }
+    return eventX(c, { ...st, pending: rest }, code, concat(seen, ms));
+}
+
+// the density of the screen in the resources of the server (`Xft.dpi`,
+// the value desktops set), as pixels of a unit; 1 without it
+function scaleOf(resources: string): f32 {
+    const lines = resources.split("\n");
+    const k = findIndex(lines, (l) => l.startsWith("Xft.dpi:"));
+    if (k < 0) {
+        return 1.0f32;
+    }
+    const v = match (tryParseF64(lines[k].slice(8, lines[k].length).trim())) {
+        Ok(d) => d,
+        Err(e) => 96.0,
+    };
+    return v >= 48.0 && v <= 960.0 ? f32(v / 96.0) : 1.0f32;
+}
+
+// the rows of the image `px` sent from `y` in requests of `rows` rows
+action stripsX(c: net.Conn, st: XState, px: u32[n], w: i64, h: i64, y: i64, rows: i64): boolean {
+    if (y >= h) {
+        return true;
+    }
+    const k = min(rows, h - y);
+    const sent = net.write(c, x11.putImage(st.window, st.gc, px, w, y, k, st.setup.depth, st.setup.littleImages));
+    return sent == Ok(()) && stripsX(c, st, px, w, h, y + k, rows);
+}
+
+// the view of `m` laid out, drawn and sent to the window; the interface
+// with its places
+action drawX11<M>(c: net.Conn, f: Font, m: M, view: (M) => Element, ui: Ui, st: XState): Ui {
+    const [ps, next] = laidOut(ui, f, m, view, clock());
+    const px = render(ui.w, ui.h, rgb(0xFFFFFFu32), ps);
+    const sent = stripsX(c, st, px, ui.w, ui.h, 0, x11.rowsPerRequest(ui.w, st.setup.maxRequest));
+    return next;
+}
+
+// the text of the selection `CLIPBOARD` of another program asked as
+// UTF-8 into the property of the window; "" when it fails or is not UTF-8
+action pasteX(c: net.Conn, st: XState): [string, XState] {
+    const asked = net.write(c, x11.convertSelection(st.window, st.atoms[A_CLIPBOARD], st.atoms[A_UTF8], st.atoms[A_PASTE]));
+    const [found, ev, st1] = eventX(c, st, x11.SELECTION_NOTIFY, []);
+    if (!found || x11.u32At(ev.bytes, 20) == 0u32) {
+        return ["", st1] as const;
+    }
+    const read = net.write(c, x11.getProperty(st.window, st.atoms[A_PASTE], true));
+    const [rs, others, rest] = repliesX(c, st1.pending, 1, [], []);
+    const st2 = { ...st1, pending: rest, queued: concat(st1.queued, others) };
+    if (rs.length == 0) {
+        return ["", st2] as const;
+    }
+    const b = x11.propertyValue(rs[0]);
+    return [utf8Valid(b) ? stringOf(b) : "", st2] as const;
+}
+
+// the event `ev` given to `step`, what the model asks done: a text copied
+// made the selection `CLIPBOARD` of this window; a paste given the
+// selection of another program, else the program's clipboard
+action feedX11<M>(c: net.Conn, ui: Ui, m: M, now: u64, st: XState, update: (M, Input) => [M, Effect[]], ev: Ev): [M, Ui, XState] {
+    const [u1, m1] = step(ui, m, ev, now, update);
+    const copied = count(u1.asked, (e) => e != AskPaste) > 0;
+    const asks = count(u1.asked, (e) => e == AskPaste) > 0;
+    const owned = copied ? net.write(c, x11.setSelectionOwner(st.window, st.atoms[A_CLIPBOARD])) : Ok(());
+    const st1 = copied ? { ...st, owner: true, text: u1.clipboard } : st;
+    if (!asks) {
+        return [m1, { ...u1, asked: [] }, st1] as const;
+    }
+    const [got, st2] = st1.owner ? [u1.clipboard, st1] as const : pasteX(c, st1);
+    const text = got == "" ? u1.clipboard : got;
+    const [u2, m2] = step({ ...u1, asked: [] }, m1, Pasted(text), now, update);
+    return [m2, { ...u2, asked: [] }, st2] as const;
+}
+
+// a program that asks the selection this window owns answered: its text
+// (UTF-8, or the list of the types offered) written into the property it
+// names, then told; another type refused
+action answerX(c: net.Conn, st: XState, e: x11.Message): XState {
+    const b = e.bytes;
+    const requestor = x11.u32At(b, 12);
+    const target = x11.u32At(b, 20);
+    const named = x11.u32At(b, 24);
+    const property = named == 0u32 ? target : named;
+    const types = st.atoms[A_TARGETS] == target;
+    const text = target == st.atoms[A_UTF8] || target == XA_STRING;
+    const written = types ? net.write(c, x11.changeProperty(requestor, property, XA_ATOM, 32, x11.words([st.atoms[A_TARGETS], st.atoms[A_UTF8], XA_STRING])))
+        : (text && st.owner ? net.write(c, x11.changeProperty(requestor, property, target, 8, bytes(st.text))) : Ok(()));
+    const told = net.write(c, x11.selectionNotify(requestor, x11.u32At(b, 16), target, types || (text && st.owner) ? property : 0u32, x11.u32At(b, 4)));
+    return st;
+}
+
+// the modifiers of the state `state` of an event of X11 given to the
+// interface when they changed
+function modsStepped<M>(ui: Ui, m: M, st: XState, state: i64, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M, XState] {
+    const mods = modsOf(u32(state));
+    if (mods == st.mods) {
+        return [ui, m, st] as const;
+    }
+    const [u1, m1] = steps(ui, m, [Mods(mods)], now, update);
+    return [{ ...u1, asked: [] }, m1, { ...st, mods: mods }] as const;
+}
+
+// the message `e` answered: the model, the interface and the state after it
+action answerMessageX<M>(c: net.Conn, m: M, e: x11.Message, ui: Ui, st: XState, update: (M, Input) => [M, Effect[]]): [M, Ui, XState] {
+    const now = clock();
+    const b = e.bytes;
+    if (sys.env("ISC_UI_TRACE") != None && e.code == 0) {
+        print(["error of X11", i64(b[1]), i64(b[10]), x11.u32At(b, 4)] as const);
+    }
+    if (e.code == x11.KEY_PRESS || e.code == x11.BUTTON_PRESS || e.code == x11.BUTTON_RELEASE) {
+        // the modifiers held first
+        const state = x11.u16At(b, 28);
+        const [u0, m0, s0] = modsStepped(ui, m, st, state, now, update);
+        if (e.code == x11.KEY_PRESS) {
+            const ch = charOf(s0.keymap, u32(b[1]), u32(state));
+            if (ch == 0) {
+                return [m0, u0, s0] as const;
+            }
+            return match (keyEvent(ch, u32(state))) {
+                Typed(t) => t < 0 ? [m0, u0, s0] as const : feedX11(c, u0, m0, now, s0, update, Typed(t)),
+                kev => feedX11(c, u0, m0, now, s0, update, kev),
+            };
+        }
+        // the buttons of X11: 1 left, 2 middle, 3 right, 4 and 5 the wheel
+        // (a notch up, down: as 10 units of Wayland, four times)
+        const button = i64(b[1]);
+        const down = e.code == x11.BUTTON_PRESS;
+        if (button == 4 || button == 5) {
+            return down ? feedX11(c, u0, m0, now, s0, update, Scroll(button == 5 ? 40.0f32 : -40.0f32)) : [m0, u0, s0] as const;
+        }
+        const which = button == 1 ? 0 : (button == 3 ? 1 : (button == 2 ? 2 : -1));
+        return which < 0 ? [m0, u0, s0] as const : feedX11(c, u0, m0, now, s0, update, down ? Down(which) : Up(which));
+    }
+    if (e.code == x11.MOTION || e.code == x11.ENTER) {
+        return feedX11(c, ui, m, now, st, update, Moved(f32(x11.i16At(b, 24)), f32(x11.i16At(b, 26))));
+    }
+    if (e.code == x11.CONFIGURE) {
+        const w = x11.u16At(b, 20);
+        const h = x11.u16At(b, 22);
+        return w == ui.w && h == ui.h ? [m, ui, st] as const : feedX11(c, ui, m, now, st, update, Resized(w, h));
+    }
+    if (e.code == x11.EXPOSE) {
+        return x11.u16At(b, 16) == 0 ? [m, { ...ui, redraw: true }, st] as const : [m, ui, st] as const;
+    }
+    if (e.code == x11.CLIENT_MESSAGE) {
+        const closing = x11.u32At(b, 8) == st.atoms[A_PROTOCOLS] && x11.u32At(b, 12) == st.atoms[A_DELETE];
+        return closing ? feedX11(c, ui, m, now, st, update, Closed) : [m, ui, st] as const;
+    }
+    if (e.code == x11.SELECTION_REQUEST) {
+        return [m, ui, answerX(c, st, e)] as const;
+    }
+    if (e.code == x11.SELECTION_CLEAR) {
+        return [m, ui, x11.u32At(b, 12) == st.atoms[A_CLIPBOARD] ? { ...st, owner: false, text: "" } : st] as const;
+    }
+    if (e.code == x11.MAPPING) {
+        // the table of the keyboard changed: read again
+        const asked = net.write(c, x11.keyboardMapping(st.setup.minKeycode, st.setup.maxKeycode - st.setup.minKeycode + 1));
+        const [rs, others, rest] = repliesX(c, st.pending, 1, [], []);
+        const km = rs.length == 0 ? st.keymap : x11.keymapOf(rs[0], st.setup.minKeycode);
+        return [m, ui, { ...st, keymap: km, pending: rest, queued: concat(st.queued, others) }] as const;
+    }
+    return [m, ui, st] as const;
+}
+
+// the messages `ms` from the `i`-th, answered in their order
+action handleX<M>(c: net.Conn, m: M, ms: x11.Message[n], i: i64, ui: Ui, st: XState, update: (M, Input) => [M, Effect[]]): [M, Ui, XState] {
+    if (i >= n || st.done || ui.closed) {
+        return [m, ui, st] as const;
+    }
+    const [nm, nu, ns] = answerMessageX(c, m, ms[i], ui, st, update);
+    return handleX(c, nm, ms, i + 1, nu, ns, update);
+}
+
+// the events of the window until it is closed (or its server gone), the
+// caret blinking between them: the messages answered, the window drawn
+// again when it changed, the shape of the pointer set
+action loopX11<M>(c: net.Conn, f: Font, m: M, ui: Ui, st: XState, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+    if (st.done || ui.closed) {
+        return m;
+    }
+    // the messages read during a wait (a paste) first
+    const queued = st.queued.length > 0;
+    const [ms, rest, gone] = queued ? [st.queued, st.pending, false] as const : readX(c, st.pending, wakeIn(ui, clock()));
+    if (gone) {
+        return m;
+    }
+    const [nm, nu, ns] = handleX(c, m, ms, 0, ui, { ...st, pending: rest, queued: [] }, update);
+    const now = clock();
+    const blink = nu.caret && caretShown(nu, now) != nu.caretOn;
+    const u2 = nu.redraw || blink ? drawX11(c, f, nm, view, nu, ns) : nu;
+    const shaped = u2.cursor != ns.shape ? net.write(c, x11.setCursor(ns.window, ns.cursorFirst + u32(u2.cursor))) : Ok(());
+    return loopX11(c, f, nm, { ...u2, redraw: false }, { ...ns, shape: u2.cursor }, view, update);
+}
+
+// the connection to the server of `display`: its abstract socket, else
+// its file
+action connectX(display: string): Result<net.Conn, IoError> {
+    const [abstract, path, number] = x11.displayPlace(display);
+    if (number < 0) {
+        return Err(ioError(2, "a display of X11 on another machine"));
+    }
+    if (abstract != "") {
+        return match (unix.connect(abstract)) {
+            Ok(c) => Ok(c),
+            Err(e) => unix.connect(path),
+        };
+    }
+    return unix.connect(path);
+}
+
+action runX11<M>(title: string, width: i64, height: i64, labels: string[], f: Font, m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+    const display = sys.env("DISPLAY") ?? "";
+    return match (connectX(display)) {
+        Ok(c) => {
+            const [a, p, number] = x11.displayPlace(display);
+            const key = x11.localCookie(number);
+            const hello = net.write(c, x11.setupRequest(key.length > 0 ? "MIT-MAGIC-COOKIE-1" : "", key));
+            const answer = setupBytes(c, []);
+            const setup = x11.setupOf(answer);
+            if (setup.failure != "") {
+                fail(title, setup.failure);
+                net.close(c);
+                return m;
+            }
+            // the atoms, the table of the keyboard, the resources of the
+            // server (its density): replies in this order
+            const asked = net.write(c, concat(concat(x11.internAtoms(ATOMS, 0, []),
+                x11.keyboardMapping(setup.minKeycode, setup.maxKeycode - setup.minKeycode + 1)), x11.getProperty(setup.root, XA_RESOURCE_MANAGER, false)));
+            const [rs, others, rest] = repliesX(c, [], ATOMS.length + 2, [], []);
+            if (rs.length < ATOMS.length + 2) {
+                fail(title, "the server of X11 did not answer");
+                net.close(c);
+                return m;
+            }
+            const atoms = map(iota(ATOMS.length), (k) => x11.atomOf(rs[k]));
+            const keymap = x11.keymapOf(rs[ATOMS.length], setup.minKeycode);
+            const resources = x11.propertyValue(rs[ATOMS.length + 1]);
+            const scale = scaleOf(utf8Valid(resources) ? stringOf(resources) : "");
+            const pw = i64(f32(width) * scale);
+            const ph = i64(f32(height) * scale);
+            const id = (k: i64) => setup.idBase | (u32(k) & setup.idMask);
+            const window = id(1);
+            const name = bytes(title);
+            const glyphs = map(iota(3), (k) => k == POINTER_SHAPE ? x11.GLYPH_HAND : (k == TEXT_SHAPE ? x11.GLYPH_TEXT : x11.GLYPH_ARROW));
+            const made = net.write(c, concat(concat(concat(concat(
+                x11.createWindow(window, setup.root, pw, ph, setup.white),
+                x11.changeProperty(window, XA_WM_NAME, XA_STRING, 8, name)),
+                concat(x11.changeProperty(window, atoms[A_NET_NAME], atoms[A_UTF8], 8, name), x11.changeProperty(window, atoms[A_PROTOCOLS], XA_ATOM, 32, x11.le32(atoms[A_DELETE])))),
+                concat(concat(x11.createGc(id(2), window), x11.openFont(id(3), "cursor")), x11.glyphCursors(id(4), id(3), glyphs, 0, []))),
+                concat(x11.setCursor(window, id(4)), x11.mapWindow(window))));
+            const st = {
+                setup: setup, window: window, gc: id(2), cursorFirst: id(4), shape: ARROW, keymap: keymap, mods: 0,
+                pending: rest, queued: others, atoms: atoms, owner: false, text: "", done: false,
+            };
+            const ui = { ...interface(pw, ph, clock()), labels: labels, scale: scale, redraw: false };
+            const end = loopX11(c, f, m, ui, st, view, update);
+            net.close(c);
+            return end;
+        },
+        Err(e) => {
+            fail(title, `no display: the server of X11 of "${display}" could not be reached (${sys.message(e)})`);
+            return m;
+        },
+    };
+}
+
+// the whole answer of the server to the setup (at most a second between
+// two reads)
+action setupBytes(c: net.Conn, got: u8[]): u8[] {
+    if (got.length >= 8 && got.length >= x11.setupLength(got)) {
+        return got;
+    }
+    const ready = match (unix.poll([unix.fdOf(c)], 1000)) {
+        Ok(rs) => rs[0] != 0i32,
+        Err(e) => false,
+    };
+    if (!ready) {
+        return got;
+    }
+    return match (net.read(c, 65536)) {
+        Ok(b) => b.length == 0 ? got : setupBytes(c, concat(got, b)),
+        Err(e) => got,
+    };
 }

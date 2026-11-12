@@ -97,7 +97,16 @@ export function image(shape: i64): u32[] {
     return shape == POINTER ? drawn(HAND_ROWS) : (shape == TEXT ? drawn(BAR_ROWS) : drawn(ARROW_ROWS));
 }
 
-// the point of the image of `shape` the pointer is at (x, y)
+// the image of `shape` at `k` pixels a unit (a screen of scale `k`): each
+// pixel of the image `k` by `k` pixels, the edges kept sharp; SIDE * k by
+// SIDE * k
+export function imageAt(shape: i64, k: i64): u32[] {
+    const one = image(shape);
+    const side = SIDE * k;
+    return k == 1 ? one : map(iota(side * side), (i) => one[(i / side / k) * SIDE + (i % side) / k]);
+}
+
+// the point of the image of `shape` the pointer is at (x, y), in units
 export function hotSpot(shape: i64): [i64, i64] {
     return shape == POINTER ? [5, 0] as const : (shape == TEXT ? [3, 8] as const : [0, 0] as const);
 }

@@ -47,4 +47,15 @@ scaled2="$(cd "$out" && PLAY_SCALE=2 python3 "$here/../tools/display/play.py" 52
 shared="$(cd "$out" && python3 "$here/../tools/display/play.py" 520 420 clickat:211,124 "type:Vers dehors" key:ctrl+a key:ctrl+c "paste:$out/pasted.txt" "copy:Du dehors é" key:End key:ctrl+v key:ctrl+a key:ctrl+c key:End key:ctrl+v key:Return endserver -- "$out/todo" | tail -1)"
 [ "$(cat "$out/pasted.txt")" = "Vers dehors" ] || { echo "FAILED: the selection read by wl-paste: $(cat "$out/pasted.txt")"; exit 1; }
 [ "$shared" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Vers dehorsDu dehors éVers dehorsDu dehors é]" ] || { echo "FAILED: clipboard: $shared"; exit 1; }
-echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared"
+# X11 (Xvfb, no manager of windows: the window at (0, 0)): the same tasks
+# typed, added and ticked; the clipboard shared with xclip; a density of
+# 144 dots per inch (Xft.dpi): the window 1.5 times larger, a click at the
+# place of the field in pixels
+x11tasks="$(cd "$out" && PLAY_X11=1 python3 "$here/../tools/display/play.py" 520 420 clickat:211,124 type:Lait key:Return type:Pain clickat:411,124 clickat:80,174 clickat:211,124 type:Thex key:BackSpace key:Return endserver -- "$out/todo" | tail -1)"
+[ "$x11tasks" = "[[ ] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Lait, [ ] Pain, [ ] The]" ] || { echo "FAILED: X11 tasks: $x11tasks"; exit 1; }
+x11shared="$(cd "$out" && PLAY_X11=1 python3 "$here/../tools/display/play.py" 520 420 clickat:211,124 "type:Vers dehors" key:ctrl+a key:ctrl+c "paste:$out/x11pasted.txt" "copy:Du dehors é" key:End key:ctrl+v key:ctrl+a key:ctrl+c key:End key:ctrl+v key:Return endserver -- "$out/todo" | tail -1)"
+[ "$(cat "$out/x11pasted.txt")" = "Vers dehors" ] || { echo "FAILED: the selection read by xclip: $(cat "$out/x11pasted.txt")"; exit 1; }
+[ "$x11shared" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Vers dehorsDu dehors éVers dehorsDu dehors é]" ] || { echo "FAILED: X11 clipboard: $x11shared"; exit 1; }
+x11dpi="$(cd "$out" && PLAY_X11=1 PLAY_DPI=144 python3 "$here/../tools/display/play.py" 780 630 clickat:316,186 type:Pain key:Return endserver -- "$out/todo" | tail -1)"
+[ "$x11dpi" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Pain]" ] || { echo "FAILED: X11 at 144 dpi: $x11dpi"; exit 1; }
+echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi"
