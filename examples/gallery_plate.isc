@@ -3,7 +3,7 @@
 // radii of the corners; the borders; colours with alpha over each other;
 // the shadows; the components of the library; a card of an interface; places and
 // sizes that are not whole pixels; their texts last, over them.
-import { Primitive, Box, Blur, Color, Quad, quad, rounded, bordered, rgb, rgba, transparent, render } from "../src/paint";
+import { Primitive, Box, Blur, Raster, Color, Quad, quad, rounded, bordered, rgb, rgba, transparent, render } from "../src/paint";
 import { Font } from "../src/font";
 import { line, lineWidth, paragraph, Start, Center, End } from "../src/text";
 import { Element, Fill, placeFrame } from "../src/ui";
@@ -150,6 +150,22 @@ function widgets(f: Font): Primitive[] {
 
 // row 6: a card of an interface: a header with its upper corners rounded,
 // rows separated by lines of one pixel, a selected row, a footer
+// an image of 12 by 12 pixels made here: red across, green down, a corner
+// transparent and a band at half its opacity; at four times its size (each
+// pixel the mix of the four nearest, bilinear), then stretched
+function images(): Primitive[] {
+    const pixels = map(iota(144), (i) => {
+        const x = i % 12;
+        const y = i / 12;
+        const a = x + y < 5 ? 0u32 : (x >= 9 ? 128u32 : 255u32);
+        return (a << 24u32) | (u32(40 + x * 18) << 16u32) | (u32(60 + y * 15) << 8u32) | 210u32;
+    });
+    return [
+        Raster({ x: 480.0f32, y: 509.0f32, w: 48.0f32, h: 48.0f32, iw: 12, ih: 12, pixels: pixels }),
+        Raster({ x: 548.0f32, y: 509.0f32, w: 132.0f32, h: 48.0f32, iw: 12, ih: 12, pixels: pixels }),
+    ];
+}
+
 function panel(): Primitive[] {
     const x = 40.0f32;
     const y = 750.0f32;
@@ -245,10 +261,11 @@ function labels(f: Font): Primitive[] {
     const t33 = concat(t32, line(f, 22.0f32, "isocron-ui", 660.0f32, 915.0f32, ink));
     const t34 = concat(t33, paragraph(f, 13.0f32, "Tout est dessiné par la bibliothèque, texte compris : chaque glyphe est tracé depuis le fichier de la police, placé au quart de pixel, et ce paragraphe est coupé en lignes de 300 pixels.", 660.0f32, 942.0f32, 300.0f32, 17.0f32, Start, gray));
     const t35 = concat(t34, paragraph(f, 12.0f32, "Centré dans 220 pixels : chaque ligne est placée au milieu de sa largeur, et la dernière, plus courte, aussi.", 1000.0f32, 942.0f32, 220.0f32, 16.0f32, Center, gray));
-    return t35;
+    const t36 = concat(t35, paragraph(f, 12.0f32, "une image de 12 × 12 pixels au coin transparent, quatre fois plus grande (bilinéaire), puis étirée", 700.0f32, 527.0f32, 300.0f32, 16.0f32, Start, gray));
+    return t36;
 }
 
 // every primitive of the plate, in their order, the texts last
 export function plate(f: Font): Primitive[] {
-    return concat(concat(concat(concat(concat(concat(concat(radii(), borders()), alphas()), shadows()), widgets(f)), panel()), fractions()), labels(f));
+    return concat(concat(concat(concat(concat(concat(concat(concat(radii(), borders()), alphas()), shadows()), widgets(f)), panel()), fractions()), images()), labels(f));
 }
