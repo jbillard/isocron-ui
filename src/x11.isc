@@ -362,8 +362,8 @@ export function keyboardMapping(first: i64, count: i64): u8[] {
     return request(101, 0, [u8(first), u8(count), 0u8, 0u8]);
 }
 
-// the code point of the symbol `sym` of X11 (0: none, a dead key, a
-// modifier): Latin-1 as itself, those of Unicode (0x1000000 and above) as
+// the code point of the symbol `sym` of X11 (0: none, a modifier; a dead
+// key: DEAD of input.isc plus its accent): Latin-1 as itself, those of Unicode (0x1000000 and above) as
 // their code, the keys that edit as those of input.isc
 export function symbolChar(sym: u32): i64 {
     const s = i64(sym);
@@ -376,7 +376,10 @@ export function symbolChar(sym: u32): i64 {
     return s == 0xFF08 ? 8 : (s == 0xFF09 ? 9 : (s == 0xFF0D || s == 0xFF8D ? 13 : (s == 0xFF1B ? 27
         : (s == 0xFFFF ? 0x110005 : (s == 0xFF51 ? 0x110001 : (s == 0xFF52 ? 0x110002 : (s == 0xFF53 ? 0x110003
         : (s == 0xFF54 ? 0x110004 : (s == 0xFF50 ? 0x110006 : (s == 0xFF57 ? 0x110007
-        : (s == 0x20AC ? 0x20AC : (s == 0x13BD ? 0x153 : (s == 0x13BC ? 0x152 : (s == 0xFF80 ? 32 : 0))))))))))))));
+        : (s == 0x20AC ? 0x20AC : (s == 0x13BD ? 0x153 : (s == 0x13BC ? 0x152 : (s == 0xFF80 ? 32
+        // the dead keys (dead_grave to dead_cedilla): DEAD of input.isc plus
+        // their accent
+        : (s >= 0xFE50 && s <= 0xFE5B ? 0xF0000 + (s - 0xFE50) : 0)))))))))))))));
 }
 
 // the table of the keyboard of the reply `m` to `keyboardMapping` from the

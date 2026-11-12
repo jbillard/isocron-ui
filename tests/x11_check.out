@@ -4,7 +4,7 @@
 (92, 92)
 {bitsPerPixel: 32, depth: 24, failure: , heightPx: 1080, idBase: 67108864, idMask: 2097151, littleImages: true, maxKeycode: 255, maxRequest: 65535, minKeycode: 8, root: 672, visual: 33, white: 16777215, widthMm: 508, widthPx: 1920}
 the server of X11 refused the connection: No access
-[97, 233, 8364, 8, 13, 1114113, 1114117, 0, 0]
+[97, 233, 8364, 8, 13, 1114113, 1114117, 983042, 0]
 [97, 65, 113, 81, 8364, 69, 0]
 [16, 0, 5, 0, 9, 0, 0, 0, 67, 76, 73, 80, 66, 79, 65, 82, 68, 0, 0, 0]
 ([68, 51, 34, 17, 136, 119, 102, 85], [17, 34, 51, 68, 85, 102, 119, 136])

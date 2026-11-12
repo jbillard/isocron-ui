@@ -27,6 +27,10 @@ The actions, in their order:
   paste:FILE   the selection, of whatever program, written to FILE (wl-paste)
 Then the program's output to its end.
 
+PLAY_XKB=layout:variant: the table of the keyboard of Xvfb, set by
+setxkbmap (`us:intl`: dead keys on Shift+6, the apostrophe...); Weston
+takes it from its server.
+
 PLAY_X11=1: no Weston, the program a client of Xvfb itself (its socket in
 a folder shared with the container, DISPLAY its path); without a manager
 of windows, its window at (0, 0) of the screen. PLAY_DPI with it: the
@@ -81,7 +85,7 @@ def main():
     x11 = os.environ.get("PLAY_X11") == "1"
     dpi = os.environ.get("PLAY_DPI")
     server = (
-        "Xvfb :1 -screen 0 %dx%dx24 -nolisten tcp & sleep 1; "
+        "Xvfb :1 -screen 0 %dx%dx24 -nolisten tcp -noreset & sleep 1; "
         "DISPLAY=:1 exec weston --backend=x11-backend.so --use-pixman --shell=kiosk-shell.so "
         "--socket=wayland-test --width=%d --height=%d --scale=%d --idle-time=0 --debug 2>/run/display/weston.log"
     ) % (width * scale, height * scale, width, height, scale)
@@ -90,6 +94,16 @@ def main():
         # resources set by xrdb then lost before the program comes)
         server = "exec Xvfb :1 -screen 0 %dx%dx24 -nolisten tcp -noreset 2>/tmp/.X11-unix/xvfb.log" % (width, height)
     mount = "%s:%s" % (run_dir, "/tmp/.X11-unix" if x11 else "/run/display")
+    # PLAY_XKB=layout:variant: the table of the keyboard of Weston (its
+    # keys read with it, us by default: `us:intl` has dead keys)
+    # (that of Xvfb, set before Weston starts: its backend of X11 takes the
+    # table of its server, not that of its file of configuration)
+    xkb = os.environ.get("PLAY_XKB", "")
+    layout, _, variant = xkb.partition(":")
+    if xkb and not x11:
+        server = server.replace("DISPLAY=:1 exec weston ", "DISPLAY=:1 setxkbmap -layout %s -variant %s; DISPLAY=:1 exec weston " % (layout, variant))
+    if xkb and x11:
+        server = server.replace("exec Xvfb ", "Xvfb ").replace(" 2>/tmp/.X11-unix/xvfb.log", " 2>/tmp/.X11-unix/xvfb.log & sleep 1; DISPLAY=:1 setxkbmap -layout %s -variant %s; wait" % (layout, variant))
     subprocess.run(
         ["docker", "run", "-d", "--rm", "--name", name, "--user", "%d:%d" % (os.getuid(), os.getgid()),
          "-v", mount, "-e", "XDG_RUNTIME_DIR=/run/display",

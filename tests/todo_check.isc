@@ -101,6 +101,12 @@ action main(args: string[k]): i32 {
             // Escape closes the menu
             const [u16, m16] = drive(f, u15, m15, [Moved(fx, fy), Down(1), Pressed(ESCAPE)], 0, 0u64, 1000000000u64);
             print(u16.menu);
+            // dead keys: ^ then e (ê), ¨ then i (ï), ^ then space (^), ^
+            // then x (^x), ` then E (È), ¸ then c (ç); ^ then Backspace
+            // (forgotten) then a
+            const dead = (k: i64) => Typed(0xF0000 + k);
+            const [u17, m17] = drive(f, u16, m16, [Pressed(END), Mods(WITH_CTRL), Pressed(97), Mods(0), Pressed(BACKSPACE), dead(2), Typed(101), dead(7), Typed(105), dead(2), Typed(32), dead(2), Typed(120), dead(0), Typed(69), dead(11), Typed(99), dead(2), Pressed(BACKSPACE), Typed(97)], 0, 0u64, 1000000000u64);
+            print(show(m17));
             return 0;
         },
         Err(e) => {

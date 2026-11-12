@@ -23,6 +23,7 @@ import { Font, parse } from "./font";
 import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU } from "./ui";
 import { POINTER as POINTER_SHAPE, TEXT as TEXT_SHAPE } from "./ui";
 import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./input";
+import { DEAD, DEAD_ACCENTS, composed, spacingAccent } from "./input";
 import { Keymap, parseKeymap, charOf } from "./xkb";
 import * as cursors from "./cursors";
 
@@ -88,6 +89,7 @@ export type Ui = {
     menuCut: boolean,
     labels: string[],
     scale: f32,
+    dead: i64,
     redraw: boolean,
     closed: boolean,
 };
@@ -106,7 +108,7 @@ export function interface(w: i64, h: i64, now: u64): Ui {
         w: w, h: h, hits: [], offsets: fill(16, 0.0f32), x: -1.0f32, y: -1.0f32, hover: -1, cursor: ARROW, mods: 0,
         pressed: -1, field: -1, px: 0.0f32, py: 0.0f32, bar: -1, grab: 0.0f32, hotBar: -1,
         clickTime: 0u64, clicks: 0, cx: 0.0f32, cy: 0.0f32, since: now, caret: false, caretOn: true,
-        clipboard: "", asked: [], menu: false, menuX: 0.0f32, menuY: 0.0f32, menuHover: -1, menuCut: false, labels: englishMenu(), scale: 1.0f32,
+        clipboard: "", asked: [], menu: false, menuX: 0.0f32, menuY: 0.0f32, menuHover: -1, menuCut: false, labels: englishMenu(), scale: 1.0f32, dead: -1,
         redraw: true, closed: false,
     };
 }
@@ -125,6 +127,26 @@ function told<M>(ui: Ui, m: M, i: Input, update: (M, Input) => [M, Effect[]]): [
         AskPaste => c,
     });
     return [{ ...ui, clipboard: copied, asked: concat(ui.asked, fx), redraw: true }, nm] as const;
+}
+
+// the character `c` typed: a dead key kept for the next character (its
+// accent: `^` then `e` gives `ê`), a character after one with its accent
+// when it takes one, else the accent alone then the character (a space:
+// the accent alone)
+function typed<M>(ui: Ui, m: M, c: i64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    if (c >= DEAD && c < DEAD + DEAD_ACCENTS) {
+        return [{ ...ui, dead: c - DEAD }, m] as const;
+    }
+    if (ui.dead < 0) {
+        return told(ui, m, Text(c), update);
+    }
+    const accent = ui.dead;
+    const both = composed(accent, c);
+    if (both != 0) {
+        return told({ ...ui, dead: -1 }, m, Text(both), update);
+    }
+    const [u1, m1] = told({ ...ui, dead: -1 }, m, Text(spacingAccent(accent)), update);
+    return c == 32 ? [u1, m1] as const : told(u1, m1, Text(c), update);
 }
 
 // the offset of the box that scrolls `id` set to `v`, within `range`
@@ -292,9 +314,13 @@ export function step<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M
             return [{ ...u1, cursor: cursorAt(u1.hits, ui.x, ui.y) }, m1] as const;
         },
         Scroll(dy) => [{ ...ui, offsets: scrolled(ui.offsets, ui.hits, ui.x, ui.y, dy * ui.scale), redraw: true }, m] as const,
-        Typed(c) => told({ ...ui, since: now }, m, Text(c), update),
+        Typed(c) => typed({ ...ui, since: now }, m, c, update),
         // (Escape closes the menu; another key closes it and is the model's)
-        Pressed(k) => ui.menu && k == ESCAPE ? [{ ...ui, menu: false, menuHover: -1, redraw: true }, m] as const : told({ ...ui, since: now, menu: false, menuHover: -1 }, m, Key(k, ui.mods), update),
+        // (a key forgets an accent typed before it: Backspace and Escape do
+        // nothing else then)
+        Pressed(k) => ui.menu && k == ESCAPE ? [{ ...ui, menu: false, menuHover: -1, dead: -1, redraw: true }, m] as const
+            : (ui.dead >= 0 && (k == BACKSPACE || k == ESCAPE) ? [{ ...ui, dead: -1 }, m] as const
+            : told({ ...ui, since: now, menu: false, menuHover: -1, dead: -1 }, m, Key(k, ui.mods), update)),
         Mods(mods) => [{ ...ui, mods: mods }, m] as const,
         Resized(w, h) => [{ ...ui, w: w, h: h, redraw: true }, m] as const,
         // the pixels of a unit (the density of the screen): the offsets of

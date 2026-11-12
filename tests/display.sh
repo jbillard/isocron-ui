@@ -58,4 +58,13 @@ x11shared="$(cd "$out" && PLAY_X11=1 python3 "$here/../tools/display/play.py" 52
 [ "$x11shared" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Vers dehorsDu dehors éVers dehorsDu dehors é]" ] || { echo "FAILED: X11 clipboard: $x11shared"; exit 1; }
 x11dpi="$(cd "$out" && PLAY_X11=1 PLAY_DPI=144 python3 "$here/../tools/display/play.py" 780 630 clickat:316,186 type:Pain key:Return endserver -- "$out/todo" | tail -1)"
 [ "$x11dpi" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Pain]" ] || { echo "FAILED: X11 at 144 dpi: $x11dpi"; exit 1; }
-echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi"
+# dead keys of the keyboard: ^ then e, ¨ then i, ´ then e, under Wayland
+# and under X11, in the table us(intl) of Xvfb (Shift+6 the dead
+# circumflex; the key of the apostrophe the dead acute, with Shift the dead
+# diaeresis), which Weston takes from its server
+deadkeys="clickat:211,124 key:shift+6 key:e key:shift+dead_acute key:i key:dead_acute key:e key:Return endserver"
+deadwl="$(cd "$out" && PLAY_XKB=us:intl python3 "$here/../tools/display/play.py" 520 420 $deadkeys -- "$out/todo" | tail -1)"
+[ "$deadwl" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] êïé]" ] || { echo "FAILED: dead keys under Wayland: $deadwl"; exit 1; }
+deadx="$(cd "$out" && PLAY_X11=1 PLAY_XKB=us:intl python3 "$here/../tools/display/play.py" 520 420 $deadkeys -- "$out/todo" | tail -1)"
+[ "$deadx" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] êïé]" ] || { echo "FAILED: dead keys under X11: $deadx"; exit 1; }
+echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx"
