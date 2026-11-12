@@ -4,10 +4,11 @@
 import { interface, laidOut } from "../src/app";
 import { editing } from "../src/edit";
 import { Primitive, Box, Blur, Color, quad, rounded, bordered, rgb, rgba, render } from "../src/paint";
-import { encode, crc32 } from "../src/png";
+import { encode, crc32, decode } from "../src/png";
 import { parse } from "../src/font";
 import { line } from "../src/text";
-import { place, placeScrolled } from "../src/ui";
+import { place, placeScrolled, Div, Image as ImageEl, Row, style } from "../src/ui";
+import { Center } from "../src/text";
 import { view, initial, update, INCREMENT, STEP } from "../examples/counter";
 import * as todo from "../examples/todo";
 
@@ -73,6 +74,24 @@ action main(args: string[k]): i32 {
             // window of 520 by 420 units, 780 by 630 pixels
             const [sp15, su15] = laidOut({ ...interface(780, 630, 0u64), scale: 1.5f32 }, f, { ...todo.initial(), field: editing("Pain"), focused: true }, todo.view, 0u64);
             scene(args[0], "todo150", 780, 630, white, sp15);
+            // images of the PngSuite (colour and alpha; colour): at their
+            // size, four times larger (bilinear), stretched; over a ground
+            // of colour, the alpha seen through
+            match (decode(readBytes("tests/png/basn6a08.png"))) {
+                Ok(pa) => match (decode(readBytes("tests/png/basn2c08.png"))) {
+                    Ok(pc) => {
+                        const pics = Div({ ...style(), direction: Row, gap: 16.0f32, padding: 16.0f32, align: Center, stretch: false, background: rgb(0xFDE68Au32) }, [
+                            ImageEl(pa, 0.0f32, 0.0f32),
+                            ImageEl(pa, 128.0f32, 128.0f32),
+                            ImageEl(pc, 96.0f32, 48.0f32),
+                        ]);
+                        const [ip, ih] = place(f, pics, 0.0f32, 0.0f32, 320.0f32, 160.0f32);
+                        scene(args[0], "images", 320, 160, white, ip);
+                    },
+                    Err(e) => print(e),
+                },
+                Err(e) => print(e),
+            };
         },
         Err(e) => print(e),
     };

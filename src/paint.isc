@@ -33,11 +33,16 @@ export type Shadow = {
 // pixels in [0, 1] (rows from the top; at least one pixel)
 export type Sprite = { x: i64, y: i64, w: i64, h: i64, color: Color, mask: f32[] };
 
+// an image drawn in the rectangle (x, y, w, h): its `iw` by `ih` pixels
+// (`0xAARRGGBB`, not premultiplied, rows from the top), each pixel of the
+// rectangle the mix of the four of the image nearest its centre (bilinear)
+export type Bitmap = { x: f32, y: f32, w: f32, h: f32, iw: i64, ih: i64, pixels: u32[] };
+
 // what a scene holds, drawn in its order; `Clip(x0, y0, x1, y1)` and
 // `Unclip`: the primitives between them drawn only on the pixels whose
 // centre is inside the rectangle (and inside those of the `Clip`s around
 // them)
-export type Primitive = Box(Quad) | Blur(Shadow) | Glyph(Sprite) | Clip(f32, f32, f32, f32) | Unclip;
+export type Primitive = Box(Quad) | Blur(Shadow) | Glyph(Sprite) | Raster(Bitmap) | Clip(f32, f32, f32, f32) | Unclip;
 
 export function rgba(r: f32, g: f32, b: f32, a: f32): Color {
     return { r: r, g: g, b: b, a: a };
@@ -205,6 +210,7 @@ function reach(p: Primitive): [f32, f32, f32, f32] {
             return [s.x - m, s.y - m, s.x + s.w + m, s.y + s.h + m] as const;
         },
         Glyph(g) => [f32(g.x), f32(g.y), f32(g.x + g.w), f32(g.y + g.h)] as const,
+        Raster(bm) => [bm.x, bm.y, bm.x + bm.w, bm.y + bm.h] as const,
         // (they draw nothing)
         _ => [0.0f32, 0.0f32, 0.0f32, 0.0f32] as const,
     };
@@ -357,6 +363,42 @@ function tile(t: i64, tx: i64, base: Color, ps: Primitive[n], boxes: [f32, f32, 
                 });
                 const over = (d: f32[256], cc: f32) => map(iota(256), (j) => cc * sa[j] + d[j] * (1.0f32 - sa[j]));
                 return [over(r, gl.color.r), over(g, gl.color.g), over(b, gl.color.b), map(iota(256), (j) => sa[j] + a[j] * (1.0f32 - sa[j]))] as const;
+            },
+            Raster(bm) => {
+                // where the centre of each pixel falls in the image, in its
+                // pixels (their centres at .5), clamped to its edges
+                const iw = bm.iw;
+                const ih = bm.ih;
+                const u = map(iota(256), (j) => min(f32(iw) - 1.0f32, max(0.0f32, (ox + f32(j % TILE) - bm.x) / bm.w * f32(iw) - 0.5f32)));
+                const v = map(iota(256), (j) => min(f32(ih) - 1.0f32, max(0.0f32, (oy + f32(j / TILE) - bm.y) / bm.h * f32(ih) - 0.5f32)));
+                const seen = map(iota(256), (j) => {
+                    const px = ox + f32(j % TILE);
+                    const py = oy + f32(j / TILE);
+                    return px > x0 && px < x1 && py > y0 && py < y1 ? 1.0f32 : 0.0f32;
+                });
+                // a channel (shift 16 red, 8 green, 0 blue; 24 alpha) of the
+                // four pixels mixed, premultiplied by their alphas
+                const mixed = (sh: u32) => map(iota(256), (j) => {
+                    const fx = floor(u[j]);
+                    const fy = floor(v[j]);
+                    const ax = u[j] - fx;
+                    const ay = v[j] - fy;
+                    const c0 = i64(fx);
+                    const r0 = i64(fy);
+                    const c1 = min(iw - 1, c0 + 1);
+                    const r1 = min(ih - 1, r0 + 1);
+                    const at = (c: i64, r: i64) => {
+                        const p = bm.pixels[r * iw + c];
+                        const al = f32(p >> 24u32) / 255.0f32;
+                        return sh == 24u32 ? al : f32((p >> sh) & 0xFFu32) / 255.0f32 * al;
+                    };
+                    const top = at(c0, r0) * (1.0f32 - ax) + at(c1, r0) * ax;
+                    const bottom = at(c0, r1) * (1.0f32 - ax) + at(c1, r1) * ax;
+                    return (top * (1.0f32 - ay) + bottom * ay) * seen[j];
+                });
+                const sa = mixed(24u32);
+                const over = (d: f32[256], s: f32[256]) => map(iota(256), (j) => s[j] + d[j] * (1.0f32 - sa[j]));
+                return [over(r, mixed(16u32)), over(g, mixed(8u32)), over(b, mixed(0u32)), over(a, sa)] as const;
             },
             // (never among the primitives of a tile: their boxes are empty)
             _ => acc,

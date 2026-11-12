@@ -7,10 +7,11 @@
 // draw them, and the places the pointer reaches, the last drawn first: a
 // click, the wheel, a scrollbar, the characters of a field, the shape of
 // the pointer.
-import { Primitive, Box, Blur, Clip, Unclip, Color, quad, rounded, bordered, transparent, rgb, rgba } from "./paint";
+import { Primitive, Box, Blur, Clip, Unclip, Raster, Color, quad, rounded, bordered, transparent, rgb, rgba } from "./paint";
 import { Font } from "./font";
 import { Align, Start, Center, End, paragraph, measureParagraph, line, lineWidth, stops } from "./text";
 import { Editing, selection } from "./edit";
+import { Picture } from "./png";
 
 // the shapes of the pointer over a place: an arrow, a hand (a place that a
 // click reaches), a bar (a text)
@@ -83,8 +84,10 @@ export type TextStyle = { em: f32, color: Color, align: Align, lineHeight: f32 }
 
 // an element: a box and its children, a text, or the line of a field (its
 // text, caret and selection; with the focus, its caret and its selection
-// drawn; a text shown while it is empty, in a grey)
-export type Element = Div(Style, Element[k]) | Label(TextStyle, string) | Input(TextStyle, Editing, boolean, string);
+// drawn; a text shown while it is empty, in a grey), or an image (a PNG
+// file read, `png.decode`) drawn in its box, its size given (its own when
+// 0)
+export type Element = Div(Style, Element[k]) | Label(TextStyle, string) | Input(TextStyle, Editing, boolean, string) | Image(Picture, f32, f32);
 
 // a place the pointer reaches, by its `kind`: CLICK (a box and its message
 // `id`), WHEEL (a box that scrolls: the number of its offset as `id`, as
@@ -126,6 +129,7 @@ export function scaledElement(e: Element, k: f32): Element {
     return match (e) {
         Label(ts, s) => Label(scaledText(ts, k), s),
         Input(ts, ed, focused, hint) => Input(scaledText(ts, k), ed, focused, hint),
+        Image(p, w, h) => Image(p, (w > 0.0f32 ? w : f32(p.width)) * k, (h > 0.0f32 ? h : f32(p.height)) * k),
         Div(st, cs) => Div({
             ...st,
             width: scaledLength(st.width, k),
@@ -241,6 +245,7 @@ function measure(f: Font, e: Element, room: f32): [f32, f32] {
         Label(ts, s) => measureParagraph(f, ts.em, s, room, ts.lineHeight),
         // a line and room for the caret after it
         Input(ts, ed, focused, hint) => [lineWidth(f, ts.em, ed.text == "" ? hint : ed.text) + 2.0f32, ts.lineHeight] as const,
+        Image(p, w, h) => [w > 0.0f32 ? w : f32(p.width), h > 0.0f32 ? h : f32(p.height)] as const,
         Div(st, cs) => {
             const row = isRow(st.direction);
             const [px, py] = padsOf(st);
@@ -330,6 +335,8 @@ export function placeFrame(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, 
     return match (e) {
         Label(ts, s) => [paragraph(f, ts.em, s, x, baseline(f, ts, y), w, ts.lineHeight, ts.align, ts.color), []] as const,
         Input(ts, ed, focused, hint) => placeInput(f, ts, ed, focused, hint, x, y, w, h, fr.caretOn),
+        // (its pixels in its box: its size the box's, given by its parent)
+        Image(p, iw, ih) => [[Raster({ x: x, y: y, w: w, h: h, iw: p.width, ih: p.height, pixels: p.pixels })], []] as const,
         Div(st, cs) => {
             const deco = decoration(st, x, y, w, h);
             const shape = st.cursor >= 0 ? st.cursor : (st.onClick >= 0 ? POINTER : -1);
