@@ -408,7 +408,15 @@ export function placeFrame(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, 
                     ? [ix + along, iy + at, mains[i], cross] as const
                     : [ix + at, iy + along, cross, mains[i]] as const;
             });
-            const [cps, chs] = placeFrom(f, cs, frames, 0, [], [], fr);
+            // a box that cuts its children: those wholly outside it not
+            // placed (a long list scrolled: its rows out of sight neither
+            // drawn nor reached)
+            const cuts = st.clip || scrolls;
+            const seenKids = filter(iota(n), (i) => {
+                const [fx, fy, fw, fh] = frames[i];
+                return !cuts || (fy < iy + ih && fy + fh > iy && fx < ix + iw && fx + fw > ix);
+            });
+            const [cps, chs] = placeFrom(f, map(seenKids, (i) => cs[i]), map(seenKids, (i) => frames[i]), 0, [], [], fr);
             if (!st.clip && !scrolls) {
                 return [concat(deco, cps), concat(hits, chs)] as const;
             }
