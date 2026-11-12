@@ -1426,10 +1426,190 @@ function writeValues(vm: Vm, at: i64, xs: Value[n], i: i64): Vm {
     return writeValues(setReg(v1, at + i, v), at, xs, i + 1);
 }
 
+// ----- texts read where they are ----------------------------------------------
+
+// The functions of the library that read a part of a text of the machine
+// (its length, a part, its bytes, `find`, `match`, a step of `gmatch`) read
+// it where it is, the machine changed only after them; given to the
+// library as a value, the text was copied at each call (`s:find(";", at)`
+// along a text of 800 KB: 800 KB copied each time). Their faults:
+type Fx = { err: boolean, msg: string, chunk: string };
+
+function failF(fx: Fx, line: i64, msg: string): Fx {
+    return fx.err ? fx : { ...fx, err: true, msg: line < 0 ? msg : `${fx.chunk}:${line}: ${msg}` };
+}
+
+function argFaultF(fx: Fx, line: i64, i: i64, name: string, msg: string): Fx {
+    const id = findIndex(PRIM_NAMES, (x) => x == name);
+    const table = id >= 20 && id < 33 ? "string." : (id >= 33 && id < 38 ? "table." : (id >= 38 ? "math." : ""));
+    return failF(fx, line, `bad argument #${i + 1} to '${line < 0 ? table : ""}${name}' (${msg})`);
+}
+
+function intArgF(fx: Fx, args: Value[n], i: i64, name: string, line: i64): [Fx, i64] {
+    const v = argV(args, i);
+    const [ok, x] = toIntegerV(v);
+    if (ok) {
+        return [fx, x] as const;
+    }
+    const msg = match (toNumberV(v)) {
+        Num(f) => "number has no integer representation",
+        _ => expected("number", v),
+    };
+    return [argFaultF(fx, line, i, name, msg), 0] as const;
+}
+
+function optIntF(fx: Fx, args: Value[n], i: i64, name: string, line: i64, d: i64): [Fx, i64] {
+    return isNilV(argV(args, i)) ? [fx, d] as const : intArgF(fx, args, i, name, line);
+}
+
+function strArgF(fx: Fx, args: Value[n], i: i64, name: string, line: i64): [Fx, string] {
+    return match (argV(args, i)) {
+        Str(s) => [fx, s] as const,
+        Int(x) => [fx, `${x}`] as const,
+        Num(x) => [fx, floatText(x)] as const,
+        other => [argFaultF(fx, line, i, name, expected("string", other)), ""] as const,
+    };
+}
+
+function bytesValueF(fx: Fx, b: u8[n], line: i64, name: string): [Fx, Value] {
+    return isUtf8(b) ? [fx, Str(stringOf(b))] as const : [failF(fx, line, `'${name}' would cut a character of UTF-8 (the strings of this Lua are texts)`), Nil] as const;
+}
+
+function capturesOfF(fx: Fx, b: u8[n], start: i64, m: Matched, line: i64): [Fx, Value[]] {
+    const caps = m.caps;
+    if (caps.length == 0) {
+        const [f1, v] = bytesValueF(fx, b.slice(start, m.end), line, "a pattern");
+        return [f1, [v]] as const;
+    }
+    return capsFromF(fx, b, caps, 0, [], line);
+}
+
+function capsFromF(fx: Fx, b: u8[n], caps: Cap[m], i: i64, acc: Value[], line: i64): [Fx, Value[]] {
+    if (i >= m) {
+        return [fx, acc] as const;
+    }
+    const c = caps[i];
+    if (c.len == -1) {
+        return [failF(fx, line, "unfinished capture"), acc] as const;
+    }
+    if (c.len == -2) {
+        return capsFromF(fx, b, caps, i + 1, concat(acc, [Int(c.start + 1)]), line);
+    }
+    const [f1, v] = bytesValueF(fx, b.slice(c.start, c.start + c.len), line, "a pattern");
+    return capsFromF(f1, b, caps, i + 1, concat(acc, [v]), line);
+}
+
+// `len`, `sub`, `byte`, `find` and `match` of the text `s` (their other
+// arguments in `args`, from 1)
+function textPrimF(fx: Fx, s: string, id: i64, args: Value[n], line: i64): [Fx, Value[]] {
+    const name = PRIM_NAMES[id];
+    const len = s.length;
+    if (id == 20) {
+        return [fx, [Int(len)]] as const;
+    }
+    if (id == 21 || id == 25) {
+        const [f1, i] = optIntF(fx, args, 1, name, line, 1);
+        const [f2, j] = optIntF(f1, args, 2, name, line, id == 21 ? -1 : i);
+        if (f2.err) {
+            return [f2, []] as const;
+        }
+        const a = startIndex(i, len);
+        const b = endIndex(j, len);
+        const bs = bytes(s);
+        if (id == 25) {
+            return [f2, a > b ? [] : map(iota(b - a + 1), (k) => Int(i64(bs[a - 1 + k])))] as const;
+        }
+        if (a > b) {
+            return [f2, [Str("")]] as const;
+        }
+        const [f3, v] = bytesValueF(f2, bs.slice(a - 1, b), line, "string.sub");
+        return [f3, [v]] as const;
+    }
+    const find = id == 28;
+    const [f1, p] = strArgF(fx, args, 1, name, line);
+    const [f2, i] = optIntF(f1, args, 2, name, line, 1);
+    if (f2.err) {
+        return [f2, []] as const;
+    }
+    const init = startIndex(i, len);
+    if (init > len + 1) {
+        return [f2, [Nil]] as const;
+    }
+    const b = bytes(s);
+    if (find && (truthyV(argV(args, 3)) || plainPattern(p))) {
+        const at = plainFind(b, bytes(p), init - 1);
+        return at < 0 ? [f2, [Nil]] as const : [f2, [Int(at + 1), Int(at + p.length)]] as const;
+    }
+    const [start, m] = findPattern(b, bytes(p), init - 1);
+    if (m.fault != "") {
+        return [failF(f2, line, m.fault), []] as const;
+    }
+    if (m.end < 0) {
+        return [f2, [Nil]] as const;
+    }
+    if (!find) {
+        return capturesOfF(f2, b, start, m, line);
+    }
+    const [f3, caps] = m.caps.length == 0 ? [f2, []] as const : capturesOfF(f2, b, start, m, line);
+    return [f3, concat([Int(start + 1), Int(m.end)], caps)] as const;
+}
+
+// a step of `gmatch` on the bytes `b` of its text from `pos` (the end of
+// the last match `last`): the next place, the end of this match, its
+// captures (nil at the end)
+function gmatchF(fx: Fx, b: u8[n], p: u8[m], pos: i64, last: i64, line: i64): [Fx, i64, i64, Value[]] {
+    if (pos > n) {
+        return [fx, pos, last, [Nil]] as const;
+    }
+    const [start, mt] = findPattern(b, p, pos);
+    if (mt.fault != "") {
+        return [failF(fx, line, mt.fault), pos, last, []] as const;
+    }
+    if (mt.end < 0) {
+        return [fx, n + 1, last, [Nil]] as const;
+    }
+    // (an empty match where the last one ended: one place further)
+    if (mt.end == start && mt.end == last) {
+        return gmatchF(fx, b, p, start + 1, last, line);
+    }
+    const [f1, caps] = capturesOfF(fx, b, start, mt, line);
+    return [f1, mt.end, mt.end, caps] as const;
+}
+
+// the results `rs` of a function of the library called from `a`, or its
+// fault
+function libDone(vm: Vm, a: i64, fx: Fx, rs: Value[n]): [Vm, i64] {
+    if (fx.err) {
+        const [v1, k] = newStr(vm, fx.msg);
+        return [{ ...v1, err: true, errT: T_STR, errI: k, errF: 0.0 }, 0] as const;
+    }
+    const v2 = roomRegs(vm, a + n + 1);
+    return [writeValues(v2, a, rs, 0), n] as const;
+}
+
 // the function of the library `id` called from the register `a` with `n`
 // arguments (from Lua at `line`; -1: by the library): its number of results,
 // written from `a`
 function libCall(vm: Vm, id: i64, a: i64, n: i64, line: i64): [Vm, i64] {
+    // (a part of a text of the machine: read where it is)
+    if ((id == 20 || id == 21 || id == 25 || id == 28 || id == 29) && n >= 1 && vm.rT[a + 1] == T_STR) {
+        const fx0 = { err: false, msg: "", chunk: chunkOf(vm) };
+        const others = map(iota(n), (i) => i == 0 ? Nil : toValue(vm, reg(vm, a + 1 + i)));
+        const [fx, rs] = textPrimF(fx0, vm.strs[vm.rI[a + 1]], id, others, line);
+        return libDone(vm, a, fx, rs);
+    }
+    if (id == PRIM_GMATCH_STEP && n >= 1 && vm.rT[a + 1] == T_TAB) {
+        const t = vm.rI[a + 1];
+        const sv = rawGet(vm, t, intV(1));
+        const pv = rawGet(vm, t, intV(2));
+        const posv = rawGet(vm, t, intV(3));
+        const lastv = rawGet(vm, t, intV(4));
+        if (sv.t == T_STR && pv.t == T_STR && posv.t == T_INT && lastv.t == T_INT) {
+            const fx0 = { err: false, msg: "", chunk: chunkOf(vm) };
+            const [fx, pos, last, rs] = gmatchF(fx0, bytes(vm.strs[sv.i]), bytes(vm.strs[pv.i]), posv.i, lastv.i, line);
+            return libDone(rawSet(rawSet(vm, t, intV(3), intV(pos)), t, intV(4), intV(last)), a, fx, rs);
+        }
+    }
     const args = map(iota(n), (i) => toValue(vm, reg(vm, a + 1 + i)));
     // (the registers of the library's own calls above those of the call)
     const saved = vm.ltop;
