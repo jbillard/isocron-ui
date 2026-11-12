@@ -3,13 +3,13 @@
 // when its window is closed. Its font: that of `loadFont` (DejaVuSans.ttf
 // beside it, or a font of the system); none found, the reason shown.
 // usage: todo_app [--font=file]
-import { run, loadFont, fail } from "../src/app";
-import { initial, update, typed, hovered, view } from "./todo";
+import { runWith, loadFont, fail } from "../src/app";
+import { initial, update, view } from "./todo";
 
 action main(args: string[k]): i32 {
     return match (loadFont(args)) {
         Ok(f) => {
-            const end = run("Isocron : tâches", 520, 420, f, initial(), view, update, typed, hovered);
+            const end = runWith("Isocron : tâches", 520, 420, ["Couper", "Copier", "Coller", "Tout sélectionner"], f, initial(), view, update);
             print(map(end.items, (it) => (it.done ? "[x] " : "[ ] ") + it.text));
             return 0;
         },

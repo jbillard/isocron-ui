@@ -1,0 +1,70 @@
+// The editing of a field (src/edit.isc): characters (one byte to four),
+// Backspace and Delete by characters and by words, the arrows and Home and
+// End with and without Shift, a selection replaced, Ctrl+A, C, X and V, a
+// click, a Shift+click, a drag, a double and a triple click.
+import { Editing, editing, edited, keyed, selected, replaced, wordAt } from "../src/edit";
+import { Input, Effect, Click, Drag, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, BACKSPACE, DELETE, LEFT, RIGHT, HOME, END } from "../src/input";
+
+function show(e: Editing): string {
+    return `${e.text}|${e.caret},${e.anchor}`;
+}
+
+function asked(fx: Effect[n]): string {
+    return map(fx, (f) => match (f) {
+        Copy(s) => `copy:${s}`,
+        AskPaste => "paste?",
+    }).join(" ");
+}
+
+// the inputs `ins` from the `i`-th given to the field `e` (place 1)
+function play(e: Editing, ins: Input[n], i: i64, unused: i64): Editing {
+    if (i >= n) {
+        return e;
+    }
+    const [ne, fx, own] = edited(e, ins[i], 1);
+    return play(ne, ins, i + 1, unused);
+}
+
+action main(args: string[k]): i32 {
+    const e0 = editing("");
+    // é (2 bytes), € (3), 😀 (4)
+    const e1 = play(e0, [Text(99), Text(97), Text(102), Text(233), Text(32), Text(0x20AC), Text(0x1F600)], 0, 0);
+    print(show(e1));
+    print(show(play(e1, [Key(BACKSPACE, 0)], 0, 0)));
+    print(show(play(e1, [Key(LEFT, 0), Key(LEFT, 0), Key(BACKSPACE, 0)], 0, 0)));
+    print(show(play(e1, [Key(HOME, 0), Key(DELETE, 0), Key(RIGHT, WITH_SHIFT), Key(RIGHT, WITH_SHIFT)], 0, 0)));
+    // words: Ctrl+Left twice, Ctrl+Backspace, Ctrl+Delete
+    const w = editing("un deux  trois");
+    print(show(play(w, [Key(LEFT, WITH_CTRL)], 0, 0)));
+    print(show(play(w, [Key(LEFT, WITH_CTRL), Key(LEFT, WITH_CTRL)], 0, 0)));
+    print(show(play(w, [Key(BACKSPACE, WITH_CTRL)], 0, 0)));
+    print(show(play(w, [Key(HOME, 0), Key(DELETE, WITH_CTRL)], 0, 0)));
+    print(show(play(w, [Key(HOME, 0), Key(RIGHT, WITH_CTRL), Key(RIGHT, WITH_CTRL)], 0, 0)));
+    // a selection: replaced by a character, collapsed by an arrow
+    const s = play(w, [Key(HOME, 0), Key(END, WITH_SHIFT)], 0, 0);
+    print([show(s), selected(s)] as const);
+    print(show(play(s, [Text(120)], 0, 0)));
+    print(show(play(s, [Key(LEFT, 0)], 0, 0)));
+    print(show(play(s, [Key(RIGHT, 0)], 0, 0)));
+    // the shortcuts
+    const [ca, fa] = keyed(w, 97, WITH_CTRL);
+    print([show(ca), asked(fa)] as const);
+    const [cc, fc] = keyed(ca, 99, WITH_CTRL);
+    print([show(cc), asked(fc)] as const);
+    const [cx, fxx] = keyed(play(w, [Key(LEFT, WITH_SHIFT | WITH_CTRL)], 0, 0), 120, WITH_CTRL);
+    print([show(cx), asked(fxx)] as const);
+    const [cv, fv] = keyed(cx, 118, WITH_CTRL);
+    print([show(cv), asked(fv)] as const);
+    print(show(play(cx, [Paste("trois\nquatre")], 0, 0)));
+    // the pointer: a click at 3, a Shift+click at 7, a drag to 0, a click
+    // on another place (not the field's), a double click, a triple click
+    print(show(play(w, [Click(1, 0.0f32, 0.0f32, 3, 1, 0)], 0, 0)));
+    print(show(play(w, [Click(1, 0.0f32, 0.0f32, 3, 1, WITH_SHIFT), Click(1, 0.0f32, 0.0f32, 7, 1, WITH_SHIFT)], 0, 0)));
+    print(show(play(w, [Click(1, 0.0f32, 0.0f32, 3, 1, 0), Drag(1, 0.0f32, 0.0f32, 0)], 0, 0)));
+    print(show(play(w, [Click(2, 0.0f32, 0.0f32, 3, 1, 0)], 0, 0)));
+    print(show(play(w, [Click(1, 0.0f32, 0.0f32, 4, 2, 0)], 0, 0)));
+    print(show(play(w, [Click(1, 0.0f32, 0.0f32, 6, 2, 0)], 0, 0)));
+    print(show(play(w, [Click(1, 0.0f32, 0.0f32, 4, 3, 0)], 0, 0)));
+    print(wordAt(editing(""), 0));
+    return 0;
+}

@@ -1,35 +1,344 @@
 // An application in the manner of Elm in a window of the system: its model
-// (of any type), its view laid out at the size of the window, the message
-// of a click on a place, the characters typed, the place under the
-// pointer; the boxes that scroll moved by the wheel (their offsets kept
-// here, 16 at most). Under Windows, a window of `win32`; under Linux, a window of
-// Wayland (the module `unix`, the protocol spoken by `wayland.isc`, the
-// keyboard read by `xkb.isc`): the same application. The model drawn
-// again after each change; a window resized, laid out again.
+// (of any type), its view laid out at the size of the window, and how the
+// hand changes the model (`update`, given an `Input` of input.isc, gives
+// the model and what it asks: the clipboard). The library keeps what the
+// hand does to the interface itself: the place under the pointer and the
+// shape of the pointer, the clicks counted (double, triple), the button
+// held (a drag), the boxes that scroll (the wheel, their scrollbars dragged
+// or clicked), the caret blinking (530 ms, shown again at each input), the
+// modifiers, a clipboard of its own. The steps of the hand are the same
+// everywhere (`step`); under Windows they come from a window of `win32`,
+// under Linux from a window of Wayland (the module `unix`, the protocol
+// spoken by `wayland.isc`, the keyboard read by `xkb.isc`). The model is
+// drawn again after a change; a window resized, laid out again.
 import * as sys from "sys";
 import * as win from "win32";
 import * as unix from "unix";
 import * as net from "net";
 import * as wl from "./wayland";
-import { rgb, render } from "./paint";
+import { rgb, rgba, render, Primitive } from "./paint";
 import { Font, parse } from "./font";
-import { Element, placeScrolled, hitTest, scrolled, Hit } from "./ui";
-import { Keymap, parseKeymap, charOf, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./xkb";
+import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU } from "./ui";
+import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./input";
+import { Keymap, parseKeymap, charOf } from "./xkb";
+import * as cursors from "./cursors";
 
-// the application titled `title` in a window of `width` by `height` pixels
-// (its first size), its model `m` at the start, until the window is
-// closed: its model then. `view` gives the elements of a model; `update`
-// the model after the message of a place clicked; `typed` the model after
-// a character typed (a code point; Backspace 8, Tab 9, Enter 13, Escape
-// 27; the arrows, Delete, Home and End as the codes of `xkb.isc`);
-// `hovered` the model when the pointer goes over the place of another
-// message (-1: none)
-export action run<M>(title: string, width: i64, height: i64, f: Font, m: M, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): M {
-    if (sys.platform() == "windows") {
-        return runWindows(title, width, height, f, m, view, update, typed, hovered);
-    } else {
-        return runWayland(title, width, height, f, m, view, update, typed, hovered);
+// the half period of the caret's blinking, in nanoseconds
+const BLINK: u64 = 530000000u64;
+
+// the longest time between two clicks of a double click, in nanoseconds,
+// and the farthest the pointer may move between them, in pixels
+const DOUBLE: u64 = 500000000u64;
+const NEAR: f32 = 4.0f32;
+
+// what the hand does, as the windows of each system tell it: the pointer
+// moved, a button pressed or released (0 left, 1 right, 2 middle), the
+// wheel (pixels, down: positive), a character typed, a key that edits or a
+// shortcut, the modifiers held, the size of the window, its closing, the
+// text of the clipboard
+export type Ev = Moved(f32, f32) | Down(i64) | Up(i64) | Scroll(f32) | Typed(i64) | Pressed(i64) | Mods(i64) | Resized(i64, i64) | Closed | Pasted(string);
+
+// what the library keeps of the interface: the size of the window, the
+// places of the frame shown and the offsets of its boxes that scroll, the
+// pointer, the message of the place under it, the shape it has; the
+// modifiers; the place pressed by the left button (its message, -1: none),
+// the line of a field of that press (its index among the places), the
+// corner of the place; the scrollbar dragged (its offset's number, -1:
+// none) and where its thumb was grabbed, that under the pointer; the last
+// click (its time, their count, its place); the last input (the caret
+// shown from then); whether the frame has a caret, shown or not; a
+// clipboard; what the model asked of the system since the last time the
+// window took it (`asked`); the menu of a field (open, its corner, the
+// entry under the pointer, -1: none; whether the field has a selection, to
+// cut or copy; the texts of its entries: cut, copy, paste, select all); a
+// frame to draw; the window closed
+export type Ui = {
+    w: i64,
+    h: i64,
+    hits: Hit[],
+    offsets: f32[],
+    x: f32,
+    y: f32,
+    hover: i64,
+    cursor: i64,
+    mods: i64,
+    pressed: i64,
+    field: i64,
+    px: f32,
+    py: f32,
+    bar: i64,
+    grab: f32,
+    hotBar: i64,
+    clickTime: u64,
+    clicks: i64,
+    cx: f32,
+    cy: f32,
+    since: u64,
+    caret: boolean,
+    caretOn: boolean,
+    clipboard: string,
+    asked: Effect[],
+    menu: boolean,
+    menuX: f32,
+    menuY: f32,
+    menuHover: i64,
+    menuCut: boolean,
+    labels: string[],
+    redraw: boolean,
+    closed: boolean,
+};
+
+// the texts of the entries of the menu of a field, by default
+export function englishMenu(): string[] {
+    return ["Cut", "Copy", "Paste", "Select all"];
+}
+
+// the letter of the shortcut of each entry of the menu (Ctrl+X, C, V, A)
+const MENU_KEYS: i64[] = [120, 99, 118, 97];
+
+// the interface of a window of `w` by `h` pixels at the time `now`
+export function interface(w: i64, h: i64, now: u64): Ui {
+    return {
+        w: w, h: h, hits: [], offsets: fill(16, 0.0f32), x: -1.0f32, y: -1.0f32, hover: -1, cursor: ARROW, mods: 0,
+        pressed: -1, field: -1, px: 0.0f32, py: 0.0f32, bar: -1, grab: 0.0f32, hotBar: -1,
+        clickTime: 0u64, clicks: 0, cx: 0.0f32, cy: 0.0f32, since: now, caret: false, caretOn: true,
+        clipboard: "", asked: [], menu: false, menuX: 0.0f32, menuY: 0.0f32, menuHover: -1, menuCut: false, labels: englishMenu(),
+        redraw: true, closed: false,
+    };
+}
+
+// the model after the input `i`, and the interface with what it asks
+// added to `asked` (a text copied: the clipboard of the interface too; a
+// paste asked: given at once the clipboard of the interface, the window
+// replacing it by the system's when it reaches it)
+// (compiled once, called: the update of the application is copied here
+// alone, not into each step that gives it an input)
+@noInline
+function told<M>(ui: Ui, m: M, i: Input, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    const [nm, fx] = update(m, i);
+    const copied = fold(fx, ui.clipboard, (c, e) => match (e) {
+        Copy(s) => s,
+        AskPaste => c,
+    });
+    return [{ ...ui, clipboard: copied, asked: concat(ui.asked, fx), redraw: true }, nm] as const;
+}
+
+// the offset of the box that scrolls `id` set to `v`, within `range`
+function offsetSet(offsets: f32[n], id: i64, v: f32, range: f32): f32[n] {
+    return id < 0 || id >= n ? offsets : map(iota(n), (i) => i == id ? min(range, max(0.0f32, v)) : offsets[i]);
+}
+
+// the place of the scrollbar of the box `id` (its index, -1: none)
+function barOf(hits: Hit[n], id: i64): i64 {
+    return fold(iota(n), -1, (found, i) => hits[i].kind == BAR && hits[i].id == id ? i : found);
+}
+
+// the interface and the model after the pointer moved to (x, y): a
+// scrollbar dragged, the place pressed dragged, the place under the
+// pointer, the scrollbar under it, its shape
+function movedTo<M>(ui: Ui, m: M, x: f32, y: f32, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    const at = { ...ui, x: x, y: y };
+    // a menu open: its entry under the pointer lit, nothing else
+    if (ui.menu) {
+        const e = menuAt(ui.hits, x, y);
+        return [{ ...at, menuHover: e, cursor: ARROW, redraw: at.redraw || e != ui.menuHover }, m] as const;
     }
+    if (ui.bar >= 0) {
+        const b = barOf(ui.hits, ui.bar);
+        if (b < 0) {
+            return [at, m] as const;
+        }
+        const h = ui.hits[b];
+        const off = ui.bar < ui.offsets.length ? ui.offsets[ui.bar] : 0.0f32;
+        const [ty, th] = thumb(h.y, h.h, h.range, off);
+        const room = max(1.0f32, h.h - 4.0f32 - th);
+        return [{ ...at, offsets: offsetSet(ui.offsets, ui.bar, (y - ui.grab - h.y - 2.0f32) / room * h.range, h.range), redraw: true }, m] as const;
+    }
+    const [u1, m1] = ui.pressed >= 0
+        ? told(at, m, Drag(ui.pressed, x - ui.px, y - ui.py, ui.field >= 0 && ui.field < ui.hits.length ? offsetAt(ui.hits[ui.field], x) : -1), update)
+        : [at, m] as const;
+    const now = hitTest(u1.hits, x, y);
+    const [u2, m2] = ui.pressed < 0 && now != u1.hover ? told({ ...u1, hover: now }, m1, Hover(now), update) : [u1, m1] as const;
+    const b = barAt(u2.hits, x, y);
+    const hot = b >= 0 ? u2.hits[b].id : -1;
+    // (the shape kept while a place is pressed: a selection dragged out of
+    // its field keeps its bar)
+    const shape = ui.pressed >= 0 ? u2.cursor : cursorAt(u2.hits, x, y);
+    return [{ ...u2, hotBar: hot, cursor: shape, redraw: u2.redraw || hot != ui.hotBar }, m2] as const;
+}
+
+// the interface and the model after the left button pressed at the pointer
+// at the time `now`: a scrollbar grabbed or clicked (a page towards the
+// pointer), else the place under the pointer clicked (where in it, where
+// in the text of its field, the clicks counted)
+function pressedAt<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    const b = barAt(ui.hits, ui.x, ui.y);
+    if (b >= 0) {
+        const h = ui.hits[b];
+        const off = h.id < ui.offsets.length ? ui.offsets[h.id] : 0.0f32;
+        const [ty, th] = thumb(h.y, h.h, h.range, off);
+        if (ui.y >= ty && ui.y < ty + th) {
+            return [{ ...ui, bar: h.id, grab: ui.y - ty, redraw: true }, m] as const;
+        }
+        const page = h.h * 0.9f32;
+        return [{ ...ui, offsets: offsetSet(ui.offsets, h.id, ui.y < ty ? off - page : off + page, h.range), redraw: true }, m] as const;
+    }
+    const c = clickAt(ui.hits, ui.x, ui.y);
+    if (c < 0) {
+        return [ui, m] as const;
+    }
+    const p = ui.hits[c];
+    const again = now - ui.clickTime < DOUBLE && abs(ui.x - ui.cx) < NEAR && abs(ui.y - ui.cy) < NEAR;
+    const clicks = again ? min(3, ui.clicks + 1) : 1;
+    const fi = fieldAt(ui.hits, c, ui.x, ui.y);
+    // (a click places the caret at the boundary nearest the pointer; a
+    // double click takes the word of the character under it)
+    const at = fi < 0 ? -1 : (clicks == 2 ? charAt(ui.hits[fi], ui.x) : offsetAt(ui.hits[fi], ui.x));
+    const pressed = { ...ui, pressed: p.id, field: fi, px: p.x, py: p.y, clickTime: now, clicks: clicks, cx: ui.x, cy: ui.y, since: now };
+    return told(pressed, m, Click(p.id, ui.x - p.x, ui.y - p.y, at, clicks, ui.mods), update);
+}
+
+// the entry of the menu at (x, y): its number, -1 for none (or one that
+// cannot be chosen)
+function menuAt(hits: Hit[n], x: f32, y: f32): i64 {
+    return fold(hits, -1, (found, h) => h.kind == MENU && h.range > 0.0f32 && x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h ? h.id : found);
+}
+
+// the right button pressed: over a field, its menu opened at the pointer
+// (the field given the focus first by a click when it has not)
+function menuOpened<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    const c = clickAt(ui.hits, ui.x, ui.y);
+    const fi = fieldAt(ui.hits, c, ui.x, ui.y);
+    if (fi < 0) {
+        return [ui, m] as const;
+    }
+    const h = ui.hits[fi];
+    const [u1, m1] = h.id == 0 && c >= 0
+        ? told({ ...ui, since: now }, m, Click(ui.hits[c].id, ui.x - ui.hits[c].x, ui.y - ui.hits[c].y, offsetAt(h, ui.x), 1, ui.mods), update)
+        : [ui, m] as const;
+    return [{ ...u1, menu: true, menuX: ui.x, menuY: ui.y, menuHover: -1, menuCut: h.range > 0.0f32, cursor: ARROW, redraw: true }, m1] as const;
+}
+
+// a button pressed with the menu open: an entry chosen (its shortcut given
+// to the model), the menu closed
+function menuPressed<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    const e = menuAt(ui.hits, ui.x, ui.y);
+    const closed = { ...ui, menu: false, menuHover: -1, redraw: true };
+    return e >= 0 && e < 4 ? told({ ...closed, since: now }, m, Key(MENU_KEYS[e], WITH_CTRL), update) : [closed, m] as const;
+}
+
+// the menu of a field drawn at its corner, within the window: what draws
+// it and its places (its entries, those that can be chosen with a `range`
+// of 1), over the view
+function menuLaidOut(ui: Ui, f: Font): [Primitive[], Hit[]] {
+    const n = min(4, ui.labels.length);
+    const enabled = (k: i64) => k >= 2 || ui.menuCut;
+    const entries = map(iota(n), (k) => Div({
+        ...style(),
+        width: Fill(1.0f32),
+        height: Px(28.0f32),
+        padding: 6.0f32,
+        background: ui.menuHover == k ? rgb(0xE5EDFFu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32),
+        radius: 4.0f32,
+        onClick: k,
+        cursor: ARROW,
+    }, [Label(textStyle(14.0f32, enabled(k) ? rgb(0x111827u32) : rgb(0x9CA3AFu32)), ui.labels[k])]));
+    const w = 200.0f32;
+    const h = 8.0f32 + 28.0f32 * f32(n);
+    const x = max(0.0f32, min(ui.menuX, f32(ui.w) - w - 2.0f32));
+    const y = max(0.0f32, min(ui.menuY, f32(ui.h) - h - 2.0f32));
+    const box = Div({
+        ...style(),
+        padding: 4.0f32,
+        background: rgb(0xFFFFFFu32),
+        border: 1.0f32,
+        borderColor: rgb(0xD1D5DBu32),
+        radius: 8.0f32,
+        shadowBlur: 10.0f32,
+        shadowY: 4.0f32,
+        shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.18f32),
+        cursor: ARROW,
+    }, entries);
+    const [ps, hits] = placeFrame(f, box, x, y, w, h, { offsets: [], caretOn: false, hotBar: -1 });
+    // (its entries as entries of a menu; its box a place of its own, which
+    // a click closes the menu on)
+    const own = map(hits, (p) => p.kind == CLICK ? { ...p, kind: MENU, range: enabled(p.id) ? 1.0f32 : 0.0f32 } : p);
+    return [ps, concat([placeOf(x, y, w, h, -1, MENU, 0.0f32, ARROW)], own)] as const;
+}
+
+// the interface and the model after the event `ev` at the time `now` (what
+// the model asks added to `asked`)
+// (compiled once, called by each loop of each system)
+@noInline
+export function step<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    return match (ev) {
+        Moved(x, y) => movedTo(ui, m, x, y, update),
+        Down(b) => ui.menu ? menuPressed(ui, m, now, update) : (b == 0 ? pressedAt(ui, m, now, update) : (b == 1 ? menuOpened(ui, m, now, update) : [ui, m] as const)),
+        Up(b) => {
+            if (b != 0) {
+                return [ui, m] as const;
+            }
+            if (ui.bar >= 0) {
+                return [{ ...ui, bar: -1, redraw: true }, m] as const;
+            }
+            if (ui.pressed < 0) {
+                return [ui, m] as const;
+            }
+            const [u1, m1] = told({ ...ui, pressed: -1, field: -1 }, m, Release(ui.pressed), update);
+            return [{ ...u1, cursor: cursorAt(u1.hits, ui.x, ui.y) }, m1] as const;
+        },
+        Scroll(dy) => [{ ...ui, offsets: scrolled(ui.offsets, ui.hits, ui.x, ui.y, dy), redraw: true }, m] as const,
+        Typed(c) => told({ ...ui, since: now }, m, Text(c), update),
+        // (Escape closes the menu; another key closes it and is the model's)
+        Pressed(k) => ui.menu && k == ESCAPE ? [{ ...ui, menu: false, menuHover: -1, redraw: true }, m] as const : told({ ...ui, since: now, menu: false, menuHover: -1 }, m, Key(k, ui.mods), update),
+        Mods(mods) => [{ ...ui, mods: mods }, m] as const,
+        Resized(w, h) => [{ ...ui, w: w, h: h, redraw: true }, m] as const,
+        Closed => [{ ...ui, closed: true }, m] as const,
+        Pasted(s) => told({ ...ui, since: now }, m, Paste(s), update),
+    };
+}
+
+// `step` for each of the events `evs`; a paste asked given at once the
+// clipboard of the interface
+export function steps<M>(ui: Ui, m: M, evs: Ev[n], now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    return fold(evs, [ui, m] as const, (acc, ev) => {
+        const [u, mm] = acc;
+        const before = u.asked.length;
+        const [u1, m1] = step(u, mm, ev, now, update);
+        const asks = count(iota(u1.asked.length - before), (k) => u1.asked[before + k] == AskPaste) > 0;
+        return asks ? step(u1, m1, Pasted(u1.clipboard), now, update) : [u1, m1] as const;
+    });
+}
+
+// the caret shown at the time `now`: for 530 ms from the last input, then
+// hidden and shown in turn
+export function caretShown(ui: Ui, now: u64): boolean {
+    return ((now - ui.since) / BLINK) % 2u64 == 0u64;
+}
+
+// the milliseconds until the caret blinks (-1: no caret, no limit)
+export function wakeIn(ui: Ui, now: u64): i64 {
+    if (!ui.caret) {
+        return -1;
+    }
+    const k = (now - ui.since) / BLINK;
+    return max(1, i64((ui.since + (k + 1u64) * BLINK - now) / 1000000u64) + 1);
+}
+
+// the view of `m` laid out at the size of the window at the time `now`:
+// what draws it, and the interface with its places (whether a field holds
+// the focus: a caret to blink)
+export function laidOut<M>(ui: Ui, f: Font, m: M, view: (M) => Element, now: u64): [Primitive[], Ui] {
+    const shown = caretShown(ui, now);
+    const [vps, vhits] = placeFrame(f, view(m), 0.0f32, 0.0f32, f32(ui.w), f32(ui.h), { offsets: ui.offsets, caretOn: shown, hotBar: ui.hotBar });
+    const caret = count(vhits, (h) => h.kind == FIELD && h.id == 1) > 0;
+    // the menu over the view
+    const [mps, mhits] = ui.menu ? menuLaidOut(ui, f) : [[], []] as const;
+    const ps = concat(vps, mps);
+    const hits = concat(vhits, mhits);
+    // the place under the pointer, its shape, as the new places have them
+    const hover = ui.pressed >= 0 ? ui.cursor : cursorAt(hits, ui.x, ui.y);
+    return [ps, { ...ui, hits: hits, caret: caret, caretOn: shown, cursor: hover, redraw: false }] as const;
 }
 
 // the font of the file `paths[i]`, or of the first after it that is one;
@@ -82,23 +391,40 @@ export action fail(title: string, text: string): void {
     }
 }
 
-// ----- Windows ---------------------------------------------------------
-
-// the view of `m` laid out in the window (its boxes that scroll moved by
-// `offsets`), drawn and shown; its places
-action frame<M>(w: win.Window, f: Font, m: M, view: (M) => Element, width: i64, height: i64, offsets: f32[]): Hit[] {
-    const [ps, hits] = placeScrolled(f, view(m), 0.0f32, 0.0f32, f32(width), f32(height), offsets);
-    const shown = win.show(w, render(width, height, rgb(0xFFFFFFu32), ps), width, height);
-    return hits;
+// the application titled `title` in a window of `width` by `height` pixels
+// (its first size), its model `m` at the start, until the window is
+// closed: its model then. `view` gives the elements of a model; `update`
+// the model after an input of the hand, and what it asks
+export action run<M>(title: string, width: i64, height: i64, f: Font, m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+    return runWith(title, width, height, englishMenu(), f, m, view, update);
 }
 
-action runWindows<M>(title: string, width: i64, height: i64, f: Font, m: M, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): M {
+// `run`, the texts of the entries of the menu of a field given (cut, copy,
+// paste, select all)
+export action runWith<M>(title: string, width: i64, height: i64, labels: string[], f: Font, m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+    if (sys.platform() == "windows") {
+        return runWindows(title, width, height, labels, f, m, view, update);
+    } else {
+        return runWayland(title, width, height, labels, f, m, view, update);
+    }
+}
+
+// ----- Windows ---------------------------------------------------------
+
+// the view of `m` laid out in the window, drawn and shown: the interface
+// with its places
+action frame<M>(w: win.Window, f: Font, m: M, view: (M) => Element, ui: Ui): Ui {
+    const [ps, next] = laidOut(ui, f, m, view, clock());
+    const shown = win.show(w, render(ui.w, ui.h, rgb(0xFFFFFFu32), ps), ui.w, ui.h);
+    return next;
+}
+
+action runWindows<M>(title: string, width: i64, height: i64, labels: string[], f: Font, m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
     return match (win.open(title, width, height)) {
         Ok(w) => {
             const [cw, ch] = win.clientSize(w);
-            const offsets = fill(16, 0.0f32);
-            const hits = frame(w, f, m, view, cw, ch, offsets);
-            const end = loopWindows(w, f, m, hits, offsets, 0, 0, -1, 0, cw, ch, view, update, typed, hovered);
+            const ui = frame(w, f, m, view, { ...interface(cw, ch, clock()), labels: labels });
+            const end = loopWindows(w, f, m, ui, 0, ARROW, view, update);
             win.close(w);
             return end;
         },
@@ -109,56 +435,118 @@ action runWindows<M>(title: string, width: i64, height: i64, f: Font, m: M, view
     };
 }
 
-// the code of the virtual key `k` among the keys that edit text (0: none)
+// the key that edits of the virtual key `k` (0: none)
 function editKey(k: i64): i64 {
-    return k == 37 ? LEFT : (k == 38 ? UP : (k == 39 ? RIGHT : (k == 40 ? DOWN : (k == 46 ? DELETE : (k == 36 ? HOME : (k == 35 ? END : 0))))));
+    return k == 8 ? BACKSPACE : (k == 9 ? TAB : (k == 13 ? ENTER : (k == 27 ? ESCAPE
+        : (k == 37 ? LEFT : (k == 38 ? UP : (k == 39 ? RIGHT : (k == 40 ? DOWN : (k == 46 ? DELETE : (k == 36 ? HOME : (k == 35 ? END : 0))))))))));
 }
 
-// the events of the window until it is closed: the pointer followed (the
-// place under it), a press of the left button on a place gives its
-// message, the characters typed (a pair of units of UTF-16 joined), the
-// keys that edit text; the size followed; the model drawn again after a
-// change
-action loopWindows<M>(w: win.Window, f: Font, m: M, hits: Hit[], offsets: f32[], x: i64, y: i64, hover: i64, high: i64, width: i64, height: i64, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): M {
-    return match (win.events(w, -1)) {
+// the bit of the modifier of the virtual key `k` (Shift 16, Ctrl 17, Alt
+// 18; 0: none)
+function modifierOf(k: i64): i64 {
+    return k == 16 ? WITH_SHIFT : (k == 17 ? WITH_CTRL : (k == 18 ? WITH_ALT : 0));
+}
+
+// the events of the hand of the events of a window of Windows: the
+// modifiers followed (`mods`), a pair of units of UTF-16 joined (`high`,
+// the first of a pair waiting), the keys that edit and the letters held
+// with Ctrl (not with AltGr: Ctrl and Alt, which types characters) as
+// keys, the characters a space or above as characters
+function fromWindows(evs: win.Event[n], mods: i64, high: i64): [Ev[], i64, i64] {
+    return readFrom(evs, 0, [], mods, high);
+}
+
+// `fromWindows` from the `i`-th event, after the events of the hand `out`
+function readFrom(evs: win.Event[n], i: i64, out: Ev[], mods: i64, high: i64): [Ev[], i64, i64] {
+    if (i >= n) {
+        return [out, mods, high] as const;
+    }
+    return match (evs[i]) {
+        win.Resize(a, b) => readFrom(evs, i + 1, concat(out, [Resized(a, b)]), mods, high),
+        win.Pointer(a, b) => readFrom(evs, i + 1, concat(out, [Moved(f32(a) + 0.5f32, f32(b) + 0.5f32)]), mods, high),
+        win.Button(b, down) => readFrom(evs, i + 1, concat(out, [down ? Down(b) : Up(b)]), mods, high),
+        // a notch (120) of the wheel: 48 pixels
+        win.Wheel(d) => readFrom(evs, i + 1, concat(out, [Scroll(-f32(d) * 0.4f32)]), mods, high),
+        win.Key(k, down, s) => {
+            const bit = modifierOf(k);
+            if (bit != 0) {
+                const nm = down ? mods | bit : mods & (~bit);
+                return readFrom(evs, i + 1, concat(out, [Mods(nm)]), nm, high);
+            }
+            const edit = editKey(k);
+            const ctrlOnly = (mods & WITH_CTRL) != 0 && (mods & WITH_ALT) == 0;
+            const code = edit != 0 ? edit : (ctrlOnly && k >= 65 && k <= 90 ? k + 32 : 0);
+            return readFrom(evs, i + 1, down && code != 0 ? concat(out, [Pressed(code)]) : out, mods, high);
+        },
+        win.Char(u) => {
+            if (u >= 0xD800 && u < 0xDC00) {
+                return readFrom(evs, i + 1, out, mods, u);
+            }
+            const c = u >= 0xDC00 && u < 0xE000 && high > 0 ? 0x10000 + (high - 0xD800) * 1024 + (u - 0xDC00) : u;
+            return readFrom(evs, i + 1, c >= 32 && c != 127 ? concat(out, [Typed(c)]) : out, mods, 0);
+        },
+        win.Close => readFrom(evs, i + 1, concat(out, [Closed]), mods, high),
+        _ => readFrom(evs, i + 1, out, mods, high),
+    };
+}
+
+// the events of the hand `evs` from the `i`-th, each given to `step` in its
+// order, what the model asks done at once: a text copied put on the
+// clipboard of the system, a paste given its text (that of the interface
+// when the system's is not reached)
+action feedWindows<M>(w: win.Window, ui: Ui, m: M, evs: Ev[n], i: i64, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    if (i >= n || ui.closed) {
+        return [ui, m] as const;
+    }
+    const [u1, m1] = step(ui, m, evs[i], now, update);
+    // (ISC_UI_TRACE set: each event of the hand printed, with its time and
+    // the clicks counted)
+    if (sys.env("ISC_UI_TRACE") != None) {
+        print([i64(now / 1000000u64), evs[i], u1.clicks, u1.cursor] as const);
+    }
+    const [u2, m2] = askedWindows(w, { ...u1, asked: [] }, m1, u1.asked, 0, now, update);
+    return feedWindows(w, u2, m2, evs, i + 1, now, update);
+}
+
+// what the model asked (`fx` from the `k`-th), done
+action askedWindows<M>(w: win.Window, ui: Ui, m: M, fx: Effect[n], k: i64, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    if (k >= n) {
+        return [ui, m] as const;
+    }
+    return match (fx[k]) {
+        Copy(s) => {
+            const put = win.clipboardSet(w, s);
+            return askedWindows(w, ui, m, fx, k + 1, now, update);
+        },
+        AskPaste => {
+            const text = match (win.clipboardGet(w)) {
+                Ok(t) => t,
+                Err(e) => ui.clipboard,
+            };
+            const [u1, m1] = step(ui, m, Pasted(text), now, update);
+            return askedWindows(w, { ...u1, asked: [] }, m1, fx, k + 1, now, update);
+        },
+    };
+}
+
+// the events of the window until it is closed, the caret blinking between
+// them, the shape of the pointer (`shape`: that set) following the places
+action loopWindows<M>(w: win.Window, f: Font, m: M, ui: Ui, high: i64, shape: i64, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+    return match (win.events(w, wakeIn(ui, clock()))) {
         Ok(evs) => {
-            const start: [M, f32[], i64, i64, i64, i64, boolean, boolean, i64, i64] = [m, offsets, x, y, hover, high, false, false, width, height] as const;
-            const [next, noff, nx, ny, nhover, nhigh, again, closed, nw, nh] = fold(evs, start, (acc, e) => {
-                const [mm, of, px, py, hv, hs, redraw, cl, ww, hh] = acc;
-                return match (e) {
-                    win.Resize(a, b) => [mm, of, px, py, hv, hs, true, cl, a, b] as const,
-                    win.Pointer(a, b) => {
-                        const now = hitTest(hits, f32(a) + 0.5f32, f32(b) + 0.5f32);
-                        return now == hv ? [mm, of, a, b, hv, hs, redraw, cl, ww, hh] as const : [hovered(mm, now), of, a, b, now, hs, true, cl, ww, hh] as const;
-                    },
-                    win.Button(b, down) => {
-                        const msg = b == 0 && down ? hitTest(hits, f32(px) + 0.5f32, f32(py) + 0.5f32) : -1;
-                        return msg >= 0 ? [update(mm, msg), of, px, py, hv, hs, true, cl, ww, hh] as const : acc;
-                    },
-                    // a notch (120) of the wheel: 48 pixels
-                    win.Wheel(d) => [mm, scrolled(of, hits, f32(px) + 0.5f32, f32(py) + 0.5f32, -f32(d) * 0.4f32), px, py, hv, hs, true, cl, ww, hh] as const,
-                    win.Char(u) => {
-                        if (u >= 0xD800 && u < 0xDC00) {
-                            return [mm, of, px, py, hv, u, redraw, cl, ww, hh] as const;
-                        }
-                        const c = u >= 0xDC00 && u < 0xE000 && hs > 0 ? 0x10000 + (hs - 0xD800) * 1024 + (u - 0xDC00) : u;
-                        return [typed(mm, c), of, px, py, hv, 0, true, cl, ww, hh] as const;
-                    },
-                    win.Key(k, down, s) => {
-                        const c = down ? editKey(k) : 0;
-                        return c != 0 ? [typed(mm, c), of, px, py, hv, hs, true, cl, ww, hh] as const : acc;
-                    },
-                    win.Close => [mm, of, px, py, hv, hs, redraw, true, ww, hh] as const,
-                    _ => acc,
-                };
-            });
-            if (closed) {
-                return next;
+            const now = clock();
+            const [ins, mods, nh] = fromWindows(evs, ui.mods, high);
+            const [u1, m1] = feedWindows(w, ui, m, ins, 0, now, update);
+            if (u1.closed) {
+                return m1;
             }
-            if (again && nw > 0 && nh > 0) {
-                return loopWindows(w, f, next, frame(w, f, next, view, nw, nh, noff), noff, nx, ny, nhover, nhigh, nw, nh, view, update, typed, hovered);
+            // the caret blinked: drawn again
+            const blink = u1.caret && caretShown(u1, now) != u1.caretOn;
+            const next = (u1.redraw || blink) && u1.w > 0 && u1.h > 0 ? frame(w, f, m1, view, u1) : u1;
+            if (next.cursor != shape) {
+                win.setCursor(w, next.cursor);
             }
-            return loopWindows(w, f, next, hits, noff, nx, ny, nhover, nhigh, nw, nh, view, update, typed, hovered);
+            return loopWindows(w, f, m1, next, nh, next.cursor, view, update);
         },
         Err(e) => m,
     };
@@ -167,19 +555,40 @@ action loopWindows<M>(w: win.Window, f: Font, m: M, hits: Hit[], offsets: f32[],
 // ----- Wayland ---------------------------------------------------------
 
 // what the loop keeps from one read to the next: the bytes of an event cut
-// by a read, the size of the window, whether it is shown, the places of
-// the view, the pointer and the place under it, the images made (their
-// objects), the keyboard (its table, its modifiers), the end
-type State = { pending: u8[], w: i64, h: i64, shown: boolean, hits: Hit[], offsets: f32[], x: f64, y: f64, hover: i64, images: i64, keymap: Keymap, mods: u32, done: boolean, failed: string };
+// by a read, whether the window is shown, the next id of an object (the
+// compositor takes them in their order), the objects of the image shown
+// (its pool and its buffer, 0: none), the keyboard (its table, its
+// modifiers as Wayland gives them); the pointer: the serial of its entry
+// (0: outside the window), the shape shown (-1: none yet), the device of
+// the shapes the compositor draws (0: none), else the surface and the
+// first buffer of the images the program draws; the end
+type State = {
+    pending: u8[],
+    shown: boolean,
+    next: u32,
+    pool: u32,
+    buffer: u32,
+    keymap: Keymap,
+    mods: u32,
+    entry: u32,
+    shape: i64,
+    shapes: u32,
+    cursorSurface: u32,
+    cursorFirst: u32,
+    done: boolean,
+    failed: string,
+};
 
-// the objects of the `k`-th image: its pool and its buffer (ids from
-// `wl.POOL` on, in the order they are made)
-function poolOf(k: i64): u32 {
-    return wl.POOL + u32(2 * k);
-}
-
-function bufferOf(k: i64): u32 {
-    return wl.POOL + u32(2 * k + 1);
+// the shape of the pointer `shape` shown at its entry
+action shapeShown(c: net.Conn, st: State, shape: i64): State {
+    if (st.entry == 0u32 || shape == st.shape) {
+        return st;
+    }
+    const [hx, hy] = cursors.hotSpot(shape);
+    const sent = st.shapes != 0u32
+        ? net.write(c, wl.shapeRequest(st.shapes, st.entry, shape))
+        : net.write(c, wl.pointerImageRequest(st.cursorSurface, st.cursorFirst + u32(shape), cursors.SIDE, st.entry, hx, hy));
+    return { ...st, shape: shape };
 }
 
 action globals(c: net.Conn, pending: u8[], g: wl.Globals): wl.Globals {
@@ -194,19 +603,22 @@ action globals(c: net.Conn, pending: u8[], g: wl.Globals): wl.Globals {
 }
 
 // the view of `m` drawn into a new memory shared with the compositor and
-// shown as the `images`-th image, the previous one destroyed; its places
-action drawWayland<M>(c: net.Conn, f: Font, m: M, view: (M) => Element, st: State): State {
-    const [ps, hits] = placeScrolled(f, view(m), 0.0f32, 0.0f32, f32(st.w), f32(st.h), st.offsets);
-    const k = st.images;
-    return match (unix.shared(st.w * st.h * 4)) {
+// shown as the `images`-th image, the previous one destroyed; the
+// interface with its places
+action drawWayland<M>(c: net.Conn, f: Font, m: M, view: (M) => Element, ui: Ui, st: State): [Ui, State] {
+    const [ps, next] = laidOut(ui, f, m, view, clock());
+    const pool = st.next;
+    const buffer = st.next + 1u32;
+    return match (unix.shared(ui.w * ui.h * 4)) {
         Ok(mem) => {
-            const written = unix.writeSharedU32(mem, 0, render(st.w, st.h, rgb(0xFFFFFFu32), ps));
-            const sent = unix.sendWithFds(c, wl.imageRequests(poolOf(k), bufferOf(k), st.w * st.h * 4, st.w, st.h), [unix.sharedFd(mem)]);
+            const written = unix.writeSharedU32(mem, 0, render(ui.w, ui.h, rgb(0xFFFFFFu32), ps));
+            const sent = unix.sendWithFds(c, wl.imageRequests(pool, buffer, ui.w * ui.h * 4, ui.w, ui.h), [unix.sharedFd(mem)]);
             unix.closeShared(mem);
-            const old = k > 0 ? net.write(c, wl.destroyRequests(poolOf(k - 1), bufferOf(k - 1))) : Ok(());
-            return written == Ok(()) && sent == Ok(()) ? { ...st, hits: hits, images: k + 1 } : { ...st, done: true, failed: "an image not sent" };
+            const old = st.pool != 0u32 ? net.write(c, wl.destroyRequests(st.pool, st.buffer)) : Ok(());
+            const drawn = { ...st, next: st.next + 2u32, pool: pool, buffer: buffer };
+            return written == Ok(()) && sent == Ok(()) ? [next, drawn] as const : [next, { ...drawn, done: true, failed: "an image not sent" }] as const;
         },
-        Err(e) => ({ ...st, done: true, failed: sys.message(e) }),
+        Err(e) => [next, { ...st, done: true, failed: sys.message(e) }] as const,
     };
 }
 
@@ -227,19 +639,36 @@ action keymapOf(fd: i32, bytes: i64): Keymap {
     return km;
 }
 
-action runWayland<M>(title: string, width: i64, height: i64, f: Font, m: M, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): M {
+action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f: Font, m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
     const path = wl.socketPath(sys.env("WAYLAND_DISPLAY") ?? "", sys.env("XDG_RUNTIME_DIR") ?? "/tmp");
     return match (unix.connect(path)) {
         Ok(c) => {
             const asked = net.write(c, concat(wl.request(wl.DISPLAY, 1u32, wl.le32(wl.REGISTRY)), wl.request(wl.DISPLAY, 0u32, wl.le32(wl.SYNC))));
-            const g = globals(c, [], { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32 });
+            const g = globals(c, [], { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32, cursorShape: 0u32 });
             if (g.compositor == 0u32 || g.shm == 0u32 || g.wmBase == 0u32) {
                 net.close(c);
                 return m;
             }
             const made = net.write(c, wl.windowRequests(g, title));
-            const st = { pending: [], w: width, h: height, shown: false, hits: [], offsets: fill(16, 0.0f32), x: 0.0, y: 0.0, hover: -1, images: 0, keymap: parseKeymap(""), mods: 0u32, done: false, failed: "" };
-            const end = loopWayland(c, f, m, st, view, update, typed, hovered);
+            // the shapes of the pointer: drawn by the compositor when it can
+            // (ids 13 and 14), else three images drawn here (a surface, a
+            // pool, three buffers: 13 to 17)
+            const shaped = g.cursorShape != 0u32 ? net.write(c, wl.shapeRequests(g, wl.POOL, wl.POOL + 1u32)) : Ok(());
+            const images = g.cursorShape != 0u32 ? Ok(()) : match (unix.shared(3 * cursors.SIDE * cursors.SIDE * 4)) {
+                Ok(mem) => {
+                    const w0 = unix.writeSharedU32(mem, 0, concat(concat(cursors.image(0), cursors.image(1)), cursors.image(2)));
+                    const sent = unix.sendWithFds(c, wl.pointerImageRequests(wl.POOL, wl.POOL + 1u32, wl.POOL + 2u32, 3, cursors.SIDE), [unix.sharedFd(mem)]);
+                    unix.closeShared(mem);
+                    return sent;
+                },
+                Err(e) => Err(e),
+            };
+            const st = {
+                pending: [], shown: false, next: g.cursorShape != 0u32 ? wl.POOL + 2u32 : wl.POOL + 5u32, pool: 0u32, buffer: 0u32,
+                keymap: parseKeymap(""), mods: 0u32, entry: 0u32, shape: -1,
+                shapes: g.cursorShape != 0u32 ? wl.POOL + 1u32 : 0u32, cursorSurface: wl.POOL, cursorFirst: wl.POOL + 2u32, done: false, failed: "",
+            };
+            const end = loopWayland(c, f, m, { ...interface(width, height, clock()), labels: labels }, st, view, update);
             net.close(c);
             return end;
         },
@@ -247,10 +676,41 @@ action runWayland<M>(title: string, width: i64, height: i64, f: Font, m: M, view
     };
 }
 
-// the events of the window until it is closed (or its compositor gone)
-action loopWayland<M>(c: net.Conn, f: Font, m: M, st: State, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): M {
-    if (st.done) {
+// the modifiers of Wayland (the usual tables: Shift 1, Control 4, Mod1 8)
+// as those of input.isc
+function modsOf(mods: u32): i64 {
+    return ((mods & 1u32) != 0u32 ? WITH_SHIFT : 0) | ((mods & 4u32) != 0u32 ? WITH_CTRL : 0) | ((mods & 8u32) != 0u32 ? WITH_ALT : 0);
+}
+
+// the event of the hand of a character `ch` of the keyboard: the keys that
+// edit and the letters held with Ctrl (not with AltGr) as keys, the
+// characters a space or above as characters (none: -1 as a character)
+function keyEvent(ch: i64, mods: u32): Ev {
+    const ctrl = (mods & 4u32) != 0u32 && (mods & 128u32) == 0u32;
+    if (ch == 8 || ch == 9 || ch == 13 || ch == 27 || ch >= 0x110000) {
+        return Pressed(ch);
+    }
+    if (ctrl && ((ch >= 97 && ch <= 122) || (ch >= 65 && ch <= 90))) {
+        return Pressed(ch | 32);
+    }
+    return Typed(ch >= 32 && ch != 127 ? ch : -1);
+}
+
+// the events of the window until it is closed (or its compositor gone),
+// the caret blinking between them
+action loopWayland<M>(c: net.Conn, f: Font, m: M, ui: Ui, st: State, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+    if (st.done || ui.closed) {
         return m;
+    }
+    // nothing to read before the caret blinks: drawn again
+    const wait = wakeIn(ui, clock());
+    const ready = match (unix.poll([unix.fdOf(c)], wait)) {
+        Ok(rs) => rs[0] != 0i32,
+        Err(e) => true,
+    };
+    if (!ready) {
+        const [u2, s2] = st.shown ? drawWayland(c, f, m, view, ui, st) : [ui, st] as const;
+        return loopWayland(c, f, m, u2, s2, view, update);
     }
     const r = match (unix.receiveWithFds(c, 65536, 8)) {
         Ok(got) => got,
@@ -264,49 +724,62 @@ action loopWayland<M>(c: net.Conn, f: Font, m: M, st: State, view: (M) => Elemen
     const k = findIndex(evs, (e) => e.obj == wl.KEYBOARD && e.op == 0u32);
     const km = k >= 0 && r.fds.length > 0 ? keymapOf(r.fds[0], i64(wl.word(evs[k].args, 4))) : st.keymap;
     const closed = map(r.fds, (fd) => unix.closeFd(fd) == Ok(()) ? 1 : 0);
-    const [next, ns] = handle(c, f, m, evs, 0, { ...st, pending: rest, keymap: km }, view, update, typed, hovered);
-    return loopWayland(c, f, next, ns, view, update, typed, hovered);
+    const [nm, nu, ns] = handle(c, f, m, evs, 0, ui, { ...st, pending: rest, keymap: km }, view, update);
+    const now = clock();
+    const blink = nu.caret && caretShown(nu, now) != nu.caretOn;
+    const [u2, s2] = (nu.redraw || blink) && ns.shown && !ns.done ? drawWayland(c, f, nm, view, nu, ns) : [nu, ns] as const;
+    return loopWayland(c, f, nm, u2, shapeShown(c, s2, u2.cursor), view, update);
 }
 
 // the events `evs` from the `i`-th, answered in their order
-action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, st: State, view: (M) => Element, update: (M, i64) => M, typed: (M, i64) => M, hovered: (M, i64) => M): [M, State] {
+action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, st: State, view: (M) => Element, update: (M, Input) => [M, Effect[]]): [M, Ui, State] {
     if (i >= evs.length || st.done) {
-        return [m, st] as const;
+        return [m, ui, st] as const;
     }
-    const [nm, ns] = match (wl.input(evs[i])) {
-        wl.Size(w, h) => [m, w > 0 && h > 0 ? { ...st, w: w, h: h } : st] as const,
+    const now = clock();
+    const hand = (ev: Ev) => {
+        const [u, mm] = steps(ui, m, [ev], now, update);
+        return [mm, { ...u, asked: [] }, st] as const;
+    };
+    const [nm, nu, ns] = match (wl.input(evs[i])) {
+        wl.Size(w, h) => w > 0 && h > 0 ? hand(Resized(w, h)) : [m, ui, st] as const,
         wl.Configure(serial) => {
             const acked = net.write(c, wl.request(wl.XDG_SURFACE, 4u32, wl.le32(serial)));
-            return [m, drawWayland(c, f, m, view, { ...st, shown: true })] as const;
+            const [u2, s2] = drawWayland(c, f, m, view, ui, { ...st, shown: true });
+            return [m, u2, s2] as const;
         },
         wl.Ping(serial) => {
             const pong = net.write(c, wl.request(wl.WM_BASE, 3u32, wl.le32(serial)));
-            return [m, st] as const;
+            return [m, ui, st] as const;
         },
-        wl.Pointer(x, y) => {
-            const now = hitTest(st.hits, f32(x), f32(y));
-            return now == st.hover ? [m, { ...st, x: x, y: y }] as const : changed(c, f, hovered(m, now), view, { ...st, x: x, y: y, hover: now });
+        wl.Pointer(x, y) => hand(Moved(f32(x), f32(y))),
+        // its entry: its serial kept (the shape of the pointer set with it)
+        wl.Enter(serial, x, y) => {
+            const [mm, u, s2] = hand(Moved(f32(x), f32(y)));
+            return [mm, u, shapeShown(c, { ...s2, entry: serial, shape: -1 }, u.cursor)] as const;
         },
-        // the left button (BTN_LEFT) pressed
+        wl.Leave => [m, ui, { ...st, entry: 0u32 }] as const,
+        // the buttons of evdev: left (BTN_LEFT, 272), right, middle
         wl.Button(b, down) => {
-            const msg = down && b == 272u32 ? hitTest(st.hits, f32(st.x), f32(st.y)) : -1;
-            return msg >= 0 ? changed(c, f, update(m, msg), view, st) : [m, st] as const;
+            const which = b == 272u32 ? 0 : (b == 273u32 ? 1 : (b == 274u32 ? 2 : -1));
+            return which < 0 ? [m, ui, st] as const : hand(down ? Down(which) : Up(which));
         },
-        wl.Modifiers(mods) => [m, { ...st, mods: mods }] as const,
+        wl.Modifiers(mods) => {
+            const [u, mm] = steps(ui, m, [Mods(modsOf(mods))], now, update);
+            return [mm, u, { ...st, mods: mods }] as const;
+        },
         // the vertical wheel: its distance, four times (a notch: 10)
-        wl.Axis(axis, value) => axis == 0u32 ? changed(c, f, m, view, { ...st, offsets: scrolled(st.offsets, st.hits, f32(st.x), f32(st.y), f32(value) * 4.0f32) }) : [m, st] as const,
+        wl.Axis(axis, value) => axis == 0u32 ? hand(Scroll(f32(value) * 4.0f32)) : [m, ui, st] as const,
         wl.Key(code, down) => {
             const ch = down ? charOf(st.keymap, code, st.mods) : 0;
-            return ch != 0 ? changed(c, f, typed(m, ch), view, st) : [m, st] as const;
+            return ch != 0 ? match (keyEvent(ch, st.mods)) {
+                Typed(t) => t < 0 ? [m, ui, st] as const : hand(Typed(t)),
+                ev => hand(ev),
+            } : [m, ui, st] as const;
         },
-        wl.Close => [m, { ...st, done: true }] as const,
-        wl.Failure(msg) => [m, { ...st, done: true, failed: msg }] as const,
-        _ => [m, st] as const,
+        wl.Close => hand(Closed),
+        wl.Failure(msg) => [m, ui, { ...st, done: true, failed: msg }] as const,
+        _ => [m, ui, st] as const,
     };
-    return handle(c, f, nm, evs, i + 1, ns, view, update, typed, hovered);
-}
-
-// the model `m` drawn when the window is shown
-action changed<M>(c: net.Conn, f: Font, m: M, view: (M) => Element, st: State): [M, State] {
-    return [m, st.shown ? drawWayland(c, f, m, view, st) : st] as const;
+    return handle(c, f, nm, evs, i + 1, nu, ns, view, update);
 }

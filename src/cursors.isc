@@ -1,0 +1,103 @@
+// The images of the pointer drawn by the library, for the compositors of
+// Wayland that do not draw the shapes of the pointer themselves (without
+// the protocol `wp_cursor_shape_v1`, or a theme of cursors to read): an
+// arrow, a hand, a bar of text, each black within a white edge as the
+// usual pointers, drawn pixel by pixel; the point of each (its hot spot).
+import { ARROW, POINTER, TEXT } from "./ui";
+
+// the side of an image of the pointer, in pixels
+export const SIDE: i64 = 24;
+
+// the rows of each image: `X` black, `o` white, a space nothing
+const ARROW_ROWS: string[] = [
+    "X",
+    "XX",
+    "XoX",
+    "XooX",
+    "XoooX",
+    "XooooX",
+    "XoooooX",
+    "XooooooX",
+    "XoooooooX",
+    "XooooooooX",
+    "XoooooooooX",
+    "XooooooXXXXX",
+    "XoooXooX",
+    "XooX XooX",
+    "XoX  XooX",
+    "XX    XooX",
+    "X     XooX",
+    "       XooX",
+    "       XooX",
+    "        XX",
+];
+
+const HAND_ROWS: string[] = [
+    "     XX",
+    "    XooX",
+    "    XooX",
+    "    XooX",
+    "    XooX",
+    "    XooXXX",
+    "    XooXooXXX",
+    "    XooXooXooXX",
+    " XX XooXooXooXoX",
+    "XooXXooooooooXooX",
+    "XoooXoooooooooooX",
+    " XooXoooooooooooX",
+    "  XoXoooooooooooX",
+    "  XooooooooooooX",
+    "   XoooooooooooX",
+    "   XooooooooooX",
+    "    XoooooooooX",
+    "    XoooooooooX",
+    "     XoooooooX",
+    "     XoooooooX",
+    "     XXXXXXXXX",
+];
+
+const BAR_ROWS: string[] = [
+    "ooo ooo",
+    "oXXoXXo",
+    " ooXoo",
+    "  oXo",
+    "  oXo",
+    "  oXo",
+    "  oXo",
+    "  oXo",
+    "  oXo",
+    "  oXo",
+    "  oXo",
+    "  oXo",
+    "  oXo",
+    "  oXo",
+    " ooXoo",
+    "oXXoXXo",
+    "ooo ooo",
+];
+
+// the image of the rows `rows` in a square of SIDE pixels (ARGB, premultiplied)
+function drawn(rows: string[n]): u32[] {
+    return map(iota(SIDE * SIDE), (i) => {
+        const y = i / SIDE;
+        const x = i % SIDE;
+        if (y >= n) {
+            return 0u32;
+        }
+        const r = bytes(rows[y]);
+        if (x >= r.length) {
+            return 0u32;
+        }
+        return r[x] == 88u8 ? 0xFF000000u32 : (r[x] == 111u8 ? 0xFFFFFFFFu32 : 0u32);
+    });
+}
+
+// the image of the shape `shape` (ARROW, POINTER, TEXT), SIDE by SIDE
+export function image(shape: i64): u32[] {
+    return shape == POINTER ? drawn(HAND_ROWS) : (shape == TEXT ? drawn(BAR_ROWS) : drawn(ARROW_ROWS));
+}
+
+// the point of the image of `shape` the pointer is at (x, y)
+export function hotSpot(shape: i64): [i64, i64] {
+    return shape == POINTER ? [5, 0] as const : (shape == TEXT ? [3, 8] as const : [0, 0] as const);
+}

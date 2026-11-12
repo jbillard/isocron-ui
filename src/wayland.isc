@@ -73,7 +73,7 @@ function eventStarts(b: u8[n], at: i64, found: i64[]): i64[] {
 
 // the names of the globals of the compositor that a window needs (0: not
 // offered)
-export type Globals = { compositor: u32, shm: u32, wmBase: u32, seat: u32 };
+export type Globals = { compositor: u32, shm: u32, wmBase: u32, seat: u32, cursorShape: u32 };
 
 // the ids the client gives its objects (the display is 1). A compositor
 // takes a new id only when it is the next one or one it has freed
@@ -116,7 +116,8 @@ export function globalsOf(evs: Event[n], g: Globals): Globals {
         return iface == "wl_compositor" ? { ...acc, compositor: name }
             : (iface == "wl_shm" ? { ...acc, shm: name }
             : (iface == "xdg_wm_base" ? { ...acc, wmBase: name }
-            : (iface == "wl_seat" ? { ...acc, seat: name } : acc)));
+            : (iface == "wl_seat" ? { ...acc, seat: name }
+            : (iface == "wp_cursor_shape_manager_v1" ? { ...acc, cursorShape: name } : acc))));
     });
 }
 
@@ -170,6 +171,46 @@ export function imageRequests(pool: u32, buffer: u32, bytes: i64, w: i64, h: i64
     return concat(concat(concat(concat(made, buf), attach), damage), commit);
 }
 
+// the shapes of the pointer asked of the compositor (`wp_cursor_shape_v1`):
+// its manager bound as `manager`, the device of the pointer as `device`
+export function shapeRequests(g: Globals, manager: u32, device: u32): u8[] {
+    return concat(bind(g.cursorShape, "wp_cursor_shape_manager_v1", 1u32, manager), request(manager, 1u32, concat(le32(device), le32(POINTER))));
+}
+
+// the shape of the pointer set by the device `device` at the entry `serial`
+// (`set_shape`: 1 the default arrow, 4 a hand, 9 a bar of text)
+export function shapeRequest(device: u32, serial: u32, shape: i64): u8[] {
+    const code = shape == 1 ? 4u32 : (shape == 2 ? 9u32 : 1u32);
+    return request(device, 1u32, concat(le32(serial), le32(code)));
+}
+
+// the images of the pointer drawn by the program: a surface `surface`, a
+// pool `pool` of `count` images of `side` by `side` pixels (its descriptor
+// sent beside it), a buffer of each (`ARGB8888`, format 0) from `first`
+export function pointerImageRequests(surface: u32, pool: u32, first: u32, count: i64, side: i64): u8[] {
+    const made = concat(request(COMPOSITOR, 0u32, le32(surface)), request(SHM, 0u32, concat(le32(pool), i32le(i32(count * side * side * 4)))));
+    return buffersFrom(made, pool, first, 0, count, side);
+}
+
+// the buffers of the images from the `k`-th, after the requests `acc`
+function buffersFrom(acc: u8[], pool: u32, first: u32, k: i64, count: i64, side: i64): u8[] {
+    if (k >= count) {
+        return acc;
+    }
+    const made = request(pool, 0u32, concat(concat(concat(concat(concat(le32(first + u32(k)), i32le(i32(k * side * side * 4))), i32le(i32(side))), i32le(i32(side))), i32le(i32(side * 4))), le32(0u32)));
+    return buffersFrom(concat(acc, made), pool, first, k + 1, count, side);
+}
+
+// the pointer shown as the image of the buffer `buffer` on the surface
+// `surface`, its point at (hx, hy), at the entry `serial`
+// (`wl_pointer.set_cursor`, then the surface attached, damaged, committed)
+export function pointerImageRequest(surface: u32, buffer: u32, side: i64, serial: u32, hx: i64, hy: i64): u8[] {
+    const set = request(POINTER, 0u32, concat(concat(concat(le32(serial), le32(surface)), i32le(i32(hx))), i32le(i32(hy))));
+    const attach = request(surface, 1u32, concat(concat(le32(buffer), i32le(0i32)), i32le(0i32)));
+    const damage = request(surface, 9u32, concat(concat(concat(i32le(0i32), i32le(0i32)), i32le(i32(side))), i32le(i32(side))));
+    return concat(concat(concat(set, attach), damage), request(surface, 6u32, []));
+}
+
 // the buffer and the pool of an image no longer shown destroyed
 // (`wl_buffer.destroy`, `wl_shm_pool.destroy`)
 export function destroyRequests(pool: u32, buffer: u32): u8[] {
@@ -187,6 +228,8 @@ export type Input =
     | FrameDone(u32)
     | Released
     | Pointer(f64, f64)
+    | Enter(u32, f64, f64)
+    | Leave
     | Button(u32, boolean)
     | Key(u32, boolean)
     | Keymap(u32)
@@ -221,7 +264,10 @@ export function input(e: Event): Input {
     if (e.obj == TOPLEVEL && e.op == 1u32) {
         return Close;
     }
-    if (e.obj == FRAME && e.op == 0u32) {
+    // (the ids of a frame and of a buffer fixed by the programs that make
+    // them so; others give these ids to objects of their own: a release of
+    // a buffer, without arguments, is no frame)
+    if (e.obj == FRAME && e.op == 0u32 && e.args.length >= 4) {
         return FrameDone(word(e.args, 0));
     }
     if (e.obj == BUFFER && e.op == 0u32) {
@@ -230,10 +276,15 @@ export function input(e: Event): Input {
     if (e.obj == SEAT && e.op == 0u32) {
         return Capabilities(word(e.args, 0));
     }
-    if (e.obj == POINTER && ((e.op == 0u32 && e.args.length >= 16) || (e.op == 2u32 && e.args.length >= 12))) {
-        // enter: serial, surface, x, y; motion: time, x, y
-        const at = e.op == 0u32 ? 8 : 4;
-        return Pointer(fixed(word(e.args, at)), fixed(word(e.args, at + 4)));
+    // enter: serial, surface, x, y; leave; motion: time, x, y
+    if (e.obj == POINTER && e.op == 0u32 && e.args.length >= 16) {
+        return Enter(word(e.args, 0), fixed(word(e.args, 8)), fixed(word(e.args, 12)));
+    }
+    if (e.obj == POINTER && e.op == 1u32) {
+        return Leave;
+    }
+    if (e.obj == POINTER && e.op == 2u32 && e.args.length >= 12) {
+        return Pointer(fixed(word(e.args, 4)), fixed(word(e.args, 8)));
     }
     // the wheel: an axis (0 vertical) and a distance in pixels (down:
     // positive)

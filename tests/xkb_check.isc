@@ -2,7 +2,8 @@
 // Shift and Caps Lock, digits and their symbols, space, the keys that edit
 // text), and a part of a French one written here (AltGr, accented letters,
 // a key whose symbols the table names by `Uxxxx`).
-import { parseKeymap, charOf, SHIFT, CAPS, ALTGR, LEFT, DELETE } from "../src/xkb";
+import { parseKeymap, charOf, SHIFT, CAPS, ALTGR } from "../src/xkb";
+import { LEFT, DELETE } from "../src/input";
 
 action main(args: string[k]): i32 {
     const us = parseKeymap(stringOf(readBytes("tests/keymaps/us.xkb")));

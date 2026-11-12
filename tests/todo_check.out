@@ -1,7 +1,17 @@
-[x] Écrire la bibliothèque | [ ] Taper du texte dans un champ / draft "" focused false
-[x] Écrire la bibliothèque | [ ] Taper du texte dans un champ / draft "" focused false
-[x] Écrire la bibliothèque | [ ] Taper du texte dans un champ / draft "Lait" focused true
-[x] Écrire la bibliothèque | [ ] Taper du texte dans un champ | [ ] Lait / draft "" focused true
-[x] Écrire la bibliothèque | [ ] Taper du texte dans un champ | [ ] Lait | [ ] Café 😀 / draft "" focused true
-[x] Écrire la bibliothèque | [x] Lait | [ ] Café 😀 / draft "" focused true
-[ ] Café 😀 / draft "" focused false
+[x] Écrire la bibliothèque | [ ] Taper du texte dans un champ / field "" 0,0 focused false
+[x] Écrire la bibliothèque | [ ] Taper du texte dans un champ / field "" 0,0 focused false
+2
+[x] Écrire la bibliothèque | [ ] Taper du texte dans un champ / field "Lait" 4,4 focused true
+[x] Écrire la bibliothèque | [ ] Taper du texte dans un champ | [ ] Lait / field "" 0,0 focused true
+[x] Écrire la bibliothèque | [ ] Taper du texte dans un champ | [ ] Lait / field "Café 😀 😀" 15,15 focused true
+ 😀
+[x] Écrire la bibliothèque | [ ] Taper du texte dans un champ | [ ] Lait / field "Café 😀 😀" 5,0 focused true
+[x] Écrire la bibliothèque | [ ] Taper du texte dans un champ | [ ] Lait | [ ] Café 😀 😀 / field "" 0,0 focused true
+1
+[x] Écrire la bibliothèque | [x] Lait | [ ] Café 😀 😀 / field "" 0,0 focused true
+[ ] Café 😀 😀 / field "" 0,0 focused false
+(true, true)
+(false, abc)
+(true, false)
+[ ] Café 😀 😀 / field "abcabc" 6,6 focused true
+false

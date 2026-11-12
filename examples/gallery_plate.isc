@@ -1,11 +1,14 @@
 // The plate of the gallery: everything the library draws, with variants of
 // each effect, for an image of 1280 by 1040. The rows, from the top: the
 // radii of the corners; the borders; colours with alpha over each other;
-// the shadows; widgets made of them; a card of an interface; places and
+// the shadows; the components of the library; a card of an interface; places and
 // sizes that are not whole pixels; their texts last, over them.
 import { Primitive, Box, Blur, Color, Quad, quad, rounded, bordered, rgb, rgba, transparent, render } from "../src/paint";
 import { Font } from "../src/font";
 import { line, lineWidth, paragraph, Start, Center, End } from "../src/text";
+import { Element, Fill, placeFrame } from "../src/ui";
+import { editing } from "../src/edit";
+import * as wd from "../src/widgets";
 
 // a quad with a radius for each corner
 function corners(q: Quad, tl: f32, tr: f32, br: f32, bl: f32): Quad {
@@ -117,34 +120,32 @@ function shadows(): Primitive[] {
     return concat(concat(concat(concat(concat(under, cards), glow), layered), hard), odd);
 }
 
-// row 5: widgets made of quads and shadows
-function widgets(): Primitive[] {
+// row 5: the components of the library (src/widgets.isc), each laid out
+// in its box: what every application shows of them
+function widgets(f: Font): Primitive[] {
     const y = 600.0f32;
-    const white = rgb(0xFFFFFFu32);
-    const gray = rgb(0xD1D5DBu32);
-    const green = rgb(0x10B981u32);
-    const knob = (x: f32, yy: f32, d: f32) => [shadow(x, yy, d, d, d * 0.5f32, 0.0f32, 1.0f32, 2.0f32, rgba(0.0f32, 0.0f32, 0.0f32, 0.35f32)), box(rounded(quad(x, yy, d, d, white), d * 0.5f32))];
-    const button = [shadow(40.0f32, y, 120.0f32, 40.0f32, 20.0f32, 0.0f32, 2.0f32, 4.0f32, rgba(0.23f32, 0.51f32, 0.96f32, 0.5f32)), box(rounded(quad(40.0f32, y, 120.0f32, 40.0f32, blue()), 20.0f32))];
-    const pressed = [box(rounded(quad(180.0f32, y, 120.0f32, 40.0f32, rgb(0x1D4ED8u32)), 20.0f32))];
-    const outlined = [box(bordered(rounded(quad(320.0f32, y, 120.0f32, 40.0f32, white), 20.0f32), 2.0f32, blue()))];
-    const toggleOn = concat([box(rounded(quad(470.0f32, y + 4.0f32, 64.0f32, 32.0f32, green), 16.0f32))], knob(504.0f32, y + 7.0f32, 26.0f32));
-    const toggleOff = concat([box(rounded(quad(560.0f32, y + 4.0f32, 64.0f32, 32.0f32, gray), 16.0f32))], knob(563.0f32, y + 7.0f32, 26.0f32));
-    const checked = [box(rounded(quad(650.0f32, y + 6.0f32, 28.0f32, 28.0f32, blue()), 6.0f32)), box(rounded(quad(659.0f32, y + 15.0f32, 10.0f32, 10.0f32, white), 2.0f32))];
-    const unchecked = [box(bordered(rounded(quad(700.0f32, y + 6.0f32, 28.0f32, 28.0f32, white), 6.0f32), 2.0f32, rgb(0x9CA3AFu32)))];
-    const radio = [box(bordered(rounded(quad(750.0f32, y + 6.0f32, 28.0f32, 28.0f32, white), 14.0f32), 2.0f32, blue())), box(rounded(quad(758.0f32, y + 14.0f32, 12.0f32, 12.0f32, blue()), 6.0f32))];
-    const slider = concat([box(rounded(quad(810.0f32, y + 17.0f32, 200.0f32, 6.0f32, gray), 3.0f32)), box(rounded(quad(810.0f32, y + 17.0f32, 130.0f32, 6.0f32, blue()), 3.0f32))], knob(927.0f32, y + 7.0f32, 26.0f32));
-    const progress = [box(rounded(quad(1040.0f32, y + 14.0f32, 200.0f32, 12.0f32, rgb(0xE5E7EBu32)), 6.0f32)), box(rounded(quad(1040.0f32, y + 14.0f32, 72.0f32, 12.0f32, green), 6.0f32))];
-    // avatars over each other, each ringed with white; a badge
-    const avatars = map(iota(5), (i) => box(bordered(rounded(quad(40.0f32 + f32(i) * 34.0f32, y + 60.0f32, 48.0f32, 48.0f32, rgb([0xF87171u32, 0xFBBF24u32, 0x34D399u32, 0x60A5FAu32, 0xA78BFAu32][i])), 24.0f32), 3.0f32, white)));
-    const badge = [box(rounded(quad(230.0f32, y + 60.0f32, 48.0f32, 48.0f32, rgb(0x6B7280u32)), 12.0f32)), box(bordered(rounded(quad(266.0f32, y + 54.0f32, 20.0f32, 20.0f32, rgb(0xEF4444u32)), 10.0f32), 2.0f32, rgb(0xF3F4F6u32)))];
-    // an input field, empty and with the focus (a ring of colour)
-    const field = [box(bordered(rounded(quad(320.0f32, y + 64.0f32, 200.0f32, 40.0f32, white), 8.0f32), 1.0f32, gray))];
-    const focused = [box(bordered(rounded(quad(546.0f32, y + 60.0f32, 208.0f32, 48.0f32, rgba(0.23f32, 0.51f32, 0.96f32, 0.25f32)), 12.0f32), 0.0f32, transparent())), box(bordered(rounded(quad(550.0f32, y + 64.0f32, 200.0f32, 40.0f32, white), 8.0f32), 1.5f32, blue()))];
-    // a segmented control
-    const segments = [box(rounded(quad(790.0f32, y + 62.0f32, 240.0f32, 44.0f32, rgb(0xE5E7EBu32)), 10.0f32)), shadow(872.0f32, y + 66.0f32, 76.0f32, 36.0f32, 8.0f32, 0.0f32, 1.0f32, 2.0f32, rgba(0.0f32, 0.0f32, 0.0f32, 0.2f32)), box(rounded(quad(872.0f32, y + 66.0f32, 76.0f32, 36.0f32, white), 8.0f32))];
-    // a tooltip: a dark bubble and its arrow (a small square under it)
-    const tip = [box(rounded(quad(1060.0f32, y + 60.0f32, 140.0f32, 36.0f32, rgb(0x111827u32)), 8.0f32)), box(corners(quad(1122.0f32, y + 90.0f32, 16.0f32, 16.0f32, rgb(0x111827u32)), 0.0f32, 0.0f32, 8.0f32, 0.0f32))];
-    return concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(button, pressed), outlined), toggleOn), toggleOff), checked), unchecked), radio), slider), progress), avatars), badge), concat(field, focused)), segments), tip);
+    const fr = { offsets: [], caretOn: true, hotBar: -1 };
+    const at = (e: Element, x: f32, yy: f32, w: f32, h: f32) => {
+        const [ps, hits] = placeFrame(f, e, x, yy, w, h, fr);
+        return ps;
+    };
+    const still = { hovered: false, pressed: false };
+    const buttons = concat(concat(
+        at(wd.button("Valider", 1, true, Fill(1.0f32), still), 40.0f32, y, 120.0f32, 40.0f32),
+        at(wd.button("Appuyé", 2, true, Fill(1.0f32), { hovered: true, pressed: true }), 180.0f32, y, 120.0f32, 40.0f32)),
+        at(wd.button("Annuler", 3, false, Fill(1.0f32), still), 320.0f32, y, 120.0f32, 40.0f32));
+    const switches = concat(at(wd.toggle(true, 4), 470.0f32, y + 4.0f32, 64.0f32, 32.0f32), at(wd.toggle(false, 5), 560.0f32, y + 4.0f32, 64.0f32, 32.0f32));
+    const boxes = concat(concat(at(wd.checkbox(true, 6, still), 650.0f32, y + 6.0f32, 28.0f32, 28.0f32), at(wd.checkbox(false, 7, still), 700.0f32, y + 6.0f32, 28.0f32, 28.0f32)), at(wd.radio(true, 8, still), 750.0f32, y + 6.0f32, 28.0f32, 28.0f32));
+    const bars = concat(at(wd.slider(0.672f32, 9, 200.0f32), 810.0f32, y + 4.0f32, 200.0f32, 32.0f32), at(wd.progress(0.36f32, 200.0f32), 1040.0f32, y + 14.0f32, 200.0f32, 12.0f32));
+    const av = (i: i64) => at(wd.avatar([0xF87171u32, 0xFBBF24u32, 0x34D399u32, 0x60A5FAu32, 0xA78BFAu32][i]), 40.0f32 + f32(i) * 34.0f32, y + 60.0f32, 48.0f32, 48.0f32);
+    const avatars = concat(concat(concat(concat(av(0), av(1)), av(2)), av(3)), av(4));
+    // a square of an application under its badge
+    const badge = concat([box(rounded(quad(230.0f32, y + 60.0f32, 48.0f32, 48.0f32, rgb(0x6B7280u32)), 12.0f32))], at(wd.badge("3"), 266.0f32, y + 54.0f32, 20.0f32, 20.0f32));
+    const fields = concat(at(wd.textField(editing(""), false, "Votre nom", 10, Fill(1.0f32)), 320.0f32, y + 64.0f32, 200.0f32, 40.0f32), at(wd.textField(editing("Isocron"), true, "Votre nom", 11, Fill(1.0f32)), 550.0f32, y + 64.0f32, 200.0f32, 40.0f32));
+    const segments = at(wd.segments(["Jour", "Semaine", "Mois"], 1, 12, 232.0f32 / 3.0f32), 790.0f32, y + 62.0f32, 240.0f32, 44.0f32);
+    // a tooltip and its arrow (a small square with a rounded corner under it)
+    const tip = concat(at(wd.tooltip("Une infobulle", 140.0f32), 1060.0f32, y + 60.0f32, 140.0f32, 36.0f32), [box(corners(quad(1122.0f32, y + 90.0f32, 16.0f32, 16.0f32, rgb(0x111827u32)), 0.0f32, 0.0f32, 8.0f32, 0.0f32))]);
+    return concat(concat(concat(concat(concat(concat(concat(concat(buttons, switches), boxes), bars), avatars), badge), fields), segments), tip);
 }
 
 // row 6: a card of an interface: a header with its upper corners rounded,
@@ -231,19 +232,9 @@ function labels(f: Font): Primitive[] {
     const t10 = concat(t9, centred(f, "deux ombres", 1100.0f32, 410.0f32, 110.0f32, 80.0f32, 14.0f32, ink));
     const t11 = concat(t10, centred(f, "étiquette", 40.0f32, 520.0f32, 160.0f32, 34.0f32, 14.0f32, ink));
     const t12 = concat(t11, centred(f, "coins alternés", 260.0f32, 520.0f32, 160.0f32, 34.0f32, 14.0f32, ink));
-    const t13 = concat(t12, centred(f, "Valider", 40.0f32, 600.0f32, 120.0f32, 40.0f32, 15.0f32, white));
-    const t14 = concat(t13, centred(f, "Appuyé", 180.0f32, 600.0f32, 120.0f32, 40.0f32, 15.0f32, white));
-    const t15 = concat(t14, centred(f, "Annuler", 320.0f32, 600.0f32, 120.0f32, 40.0f32, 15.0f32, blue()));
-    const t16 = concat(t15, line(f, 12.0f32, "36 %", 1210.0f32, 597.0f32, gray));
-    const t17 = concat(t16, centred(f, "3", 266.0f32, 654.0f32, 20.0f32, 20.0f32, 11.0f32, white));
-    const t18 = concat(t17, line(f, 14.0f32, "Votre nom", 334.0f32, 689.0f32, rgb(0x9CA3AFu32)));
-    const t19 = concat(t18, line(f, 14.0f32, "Isocron", 564.0f32, 689.0f32, ink));
-    const t20 = concat(t19, [Box(quad(565.0f32 + lineWidth(f, 14.0f32, "Isocron"), 675.0f32, 1.5f32, 18.0f32, blue()))]);
-    const t21 = concat(t20, centred(f, "Jour", 790.0f32, 662.0f32, 82.0f32, 44.0f32, 13.0f32, gray));
-    const t22 = concat(t21, centred(f, "Semaine", 872.0f32, 666.0f32, 76.0f32, 36.0f32, 13.0f32, ink));
-    const t23 = concat(t22, centred(f, "Mois", 948.0f32, 662.0f32, 82.0f32, 44.0f32, 13.0f32, gray));
-    const t24 = concat(t23, centred(f, "Une infobulle", 1060.0f32, 660.0f32, 140.0f32, 36.0f32, 13.0f32, white));
-    const t25 = concat(t24, line(f, 16.0f32, "Tâches de la semaine", 60.0f32, 778.0f32, white));
+    // (the texts of the components drawn by them, row 5)
+    const t16 = concat(t12, line(f, 12.0f32, "36 %", 1210.0f32, 597.0f32, gray));
+    const t25 = concat(t16, line(f, 16.0f32, "Tâches de la semaine", 60.0f32, 778.0f32, white));
     const t26 = concat(t25, linesFrom(f, rows, fill(4, 90.0f32), map(iota(4), (i) => 820.0f32 + f32(i) * 40.0f32), 14.0f32, ink, 0, []));
     const t27 = concat(t26, rightFrom(f, states, 580.0f32, map(iota(4), (i) => 820.0f32 + f32(i) * 40.0f32), 12.0f32, gray, 0, []));
     const t28 = concat(t27, line(f, 12.0f32, "4 tâches", 60.0f32, 985.0f32, gray));
@@ -259,5 +250,5 @@ function labels(f: Font): Primitive[] {
 
 // every primitive of the plate, in their order, the texts last
 export function plate(f: Font): Primitive[] {
-    return concat(concat(concat(concat(concat(concat(concat(radii(), borders()), alphas()), shadows()), widgets()), panel()), fractions()), labels(f));
+    return concat(concat(concat(concat(concat(concat(concat(radii(), borders()), alphas()), shadows()), widgets(f)), panel()), fractions()), labels(f));
 }

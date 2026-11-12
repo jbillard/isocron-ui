@@ -5,19 +5,8 @@
 // the euro, `Uxxxx`; the keys that edit text (Backspace, Return, Tab,
 // Escape, Delete, the arrows, Home, End) as the codes of `keys`.
 
-// the keys that edit text, as typed: below a space, as their ASCII codes;
-// the others past the last code point
-export const BACKSPACE: i64 = 8;
-export const TAB: i64 = 9;
-export const ENTER: i64 = 13;
-export const ESCAPE: i64 = 27;
-export const LEFT: i64 = 0x110001;
-export const UP: i64 = 0x110002;
-export const RIGHT: i64 = 0x110003;
-export const DOWN: i64 = 0x110004;
-export const DELETE: i64 = 0x110005;
-export const HOME: i64 = 0x110006;
-export const END: i64 = 0x110007;
+// the keys that edit text: their codes in `input.isc`
+import { BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./input";
 
 // what each key gives: four levels (none, Shift, AltGr, Shift and AltGr)
 // for each code of evdev below 256, 0 for nothing

@@ -157,6 +157,20 @@ export function lineWidth(f: Font, em: f32, s: string): f32 {
     return fold(iota(gs.length), 0.0f32, (w, i) => w + f32(advance(f, gs[i]) + (i + 1 < gs.length ? kerning(f, gs[i], gs[i + 1]) : 0)) * k);
 }
 
+// the boundaries of the characters of the line `s` at `em`: the offset of
+// each in the bytes of `s`, then its length; the pen at each from the start
+// of the line (kerning included), then its advance
+export function stops(f: Font, em: f32, s: string): [i64[], f32[]] {
+    const b = bytes(s);
+    const starts = filter(iota(b.length), (i) => (b[i] & 0xC0u8) != 0x80u8);
+    const gs = map(codePoints(s), (cp) => glyphOf(f, cp));
+    const n = gs.length;
+    const k = em / f32(f.unitsPerEm);
+    const steps = map(iota(n), (i) => f32(advance(f, gs[i]) + (i + 1 < n ? kerning(f, gs[i], gs[i + 1]) : 0)) * k);
+    const ends = scan(steps, (a, z) => a + z, 0.0f32);
+    return [concat(starts, [b.length]), concat([0.0f32], ends)] as const;
+}
+
 // the line `s` at `em` pixels a em, its pen starting at `x` on the
 // baseline `y` (its pixels above it), in the colour `c`: a glyph for each
 // character that draws something, each at its pen to a quarter of a pixel

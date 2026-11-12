@@ -1,51 +1,106 @@
-// The list of tasks (examples/todo.isc) laid out in 520 by 420 pixels:
-// clicks played at the centres of their places, characters typed (a word,
-// a Backspace, Enter, an accented letter, a character of four bytes), a
-// task ticked, one removed, the tasks done cleared; the model at each
-// step.
+// The list of tasks (examples/todo.isc) driven by the steps of the library
+// (src/app.isc, `steps`) as a window gives them, laid out in 520 by 420
+// pixels after each: the pointer moved to the centres of places and the
+// left button pressed and released, characters typed and keys pressed (a
+// word, a Backspace, Enter, an accented letter, a character of four bytes,
+// Shift+Left and Ctrl+X, Ctrl+V, a double click on a word), a task ticked,
+// one removed, the tasks done cleared, Escape; the model at each step, the
+// shape of the pointer over the field and over a button.
 import { parse, Font } from "../src/font";
-import { place, hitTest, Hit } from "../src/ui";
-import { Model, initial, update, typed, view, FIELD, ADD, CLEAR, NOTHING, TICK, REMOVE } from "../examples/todo";
+import { Hit } from "../src/ui";
+import { Ui, Ev, Moved, Down, Up, Typed, Pressed, Mods, interface, steps, laidOut } from "../src/app";
+import { WITH_SHIFT, WITH_CTRL, BACKSPACE, ENTER, ESCAPE, LEFT, END } from "../src/input";
+import { Model, initial, update, view, FIELD, ADD, CLEAR, NOTHING, TICK, REMOVE } from "../examples/todo";
 
+// the centre of the place of the message `id`
 function centre(hits: Hit[n], id: i64): [f32, f32] {
-    const k = findIndex(hits, (h) => h.id == id);
+    const k = findIndex(hits, (h) => h.kind == 0 && h.id == id);
     return [hits[k].x + hits[k].w * 0.5f32, hits[k].y + hits[k].h * 0.5f32] as const;
 }
 
-// the model after a click on the place of `id`, laid out from `m`
-function click(f: Font, m: Model, id: i64): Model {
-    const [ps, hits] = place(f, view(m), 0.0f32, 0.0f32, 520.0f32, 420.0f32);
-    const [x, y] = centre(hits, id);
-    return update(m, hitTest(hits, x, y));
+// the interface and the model after the events `evs` from the `i`-th, laid
+// out after each, at the time `now` (`dt` nanoseconds between two)
+function drive(f: Font, ui: Ui, m: Model, evs: Ev[n], i: i64, now: u64, dt: u64): [Ui, Model] {
+    if (i >= n) {
+        return [ui, m] as const;
+    }
+    const [u1, m1] = steps(ui, m, [evs[i]], now, update);
+    const [ps, u2] = laidOut(u1, f, m1, view, now);
+    return drive(f, u2, m1, evs, i + 1, now + dt, dt);
 }
 
-// the model after the characters of `s` typed, one after the other
-function typeAll(m: Model, cs: i64[n], i: i64): Model {
-    return i >= n ? m : typeAll(typed(m, cs[i]), cs, i + 1);
+// the centre of the entry `k` of the menu open
+function entry(hits: Hit[n], k: i64): [f32, f32] {
+    const i = findIndex(hits, (h) => h.kind == 5 && h.id == k);
+    return [hits[i].x + hits[i].w * 0.5f32, hits[i].y + hits[i].h * 0.5f32] as const;
+}
+
+// a click at the centre of the place of `id`
+function click(f: Font, ui: Ui, m: Model, id: i64): [Ui, Model] {
+    const [x, y] = centre(ui.hits, id);
+    return drive(f, ui, m, [Moved(x, y), Down(0), Up(0)], 0, 1000000000u64, 1000000000u64);
+}
+
+function typing(cs: i64[n]): Ev[n] {
+    return map(cs, (c) => Typed(c));
 }
 
 function show(m: Model): string {
-    return `${join(map(m.items, (it) => (it.done ? "[x] " : "[ ] ") + it.text), " | ")} / draft "${m.draft}" focused ${m.focused}`;
+    return `${join(map(m.items, (it) => (it.done ? "[x] " : "[ ] ") + it.text), " | ")} / field "${m.field.text}" ${m.field.caret},${m.field.anchor} focused ${m.focused}`;
 }
 
 action main(args: string[k]): i32 {
     return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
         Ok(f) => {
             const m0 = initial();
+            const [ps0, u0] = laidOut(interface(520, 420, 0u64), f, m0, view, 0u64);
             print(show(m0));
             // typed without the focus: nothing
-            const m1 = typeAll(m0, [76, 97], 0);
+            const [u1, m1] = drive(f, u0, m0, typing([76, 97]), 0, 0u64, 1000000000u64);
             print(show(m1));
-            const m2 = typeAll(click(f, m1, FIELD), [76, 97, 105, 116, 120, 8], 0);
+            const [u2a, m2a] = click(f, u1, m1, FIELD);
+            print(u2a.cursor);
+            const [u2, m2] = drive(f, u2a, m2a, concat(typing([76, 97, 105, 116, 120]), [Pressed(BACKSPACE)]), 0, 0u64, 1000000000u64);
             print(show(m2));
-            const m3 = typed(m2, 13);
+            const [u3, m3] = drive(f, u2, m2, [Pressed(ENTER)], 0, 0u64, 1000000000u64);
             print(show(m3));
-            const m4 = click(f, typeAll(m3, [67, 97, 102, 233, 32, 128512], 0), ADD);
+            // "Café 😀", Shift+Left twice (the emoji and the space), Ctrl+X,
+            // Ctrl+V twice
+            const [u4, m4] = drive(f, u3, m3, concat(typing([67, 97, 102, 233, 32, 128512]), [Mods(WITH_SHIFT), Pressed(LEFT), Pressed(LEFT), Mods(WITH_CTRL), Pressed(120), Pressed(118), Pressed(118), Mods(0)]), 0, 0u64, 1000000000u64);
             print(show(m4));
-            const m5 = click(f, click(f, m4, TICK + 2), REMOVE + 1);
+            print(u4.clipboard);
+            // a double click on the first word of the field: selected
+            const [fx, fy] = centre(u4.hits, FIELD);
+            const fieldX = u4.hits[findIndex(u4.hits, (h) => h.kind == 3)].x;
+            // (100 ms between two events: the clicks of a double click)
+            const [u5, m5] = drive(f, u4, m4, [Moved(fieldX + 6.0f32, fy), Down(0), Up(0), Down(0), Up(0)], 0, 0u64, 100000000u64);
             print(show(m5));
-            const m6 = click(f, click(f, m5, CLEAR), NOTHING);
+            const [u6, m6] = click(f, u5, m5, ADD);
             print(show(m6));
+            print(u6.cursor);
+            const [u7, m7] = click(f, u6, m6, TICK + 2);
+            const [u8, m8] = click(f, u7, m7, REMOVE + 1);
+            print(show(m8));
+            const [u9, m9] = click(f, u8, m8, CLEAR);
+            const [u10, m10] = click(f, u9, m9, NOTHING);
+            print(show(m10));
+            // the menu of the field: "abc" typed and selected (Ctrl+A), the
+            // right button over the field (the menu open), "Copy" chosen;
+            // End, the menu again, "Paste" chosen
+            const [u11, m11] = click(f, u10, m10, FIELD);
+            const [u12, m12] = drive(f, u11, m11, concat(typing([97, 98, 99]), [Mods(WITH_CTRL), Pressed(97), Mods(0), Down(1), Up(1)]), 0, 0u64, 1000000000u64);
+            print([u12.menu, u12.menuCut] as const);
+            const [cx, cy] = entry(u12.hits, 1);
+            const [u13, m13] = drive(f, u12, m12, [Moved(cx, cy), Down(0), Up(0)], 0, 0u64, 1000000000u64);
+            print([u13.menu, u13.clipboard] as const);
+            const [u14, m14] = drive(f, u13, m13, [Pressed(END), Down(1), Up(1)], 0, 0u64, 1000000000u64);
+            print([u14.menu, u14.menuCut] as const);
+            const [px, py] = entry(u14.hits, 2);
+            const [u15, m15] = drive(f, u14, m14, [Moved(px, py), Down(0), Up(0)], 0, 0u64, 1000000000u64);
+            print(show(m15));
+            // Escape closes the menu
+            const [u16, m16] = drive(f, u15, m15, [Moved(fx, fy), Down(1), Pressed(ESCAPE)], 0, 0u64, 1000000000u64);
+            print(u16.menu);
             return 0;
         },
         Err(e) => {

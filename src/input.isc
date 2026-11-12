@@ -1,0 +1,46 @@
+// What an application of the library is told of the hand (`Input`), and
+// what it asks of the system in return (`Effect`): the places of its view
+// clicked, dragged and released (where in them, where in their text, how
+// many clicks), the place under the pointer, the characters typed, the
+// keys that edit and the shortcuts, the text of the clipboard; the text
+// copied to the clipboard, the clipboard asked for.
+
+// the modifiers held with a key, as bits
+export const WITH_SHIFT: i64 = 1;
+export const WITH_CTRL: i64 = 2;
+export const WITH_ALT: i64 = 4;
+
+// the keys that edit text: below a space, as their ASCII codes; the others
+// past the last code point
+export const BACKSPACE: i64 = 8;
+export const TAB: i64 = 9;
+export const ENTER: i64 = 13;
+export const ESCAPE: i64 = 27;
+export const LEFT: i64 = 0x110001;
+export const UP: i64 = 0x110002;
+export const RIGHT: i64 = 0x110003;
+export const DOWN: i64 = 0x110004;
+export const DELETE: i64 = 0x110005;
+export const HOME: i64 = 0x110006;
+export const END: i64 = 0x110007;
+
+// the input of the hand:
+// - `Click(place, x, y, at, clicks, mods)`: the left button pressed on the
+//   place whose message is `place`, at (x, y) from its top left corner;
+//   `at`, the offset in the text of a field under it where a caret would go
+//   (-1: no field); `clicks`, 1, 2 for a double click, 3 for a triple one;
+//   the modifiers held
+// - `Drag(place, x, y, at)`: the pointer moved, the button held since a
+//   click on `place` (x, y and `at` as for that place, beyond it too)
+// - `Release(place)`: the button released after a click on `place`
+// - `Hover(place)`: the place under the pointer changed (-1: none)
+// - `Text(c)`: a character typed (a code point, a space or above)
+// - `Key(k, mods)`: a key that edits (BACKSPACE ... END) or a letter held
+//   with Ctrl (its lower case code: Ctrl+C is `Key(99, WITH_CTRL)`), and
+//   the modifiers held
+// - `Paste(s)`: the text of the clipboard, after `AskPaste`
+export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i64) | Release(i64) | Hover(i64) | Text(i64) | Key(i64, i64) | Paste(string);
+
+// what an application asks after an input: a text copied to the clipboard,
+// the text of the clipboard (it comes as `Paste`)
+export type Effect = Copy(string) | AskPaste;

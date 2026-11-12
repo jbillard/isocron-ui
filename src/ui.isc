@@ -2,11 +2,30 @@
 // or a column (a part of flexbox: a gap between children, a padding,
 // sizes fixed, as their content or sharing the room left, children packed
 // at the start, the centre or the end, or spread; aligned across or
-// stretched), and texts cut in lines; the primitives that draw them, and
-// the places a click reaches, the last drawn first.
-import { Primitive, Box, Blur, Clip, Unclip, Color, quad, rounded, bordered, transparent } from "./paint";
+// stretched), texts cut in lines, the line of a field (its selection, its
+// caret, moved across to keep its caret in sight); the primitives that
+// draw them, and the places the pointer reaches, the last drawn first: a
+// click, the wheel, a scrollbar, the characters of a field, the shape of
+// the pointer.
+import { Primitive, Box, Blur, Clip, Unclip, Color, quad, rounded, bordered, transparent, rgb, rgba } from "./paint";
 import { Font } from "./font";
-import { Align, Start, Center, End, paragraph, measureParagraph } from "./text";
+import { Align, Start, Center, End, paragraph, measureParagraph, line, lineWidth, stops } from "./text";
+import { Editing, selection } from "./edit";
+
+// the shapes of the pointer over a place: an arrow, a hand (a place that a
+// click reaches), a bar (a text)
+export const ARROW: i64 = 0;
+export const POINTER: i64 = 1;
+export const TEXT: i64 = 2;
+
+// the kinds of places: a click, the wheel, a scrollbar, the characters of a
+// field, a shape of the pointer alone
+export const CLICK: i64 = 0;
+export const WHEEL: i64 = 1;
+export const BAR: i64 = 2;
+export const FIELD: i64 = 3;
+export const SHAPE: i64 = 4;
+export const MENU: i64 = 5;
 
 // a size along an axis: as its content, a number of pixels, or a share of
 // the room its siblings leave (`Fill(1.0)` and `Fill(2.0)`: a third and two)
@@ -46,19 +65,61 @@ export type Style = {
     // a box whose column of children scrolls (clipped): the number of its
     // offset among those the application keeps (0 to 15; -1: none)
     scroll: i64,
+    // the shape of the pointer over the box (-1: a hand over a box a click
+    // reaches, else that of the box under it)
+    cursor: i64,
+    // the padding across and down when not that of `padding` (-1)
+    padX: f32,
+    padY: f32,
+    // a ring around the box, outside it (its place unchanged): its width (0:
+    // none) and colour, its corners those of the box widened by it
+    outline: f32,
+    outlineColor: Color,
 };
 
 // how a text looks: its size (`em`, pixels a em), its colour, how its lines are
 // placed in its width, the height of a line
 export type TextStyle = { em: f32, color: Color, align: Align, lineHeight: f32 };
 
-// an element: a box and its children, or a text
-export type Element = Div(Style, Element[k]) | Label(TextStyle, string);
+// an element: a box and its children, a text, or the line of a field (its
+// text, caret and selection; with the focus, its caret and its selection
+// drawn; a text shown while it is empty, in a grey)
+export type Element = Div(Style, Element[k]) | Label(TextStyle, string) | Input(TextStyle, Editing, boolean, string);
 
-// a place a click reaches (`kind` 0: a box and its message), or a place
-// the wheel scrolls (`kind` 1: a box that scrolls, the number of its
-// offset as `id`, as far as `range` pixels)
-export type Hit = { x: f32, y: f32, w: f32, h: f32, id: i64, kind: i64, range: f32 };
+// a place the pointer reaches, by its `kind`: CLICK (a box and its message
+// `id`), WHEEL (a box that scrolls: the number of its offset as `id`, as
+// far as `range` pixels), BAR (the scrollbar of such a box, along its
+// right side), FIELD (the line of a field: the pen at each boundary of its
+// characters, `stops`, and their offsets in its text, `marks`; its `id` 1
+// with the focus, its `range` 1 with a selection), SHAPE (a shape of the
+// pointer alone), MENU (an entry of a menu of the library, its number as
+// `id`, `range` 1 when it can be chosen); the shape of the pointer over it
+// (-1: none)
+export type Hit = { x: f32, y: f32, w: f32, h: f32, id: i64, kind: i64, range: f32, cursor: i64, stops: f32[], marks: i64[] };
+
+// what the frame drawn shows besides the view: the offsets of the boxes
+// that scroll, the caret (shown or hidden by its blinking), the scrollbar
+// under the pointer (its offset's number, -1: none)
+export type Frame = { offsets: f32[], caretOn: boolean, hotBar: i64 };
+
+// a place without the boundaries of a field
+export function placeOf(x: f32, y: f32, w: f32, h: f32, id: i64, kind: i64, range: f32, cursor: i64): Hit {
+    return { x: x, y: y, w: w, h: h, id: id, kind: kind, range: range, cursor: cursor, stops: [], marks: [] };
+}
+
+// the colours of the caret of a field and of its hint
+function caretColor(): Color {
+    return rgb(0x3B82F6u32);
+}
+
+function hintColor(): Color {
+    return rgb(0x9CA3AFu32);
+}
+
+// the colour of a selection
+function selectionColor(): Color {
+    return rgba(0.231f32, 0.510f32, 0.965f32, 0.28f32);
+}
 
 // a box that draws nothing and lays out a column
 export function style(): Style {
@@ -81,7 +142,17 @@ export function style(): Style {
         onClick: -1,
         clip: false,
         scroll: -1,
+        cursor: -1,
+        padX: -1.0f32,
+        padY: -1.0f32,
+        outline: 0.0f32,
+        outlineColor: transparent(),
     };
+}
+
+// the padding across and down of the style `st`
+function padsOf(st: Style): [f32, f32] {
+    return [st.padX >= 0.0f32 ? st.padX : st.padding, st.padY >= 0.0f32 ? st.padY : st.padding] as const;
 }
 
 // a text of `em` pixels a em in the colour `c`, its lines at the start
@@ -101,7 +172,7 @@ function isRow(d: Direction): boolean {
 function lengthOf(e: Element, wide: boolean): Length {
     return match (e) {
         Div(st, cs) => wide ? st.width : st.height,
-        Label(ts, s) => Auto,
+        _ => Auto,
     };
 }
 
@@ -127,9 +198,12 @@ function sized(l: Length, content: f32): f32 {
 function measure(f: Font, e: Element, room: f32): [f32, f32] {
     return match (e) {
         Label(ts, s) => measureParagraph(f, ts.em, s, room, ts.lineHeight),
+        // a line and room for the caret after it
+        Input(ts, ed, focused, hint) => [lineWidth(f, ts.em, ed.text == "" ? hint : ed.text) + 2.0f32, ts.lineHeight] as const,
         Div(st, cs) => {
             const row = isRow(st.direction);
-            const inner = sized(st.width, room) - 2.0f32 * st.padding;
+            const [px, py] = padsOf(st);
+            const inner = sized(st.width, room) - 2.0f32 * px;
             const sizes = map(cs, (c) => measure(f, c, inner));
             const gaps = cs.length > 1 ? f32(cs.length - 1) * st.gap : 0.0f32;
             const along = fold(sizes, gaps, (a, s) => {
@@ -140,8 +214,8 @@ function measure(f: Font, e: Element, room: f32): [f32, f32] {
                 const [w, h] = s;
                 return max(a, row ? h : w);
             });
-            const w = (row ? along : across) + 2.0f32 * st.padding;
-            const h = (row ? across : along) + 2.0f32 * st.padding;
+            const w = (row ? along : across) + 2.0f32 * px;
+            const h = (row ? across : along) + 2.0f32 * py;
             return [sized(st.width, w), sized(st.height, h)] as const;
         },
     };
@@ -163,7 +237,9 @@ function decoration(st: Style, x: f32, y: f32, w: f32, h: f32): Primitive[] {
         : [];
     const visible = st.background.a > 0.0f32 || (st.border > 0.0f32 && st.borderColor.a > 0.0f32);
     const body: Primitive[] = visible ? [Box(bordered(rounded(quad(x, y, w, h, st.background), st.radius), st.border, st.borderColor))] : [];
-    return concat(shadow, body);
+    const o = st.outline;
+    const ring: Primitive[] = o > 0.0f32 && st.outlineColor.a > 0.0f32 ? [Box(rounded(quad(x - o, y - o, w + 2.0f32 * o, h + 2.0f32 * o, st.outlineColor), st.radius + o))] : [];
+    return concat(concat(shadow, ring), body);
 }
 
 // the element `e` laid out in the box (x, y, w, h): what draws it, in the
@@ -176,20 +252,67 @@ export function place(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32): [Pri
 // numbers; none: 0), each offset within its range (the height of its
 // content past its own)
 export function placeScrolled(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, offsets: f32[]): [Primitive[], Hit[]] {
+    return placeFrame(f, e, x, y, w, h, { offsets: offsets, caretOn: true, hotBar: -1 });
+}
+
+// the line of a field (its text, caret and selection `ed`; with the focus,
+// its selection and caret drawn) in the box (x, y, w, h), in the middle of
+// its height: moved left as far as its caret needs to be seen, cut to the
+// box; its place gives the pen at each boundary of its characters
+function placeInput(f: Font, ts: TextStyle, ed: Editing, focused: boolean, hint: string, x: f32, y: f32, w: f32, h: f32, caretOn: boolean): [Primitive[], Hit[]] {
+    const [marks, xs] = stops(f, ts.em, ed.text);
+    const at = (o: i64) => {
+        const k = findIndex(marks, (m) => m >= o);
+        return xs[k < 0 ? marks.length - 1 : k];
+    };
+    const cx = at(ed.caret);
+    const shift = focused ? max(0.0f32, cx + 2.0f32 - w) : 0.0f32;
+    const ox = x - shift;
+    const top = y + (h - ts.lineHeight) * 0.5f32;
+    const [a, b] = selection(ed);
+    const sel: Primitive[] = focused && a != b ? [Box(quad(ox + at(a), top, at(b) - at(a), ts.lineHeight, selectionColor()))] : [];
+    const ch = ts.em * 1.25f32;
+    const caret: Primitive[] = focused && caretOn ? [Box(quad(floor(ox + cx), top + (ts.lineHeight - ch) * 0.5f32, 1.5f32, ch, caretColor()))] : [];
+    // (an empty field shows its hint, its caret before it)
+    const text = ed.text == "" ? line(f, ts.em, hint, ox, baseline(f, ts, top), hintColor()) : line(f, ts.em, ed.text, ox, baseline(f, ts, top), ts.color);
+    const drawn = concat(concat(concat(concat([Clip(x, y, x + w, y + h)], sel), text), caret), [Unclip]);
+    // (its `id` 1 with the focus: a caret to blink; its `range` 1 with a
+    // selection)
+    const place: Hit = { x: x, y: y, w: w, h: h, id: focused ? 1 : 0, kind: FIELD, range: a != b ? 1.0f32 : 0.0f32, cursor: TEXT, stops: map(xs, (v) => ox + v), marks: marks };
+    return [drawn, [place]] as const;
+}
+
+// `placeScrolled`, what the frame `fr` shows besides the view: the caret
+// shown or hidden, the scrollbar under the pointer
+export function placeFrame(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, fr: Frame): [Primitive[], Hit[]] {
+    const offsets = fr.offsets;
     return match (e) {
         Label(ts, s) => [paragraph(f, ts.em, s, x, baseline(f, ts, y), w, ts.lineHeight, ts.align, ts.color), []] as const,
+        Input(ts, ed, focused, hint) => placeInput(f, ts, ed, focused, hint, x, y, w, h, fr.caretOn),
         Div(st, cs) => {
             const deco = decoration(st, x, y, w, h);
-            const hits: Hit[] = st.onClick >= 0 ? [{ x: x, y: y, w: w, h: h, id: st.onClick, kind: 0, range: 0.0f32 }] : [];
+            const shape = st.cursor >= 0 ? st.cursor : (st.onClick >= 0 ? POINTER : -1);
+            const hits: Hit[] = st.onClick >= 0 ? [placeOf(x, y, w, h, st.onClick, CLICK, 0.0f32, shape)] : (shape >= 0 ? [placeOf(x, y, w, h, -1, SHAPE, 0.0f32, shape)] : []);
             const row = isRow(st.direction);
             const n = cs.length;
-            const ix = x + st.padding;
-            const iy = y + st.padding;
-            const iw = max(0.0f32, w - 2.0f32 * st.padding);
-            const ih = max(0.0f32, h - 2.0f32 * st.padding);
-            const mainRoom = row ? iw : ih;
-            const crossRoom = row ? ih : iw;
-            const sizes = map(cs, (c) => measure(f, c, iw));
+            const [px, py] = padsOf(st);
+            const ix = x + px;
+            const iy = y + py;
+            const iw = max(0.0f32, w - 2.0f32 * px);
+            const ih = max(0.0f32, h - 2.0f32 * py);
+            // a column that scrolls and whose children pass its height: the
+            // right 14 pixels kept for its scrollbar (its children laid out
+            // left of it, never under it)
+            const scrolls = st.scroll >= 0 && !row;
+            const gapsAll = n > 1 ? f32(n - 1) * st.gap : 0.0f32;
+            const tall = scrolls && fold(cs, gapsAll, (a, c) => {
+                const [mw, mh] = measure(f, c, iw);
+                return a + mh;
+            }) > ih;
+            const cw = tall ? max(0.0f32, iw - 14.0f32) : iw;
+            const mainRoom = row ? cw : ih;
+            const crossRoom = row ? ih : cw;
+            const sizes = map(cs, (c) => measure(f, c, cw));
             // along the main axis: a share of the room left, or the size
             // the child has
             const grows = map(cs, (c) => share(lengthOf(c, row)));
@@ -214,7 +337,6 @@ export function placeScrolled(f: Font, e: Element, x: f32, y: f32, w: f32, h: f3
             const ends = scan(map(iota(n), (i) => mains[i] + st.gap + extra), (a, b) => a + b, 0.0f32);
             // a column that scrolls: its children moved up by its offset,
             // within the height they have past its own
-            const scrolls = st.scroll >= 0 && !row;
             const range = scrolls ? max(0.0f32, used - mainRoom) : 0.0f32;
             const off = scrolls && st.scroll < offsets.length ? min(range, max(0.0f32, offsets[st.scroll])) : 0.0f32;
             // the frame of each child: across, the room, a size fixed or
@@ -238,7 +360,7 @@ export function placeScrolled(f: Font, e: Element, x: f32, y: f32, w: f32, h: f3
                     ? [ix + along, iy + at, mains[i], cross] as const
                     : [ix + at, iy + along, cross, mains[i]] as const;
             });
-            const [cps, chs] = placeFrom(f, cs, frames, 0, [], [], offsets);
+            const [cps, chs] = placeFrom(f, cs, frames, 0, [], [], fr);
             if (!st.clip && !scrolls) {
                 return [concat(deco, cps), concat(hits, chs)] as const;
             }
@@ -252,28 +374,101 @@ export function placeScrolled(f: Font, e: Element, x: f32, y: f32, w: f32, h: f3
                 const cy = max(c.y, iy);
                 return { ...c, x: cx, y: cy, w: min(c.x + c.w, x1) - cx, h: min(c.y + c.h, y1) - cy };
             });
-            const wheel: Hit[] = scrolls ? [{ x: ix, y: iy, w: iw, h: ih, id: st.scroll, kind: 1, range: range }] : [];
-            const drawn = concat(concat(concat(deco, [Clip(ix, iy, x1, y1)]), cps), [Unclip]);
-            return [drawn, concat(concat(hits, wheel), cut)] as const;
+            const wheel: Hit[] = scrolls ? [placeOf(ix, iy, iw, ih, st.scroll, WHEEL, range, -1)] : [];
+            // the scrollbar of a box whose content passes its height: a
+            // thumb along its right side, as long as the share of the
+            // content seen, wider under the pointer; its place the right
+            // 12 pixels, over its children
+            const hot = fr.hotBar == st.scroll;
+            const [ty, th] = thumb(iy, ih, range, off);
+            const bw = hot ? 8.0f32 : 6.0f32;
+            const bar: Primitive[] = range > 0.0f32 ? [Box(rounded(quad(x1 - 2.0f32 - bw, ty, bw, th, rgba(0.0f32, 0.0f32, 0.0f32, hot ? 0.45f32 : 0.28f32)), bw * 0.5f32))] : [];
+            const barPlace: Hit[] = range > 0.0f32 ? [placeOf(x1 - 12.0f32, iy, 12.0f32, ih, st.scroll, BAR, range, ARROW)] : [];
+            const drawn = concat(concat(concat(concat(deco, [Clip(ix, iy, x1, y1)]), cps), bar), [Unclip]);
+            return [drawn, concat(concat(concat(hits, wheel), cut), barPlace)] as const;
         },
     };
 }
 
+// the thumb of the scrollbar of a box at `y`, `h` high, whose content
+// passes it by `range`, scrolled by `off`: its top and its height (the
+// share of the content seen, 24 pixels at least), 2 pixels from the ends
+export function thumb(y: f32, h: f32, range: f32, off: f32): [f32, f32] {
+    const track = max(0.0f32, h - 4.0f32);
+    const th = min(track, max(24.0f32, track * h / (h + range)));
+    return [y + 2.0f32 + (range > 0.0f32 ? (track - th) * off / range : 0.0f32), th] as const;
+}
+
 // the children `cs` from the `i`-th, each laid out in its frame, after
 // what draws those before (`ps`) and their places (`hs`)
-function placeFrom(f: Font, cs: Element[n], frames: [f32, f32, f32, f32][n], i: i64, ps: Primitive[], hs: Hit[], offsets: f32[]): [Primitive[], Hit[]] {
+function placeFrom(f: Font, cs: Element[n], frames: [f32, f32, f32, f32][n], i: i64, ps: Primitive[], hs: Hit[], fr: Frame): [Primitive[], Hit[]] {
     if (i >= n) {
         return [ps, hs] as const;
     }
     const [x, y, w, h] = frames[i];
-    const [cp, ch] = placeScrolled(f, cs[i], x, y, w, h, offsets);
-    return placeFrom(f, cs, frames, i + 1, concat(ps, cp), concat(hs, ch), offsets);
+    const [cp, ch] = placeFrame(f, cs[i], x, y, w, h, fr);
+    return placeFrom(f, cs, frames, i + 1, concat(ps, cp), concat(hs, ch), fr);
+}
+
+// the place `h` holds the point (px, py)
+function holds(h: Hit, px: f32, py: f32): boolean {
+    return px >= h.x && px < h.x + h.w && py >= h.y && py < h.y + h.h;
 }
 
 // the message of a click at (px, py): that of the last place drawn that
 // holds it, -1 for none
 export function hitTest(hits: Hit[n], px: f32, py: f32): i64 {
-    return fold(hits, -1, (found, h) => h.kind == 0 && px >= h.x && px < h.x + h.w && py >= h.y && py < h.y + h.h ? h.id : found);
+    return fold(hits, -1, (found, h) => h.kind == CLICK && holds(h, px, py) ? h.id : found);
+}
+
+// the place of a click at (px, py): the index of the last that holds it
+// (-1: none)
+export function clickAt(hits: Hit[n], px: f32, py: f32): i64 {
+    return fold(iota(n), -1, (found, i) => hits[i].kind == CLICK && holds(hits[i], px, py) ? i : found);
+}
+
+// the shape of the pointer at (px, py): that of the last place that holds
+// it and has one, an arrow over none
+export function cursorAt(hits: Hit[n], px: f32, py: f32): i64 {
+    return fold(hits, ARROW, (found, h) => h.cursor >= 0 && holds(h, px, py) ? h.cursor : found);
+}
+
+// the scrollbar at (px, py): its index among the places (-1: none)
+export function barAt(hits: Hit[n], px: f32, py: f32): i64 {
+    return fold(iota(n), -1, (found, i) => hits[i].kind == BAR && holds(hits[i], px, py) ? i : found);
+}
+
+// the line of a field a click at (px, py) on the place `c` (an index)
+// reaches: the last that holds the point, else the last within the place
+// (its padding); -1: none
+export function fieldAt(hits: Hit[n], c: i64, px: f32, py: f32): i64 {
+    const under = fold(iota(n), -1, (found, i) => hits[i].kind == FIELD && holds(hits[i], px, py) ? i : found);
+    if (under >= 0 || c < 0) {
+        return under;
+    }
+    const p = hits[c];
+    return fold(iota(n), -1, (found, i) => hits[i].kind == FIELD && hits[i].x >= p.x - 0.5f32 && hits[i].y >= p.y - 0.5f32 && hits[i].x + hits[i].w <= p.x + p.w + 0.5f32 && hits[i].y + hits[i].h <= p.y + p.h + 0.5f32 ? i : found);
+}
+
+// the offset in the text of the line of a field `h` of the character under
+// `px` (the last whose boundary is at or left of it; past the end: the end)
+export function charAt(h: Hit, px: f32): i64 {
+    const n = h.stops.length;
+    if (n == 0) {
+        return -1;
+    }
+    return h.marks[fold(iota(n - 1), 0, (k, i) => h.stops[i] <= px ? i : k)];
+}
+
+// the offset in the text of the line of a field `h` nearest to `px` (the
+// boundary of its characters closest to it)
+export function offsetAt(h: Hit, px: f32): i64 {
+    const n = h.stops.length;
+    if (n == 0) {
+        return -1;
+    }
+    const k = fold(iota(n), 0, (best, i) => abs(h.stops[i] - px) < abs(h.stops[best] - px) ? i : best);
+    return h.marks[k];
 }
 
 // the box the wheel scrolls at (px, py): the number of its offset and its

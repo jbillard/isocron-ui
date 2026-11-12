@@ -1,0 +1,171 @@
+// The text of a field and how the hand changes it: its caret and the other
+// end of its selection (the anchor), offsets of bytes of its UTF-8 at the
+// starts of characters, the selection the text between them. The keys of
+// a field (characters, Backspace, Delete, the arrows by characters or by
+// words with Ctrl, Home and End, Shift to select, Ctrl+A, Ctrl+C, Ctrl+X,
+// Ctrl+V), the pointer (a click places the caret, Shift+click selects to
+// it, a drag selects, a double click a word, a triple click all), the
+// clipboard (`Copy` and `AskPaste` asked, `Paste` received).
+import { Input, Effect, Click, Drag, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, BACKSPACE, DELETE, LEFT, RIGHT, HOME, END, UP, DOWN } from "./input";
+
+export type Editing = { text: string, caret: i64, anchor: i64 };
+
+// a field holding `text`, its caret at its end
+export function editing(text: string): Editing {
+    return { text: text, caret: text.length, anchor: text.length };
+}
+
+// the bytes of UTF-8 of the character `c`
+export function utf8(c: i64): u8[] {
+    return c < 0x80 ? [u8(c)]
+        : (c < 0x800 ? [u8(0xC0 | (c >> 6)), u8(0x80 | (c & 63))]
+        : (c < 0x10000 ? [u8(0xE0 | (c >> 12)), u8(0x80 | ((c >> 6) & 63)), u8(0x80 | (c & 63))]
+        : [u8(0xF0 | (c >> 18)), u8(0x80 | ((c >> 12) & 63)), u8(0x80 | ((c >> 6) & 63)), u8(0x80 | (c & 63))]));
+}
+
+// the start and the end of the selection
+export function selection(e: Editing): [i64, i64] {
+    return [min(e.caret, e.anchor), max(e.caret, e.anchor)] as const;
+}
+
+// the text selected
+export function selected(e: Editing): string {
+    const [a, b] = selection(e);
+    return e.text.slice(a, b);
+}
+
+// the start of the character after the offset `i` (the end: itself)
+function after(b: u8[n], i: i64): i64 {
+    if (i >= n) {
+        return n;
+    }
+    const k = findIndex(iota(min(4, n - i - 1)), (j) => (b[i + 1 + j] & 0xC0u8) != 0x80u8);
+    return k < 0 ? min(n, i + 4) : i + 1 + k;
+}
+
+// the start of the character before the offset `i` (the start: itself)
+function before(b: u8[n], i: i64): i64 {
+    if (i <= 0) {
+        return 0;
+    }
+    const k = findIndex(iota(min(4, i)), (j) => (b[i - 1 - j] & 0xC0u8) != 0x80u8);
+    return k < 0 ? max(0, i - 4) : i - 1 - k;
+}
+
+// a byte of a space (a word ends there)
+function blank(x: u8): boolean {
+    return x == 32u8 || x == 9u8 || x == 10u8;
+}
+
+// the start of the word at or after the offset `i` going right: the spaces,
+// then the word, skipped
+function wordRight(b: u8[n], i: i64): i64 {
+    const spaces = findIndex(iota(n - i), (j) => !blank(b[i + j]));
+    const s = spaces < 0 ? n : i + spaces;
+    const word = findIndex(iota(n - s), (j) => blank(b[s + j]));
+    return word < 0 ? n : s + word;
+}
+
+// the start of the word before the offset `i` going left
+function wordLeft(b: u8[n], i: i64): i64 {
+    const spaces = findIndex(iota(i), (j) => !blank(b[i - 1 - j]));
+    const s = spaces < 0 ? 0 : i - spaces;
+    const word = findIndex(iota(s), (j) => blank(b[s - 1 - j]));
+    return word < 0 ? 0 : s - word;
+}
+
+// the word (or the run of spaces) holding the offset `i`: its start and end
+export function wordAt(e: Editing, i: i64): [i64, i64] {
+    const b = bytes(e.text);
+    const n = b.length;
+    if (n == 0) {
+        return [0, 0] as const;
+    }
+    const at = min(i, n - 1);
+    const sp = blank(b[at]);
+    const l = findIndex(iota(at), (j) => blank(b[at - 1 - j]) != sp);
+    const r = findIndex(iota(n - at), (j) => blank(b[at + j]) != sp);
+    return [l < 0 ? 0 : at - l, r < 0 ? n : at + r] as const;
+}
+
+// the selection replaced by the text `s` (newlines become spaces: a field
+// holds one line), the caret after it
+export function replaced(e: Editing, s: string): Editing {
+    const [a, b] = selection(e);
+    const put = s.replace(/[\r\n]+/g, " ");
+    return { text: e.text.slice(0, a) + put + e.text.slice(b, e.text.length), caret: a + put.length, anchor: a + put.length };
+}
+
+// the caret moved to `i`, the selection kept from the anchor when `extend`
+function moved(e: Editing, i: i64, extend: boolean): Editing {
+    return { ...e, caret: i, anchor: extend ? e.anchor : i };
+}
+
+// the field after the key `k` with the modifiers `mods`, and what it asks
+export function keyed(e: Editing, k: i64, mods: i64): [Editing, Effect[]] {
+    const b = bytes(e.text);
+    const shift = (mods & WITH_SHIFT) != 0;
+    const ctrl = (mods & WITH_CTRL) != 0;
+    const [a, z] = selection(e);
+    const some = a != z;
+    if (ctrl && k == 97) {
+        return [{ ...e, caret: b.length, anchor: 0 }, []] as const;
+    }
+    if (ctrl && k == 99) {
+        return [e, some ? [Copy(selected(e))] : []] as const;
+    }
+    if (ctrl && k == 120) {
+        return some ? [replaced(e, ""), [Copy(selected(e))]] as const : [e, []] as const;
+    }
+    if (ctrl && k == 118) {
+        return [e, [AskPaste]] as const;
+    }
+    if (k == BACKSPACE) {
+        return [some ? replaced(e, "") : replaced({ ...e, anchor: ctrl ? wordLeft(b, e.caret) : before(b, e.caret) }, ""), []] as const;
+    }
+    if (k == DELETE) {
+        return [some ? replaced(e, "") : replaced({ ...e, anchor: ctrl ? wordRight(b, e.caret) : after(b, e.caret) }, ""), []] as const;
+    }
+    if (k == LEFT) {
+        // a selection without Shift: its start
+        return [!shift && some ? moved(e, a, false) : moved(e, ctrl ? wordLeft(b, e.caret) : before(b, e.caret), shift), []] as const;
+    }
+    if (k == RIGHT) {
+        return [!shift && some ? moved(e, z, false) : moved(e, ctrl ? wordRight(b, e.caret) : after(b, e.caret), shift), []] as const;
+    }
+    if (k == HOME || k == UP) {
+        return [moved(e, 0, shift), []] as const;
+    }
+    if (k == END || k == DOWN) {
+        return [moved(e, b.length, shift), []] as const;
+    }
+    return [e, []] as const;
+}
+
+// the field after the input `i` (`place`: the message of its place, for
+// the pointer), what it asks, and whether the input was its own
+export function edited(e: Editing, i: Input, place: i64): [Editing, Effect[], boolean] {
+    return match (i) {
+        Click(p, x, y, at, clicks, mods) => {
+            if (p != place || at < 0) {
+                return [e, [], false] as const;
+            }
+            if (clicks == 2) {
+                const [l, r] = wordAt(e, at);
+                return [{ ...e, caret: r, anchor: l }, [], true] as const;
+            }
+            if (clicks >= 3) {
+                return [{ ...e, caret: e.text.length, anchor: 0 }, [], true] as const;
+            }
+            return [moved(e, at, (mods & WITH_SHIFT) != 0), [], true] as const;
+        },
+        Drag(p, x, y, at) => p == place && at >= 0 ? [{ ...e, caret: at }, [], true] as const : [e, [], false] as const,
+        Text(c) => [replaced(e, stringOf(utf8(c))), [], true] as const,
+        Key(k, m) => {
+            const [ne, fx] = keyed(e, k, m);
+            return [ne, fx, true] as const;
+        },
+        Paste(s) => [replaced(e, s), [], true] as const,
+        _ => [e, [], false] as const,
+    };
+}

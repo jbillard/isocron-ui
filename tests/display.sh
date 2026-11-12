@@ -31,4 +31,9 @@ words="Un Deux Trois Quatre Cinq Six Sept Huit"
 typing="$(for w in $words; do printf 'type:%s key:Return ' "$w"; done)"
 scrolled="$(cd "$out" && python3 "$here/../tools/display/play.py" 520 420 clickat:211,124 $typing wheel:260,250,10 clickat:80,288 endserver -- "$out/todo" | tail -1)"
 [ "$scrolled" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Un, [ ] Deux, [ ] Trois, [ ] Quatre, [ ] Cinq, [ ] Six, [ ] Sept, [x] Huit]" ] || { echo "FAILED: scrolled: $scrolled"; exit 1; }
-echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled"
+# the field edited by the pointer and its menu: a double click selects the
+# word under it (replaced), Ctrl+A, the right button, "Copier", End, the
+# menu again, "Coller"
+edited="$(cd "$out" && python3 "$here/../tools/display/play.py" 520 420 clickat:211,124 "type:Bonjour le monde" dblclickat:140,124 type:la key:ctrl+a rclickat:211,124 clickat:311,170 key:End rclickat:211,124 clickat:311,198 key:Return endserver -- "$out/todo" | tail -1)"
+[ "$edited" = "[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] Bonjour la mondeBonjour la monde]" ] || { echo "FAILED: edited: $edited"; exit 1; }
+echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited"

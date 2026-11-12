@@ -5,7 +5,7 @@
 // wheel.
 import { parse } from "../src/font";
 import { placeScrolled, hitTest, scrollTest, scrolled, Hit } from "../src/ui";
-import { Model, Item, update, view, TICK } from "../examples/todo";
+import { Model, Item, initial, view, TICK } from "../examples/todo";
 
 // the ticks of the tasks among the places `hs`: their tasks and their tops
 function ticks(hs: Hit[n]): [i64, i64][] {
@@ -15,7 +15,7 @@ function ticks(hs: Hit[n]): [i64, i64][] {
 action main(args: string[k]): i32 {
     return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
         Ok(f) => {
-            const m: Model = { items: map(iota(10), (i) => ({ text: `Tâche ${i}`, done: false })), draft: "", focused: false, hover: -1 };
+            const m: Model = { ...initial(), items: map(iota(10), (i) => ({ text: `Tâche ${i}`, done: false })) };
             const [ps0, h0] = placeScrolled(f, view(m), 0.0f32, 0.0f32, 520.0f32, 420.0f32, fill(16, 0.0f32));
             const [id, range] = scrollTest(h0, 260.0f32, 200.0f32);
             print([id, i64(range)] as const);
