@@ -1311,6 +1311,84 @@ function varargs(vm: Vm, a: i64, n: i64): Vm {
     return n < 0 ? { ...v2, mtop: a + want } : v2;
 }
 
+// ----- table.sort ----------------------------------------------------------------
+
+// `table.sort(t, comp)`: the values 1..#t of `t` ordered, by `comp` (nil:
+// `<`). Integers alone, floats alone or texts alone without `comp`: by the
+// order of their keys (`argsort`); otherwise a merge of runs, two by two,
+// on their places, each comparison `<` of the machine or a call of `comp`.
+function sortTable(vm: Vm, t: i64, comp: V, line: i64): Vm {
+    const n = vm.tabs[t].len;
+    const vs = map(iota(n), (k) => rawGet(vm, t, intV(k + 1)));
+    const plain = comp.t == T_NIL;
+    const order = plain && count(vs, (v) => v.t == T_INT) == n ? argsort(map(vs, (v) => v.i))
+        : (plain && count(vs, (v) => v.t == T_NUM) == n ? argsort(map(vs, (v) => v.f))
+        : (plain && count(vs, (v) => v.t == T_STR) == n ? argsort(map(vs, (v) => vm.strs[v.i])) : []));
+    if (order.length == n) {
+        return fold(iota(n), vm, (acc, k) => rawSet(acc, t, intV(k + 1), vs[order[k]]));
+    }
+    const [v1, idx] = mergeWidth(vm, vs, iota(n), 1, comp, line);
+    if (v1.err) {
+        return v1;
+    }
+    return fold(iota(n), v1, (acc, k) => rawSet(acc, t, intV(k + 1), vs[idx[k]]));
+}
+
+// the machine and the places being merged, given together through the
+// calls of `comp` (an array alone would be lent there, copied at each step)
+type Sorting = { vm: Vm, dst: i64[] };
+
+// the runs of `width` of `src` merged two by two, until one run
+function mergeWidth(vm: Vm, vs: V[m], src: i64[n], width: i64, comp: V, line: i64): [Vm, i64[]] {
+    if (width >= n || vm.err) {
+        return [vm, src] as const;
+    }
+    const so = mergePass({ vm: vm, dst: fill(n, 0) }, vs, src, width, 0, comp, line);
+    return mergeWidth(so.vm, vs, so.dst, width * 2, comp, line);
+}
+
+function mergePass(so: Sorting, vs: V[m], src: i64[n], width: i64, lo: i64, comp: V, line: i64): Sorting {
+    if (lo >= n || so.vm.err) {
+        return so;
+    }
+    const mid = min(lo + width, n);
+    const hi = min(lo + 2 * width, n);
+    return mergePass(mergeRun(so, vs, src, mid, hi, lo, mid, lo, comp, line), vs, src, width, hi, comp, line);
+}
+
+function mergeRun(so: Sorting, vs: V[m], src: i64[n], mid: i64, hi: i64, i: i64, j: i64, k: i64, comp: V, line: i64): Sorting {
+    if (k >= hi || so.vm.err) {
+        return so;
+    }
+    if (i >= mid) {
+        return mergeRun({ ...so, dst: so.dst.with(k, src[j]) }, vs, src, mid, hi, i, j + 1, k + 1, comp, line);
+    }
+    if (j >= hi) {
+        return mergeRun({ ...so, dst: so.dst.with(k, src[i]) }, vs, src, mid, hi, i + 1, j, k + 1, comp, line);
+    }
+    // (the second taken when strictly before the first)
+    const a = vs[src[j]];
+    const b = vs[src[i]];
+    const [v1, second] = sortLess(so.vm, a, b, comp);
+    return second ? mergeRun({ vm: v1, dst: so.dst.with(k, src[j]) }, vs, src, mid, hi, i, j + 1, k + 1, comp, line)
+        : mergeRun({ vm: v1, dst: so.dst.with(k, src[i]) }, vs, src, mid, hi, i + 1, j, k + 1, comp, line);
+}
+
+// `a` before `b`: `comp(a, b)` truthy, or `a < b` without `comp`
+function sortLess(vm: Vm, a: V, b: V, comp: V): [Vm, boolean] {
+    if (comp.t == T_NIL) {
+        if (a.t == T_INT && b.t == T_INT) {
+            return [vm, a.i < b.i] as const;
+        }
+        return less(vm, a, b, false);
+    }
+    const saved = vm.ltop;
+    const top = max(frameTop(vm), saved);
+    const v1 = callValues({ ...vm, ltop: top + 4 }, comp, [a, b], top, 1);
+    const r = !v1.err && truthyT(v1.rT[top]);
+    return [{ ...v1, ltop: saved }, r] as const;
+}
+
 // ----- the library (that of the first interpreter, its values `Value`) --------
 
 // the iterators of `pairs` and `ipairs`, run by TFORCALL without a call
@@ -2394,47 +2472,14 @@ function tablePrim(st: Vm, id: i64, args: Value[n], line: i64): [Vm, Value[]] {
         return oneV(s4, Str(join(map(vs, plainTextV), sep)));
     }
     if (id == 36) {
-        const vs = map(iota(len), (k) => rawGetV(s1, t, Int(k + 1)));
-        const [s2, sorted] = mergeSort(s1, vs, argV(args, 1), line);
-        if (s2.err) {
-            return noneV(s2);
-        }
-        return noneV(fold(iota(len), s2, (acc, k) => rawSetV(acc, t, Int(k + 1), sorted[k])));
+        const comp = argV(args, 1);
+        const [s2, cv] = fromValue(s1, comp);
+        return noneV(sortTable(s2, t, cv, line));
     }
     return unpackPrim(s1, args, line, "unpack");
 }
 
 // `a` before `b` for `table.sort`: by `comp` when given, else `<`
-function before(st: Vm, a: Value, b: Value, comp: Value, line: i64): [Vm, boolean] {
-    if (isNilV(comp)) {
-        return lessV(st, a, b, line, false);
-    }
-    const [s1, r] = firstOfV(callValueV(st, comp, [a, b], line));
-    return [s1, truthyV(r)] as const;
-}
-
-function mergeSort(st: Vm, xs: Value[n], comp: Value, line: i64): [Vm, Value[]] {
-    if (n <= 1 || st.err) {
-        return [st, xs] as const;
-    }
-    const h = n / 2;
-    const [s1, a] = mergeSort(st, xs.slice(0, h), comp, line);
-    const [s2, b] = mergeSort(s1, xs.slice(h, n), comp, line);
-    return merged(s2, a, b, 0, 0, [], comp, line);
-}
-
-function merged(st: Vm, a: Value[n], b: Value[m], i: i64, j: i64, acc: Value[], comp: Value, line: i64): [Vm, Value[]] {
-    if (i >= n) {
-        return [st, concat(acc, b.slice(j, m))] as const;
-    }
-    if (j >= m || st.err) {
-        return [st, concat(acc, a.slice(i, n))] as const;
-    }
-    // (stable: the second taken only when strictly before)
-    const [s1, bFirst] = before(st, b[j], a[i], comp, line);
-    return bFirst ? merged(s1, a, b, i, j + 1, concat(acc, [b[j]]), comp, line) : merged(s1, a, b, i + 1, j, concat(acc, [a[i]]), comp, line);
-}
-
 // ----- math ----------------------------------------------------------------
 
 // a float of an integer value as an integer when it fits (`math.floor`)
