@@ -11,3 +11,8 @@ wayland.Ping(41)
 wayland.Pointer(10, -0.5)
 /run/user/1001/wayland-0
 /tmp/w
+([10, 0, 0, 0, 0, 0, 12, 0, 11, 0, 0, 0], [10, 0, 0, 0, 1, 0, 12, 0, 12, 0, 0, 0], [])
+wayland.Other(11, 0)
+128
+[22, 0, 0, 0, 2, 0, 16, 0, 8, 2, 0, 0, 164, 1, 0, 0]
+{compositor: 1, cursorShape: 0, data: 0, fractional: 9, output: 0, seat: 4, shm: 2, viewporter: 8, wmBase: 3}

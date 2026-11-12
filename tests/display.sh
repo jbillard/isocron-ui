@@ -125,4 +125,14 @@ shm="$(cd "$out" && PLAY_X11=1 ISC_UI_TRACE=1 python3 "$here/../tools/display/pl
 [ "$shm" = 1 ] || { echo "FAILED: MIT-SHM not used"; exit 1; }
 (cd "$out" && PLAY_X11=1 ISC_UI_NO_SHM=1 python3 "$here/../tools/display/play.py" 520 420 move:20,20 "shot:$out/strips.png" endserver -- "$out/todo" > /dev/null)
 cmp -s "$out/shm.png" "$out/strips.png" || { echo "FAILED: MIT-SHM and the strips differ"; exit 1; }
-echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx; the keyboard: $tabwl, $tabx; the long list: $longwl, $longx; selections: $selwl, $selx; the live gallery: tooltips and animations; large clipboards; MIT-SHM and strips the same"
+# a fractional scale (sway, image isocron-ui-sway: wp_fractional_scale_v1
+# and wp_viewporter, an output of 520 by 420 units at 1.5): the window
+# drawn at 780 by 630 pixels, the same as the scene of the list at 1.5
+# (tests/reference/todo150start.png); a click at (80, 174) units, the box
+# of the first task (untick); the trace says the fractional scale is used.
+# Without it (Weston, above), the integer scale
+fractional="$(cd "$out" && ISC_UI_TRACE=1 python3 "$here/../tools/display/sway.py" 520 420 "shot:$out/sway.png" clickat:80,174 endserver -- "$out/todo")"
+[ "$(echo "$fractional" | grep -c 'Wayland fractional scale, true')" = 1 ] || { echo "FAILED: no fractional scale under sway"; exit 1; }
+[ "$(echo "$fractional" | tail -1)" = "[[ ] Écrire la bibliothèque, [ ] Taper du texte dans un champ]" ] || { echo "FAILED: a click at a fractional scale: $(echo "$fractional" | tail -1)"; exit 1; }
+[ "$(python3 "$here/../tools/display/same.py" "$out/sway.png" "$here/reference/todo150start.png")" = "0 " ] || { echo "FAILED: the image at a fractional scale differs"; exit 1; }
+echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx; the keyboard: $tabwl, $tabx; the long list: $longwl, $longx; selections: $selwl, $selx; the live gallery: tooltips and animations; large clipboards; MIT-SHM and strips the same; a fractional scale of 1.5 under sway, the same pixels"

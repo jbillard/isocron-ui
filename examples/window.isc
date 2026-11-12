@@ -91,6 +91,12 @@ action handle(c: net.Conn, evs: wl.Event[n], i: i64, st: State, frames: i64): St
             const pong = net.write(c, wl.request(wl.WM_BASE, 3u32, wl.le32(serial)));
             return st;
         },
+        // the devices of the seat, asked when it tells them (once: they
+        // stay)
+        wl.Capabilities(caps) => {
+            const asked = net.write(c, wl.devicesRequests(caps & 3u32, 0u32));
+            return st;
+        },
         wl.FrameDone(id) => frameDone(c, st, frames),
         wl.Close => ({ ...st, done: true }),
         wl.Failure(m) => ({ ...st, done: true, failed: m }),
@@ -136,7 +142,7 @@ action main(args: string[k]): i32 {
         Ok(c) => {
             // the registry, and a sync whose reply ends its globals
             const asked = net.write(c, concat(wl.request(wl.DISPLAY, 1u32, wl.le32(wl.REGISTRY)), wl.request(wl.DISPLAY, 0u32, wl.le32(wl.SYNC))));
-            const g = globals(c, [], { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32, cursorShape: 0u32, output: 0u32, data: 0u32 });
+            const g = globals(c, [], { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32, cursorShape: 0u32, output: 0u32, data: 0u32, viewporter: 0u32, fractional: 0u32 });
             if (g.compositor == 0u32 || g.shm == 0u32 || g.wmBase == 0u32) {
                 print("the compositor lacks wl_compositor, wl_shm or xdg_wm_base");
                 net.close(c);

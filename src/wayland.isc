@@ -73,7 +73,7 @@ function eventStarts(b: u8[n], at: i64, found: i64[]): i64[] {
 
 // the names of the globals of the compositor that a window needs (0: not
 // offered)
-export type Globals = { compositor: u32, shm: u32, wmBase: u32, seat: u32, cursorShape: u32, output: u32, data: u32 };
+export type Globals = { compositor: u32, shm: u32, wmBase: u32, seat: u32, cursorShape: u32, output: u32, data: u32, viewporter: u32, fractional: u32 };
 
 // the ids the client gives its objects (the display is 1). A compositor
 // takes a new id only when it is the next one or one it has freed
@@ -119,15 +119,18 @@ export function globalsOf(evs: Event[n], g: Globals): Globals {
             : (iface == "wl_seat" ? { ...acc, seat: name }
             : (iface == "wp_cursor_shape_manager_v1" ? { ...acc, cursorShape: name }
             : (iface == "wl_output" && acc.output == 0u32 ? { ...acc, output: name }
-            : (iface == "wl_data_device_manager" ? { ...acc, data: name } : acc))))));
+            : (iface == "wl_data_device_manager" ? { ...acc, data: name }
+            : (iface == "wp_viewporter" ? { ...acc, viewporter: name }
+            : (iface == "wp_fractional_scale_manager_v1" ? { ...acc, fractional: name } : acc))))))));
     });
 }
 
 // the requests that bind the globals and make a toplevel window titled
 // `title`: its surface, its role, its title, the first commit (without an
 // image: the compositor answers with `configure`); then the seat (version
-// 4: its pointer and its keyboard asked whatever its capabilities, inert
-// when it has none; no `frame` of the pointer) and its devices
+// 4: no `frame` of the pointer), whose devices are asked when it tells it
+// has them (`devicesRequests`: asking one it never had is an error of the
+// protocol, the connection closed)
 export function windowRequests(g: Globals, title: string): u8[] {
     const binds = concat(concat(bind(g.compositor, "wl_compositor", 4u32, COMPOSITOR), bind(g.shm, "wl_shm", 1u32, SHM)), bind(g.wmBase, "xdg_wm_base", 1u32, WM_BASE));
     const surface = request(COMPOSITOR, 0u32, le32(SURFACE));
@@ -135,10 +138,25 @@ export function windowRequests(g: Globals, title: string): u8[] {
     const toplevel = request(XDG_SURFACE, 1u32, le32(TOPLEVEL));
     const named = request(TOPLEVEL, 2u32, str(title));
     const commit = request(SURFACE, 6u32, []);
+    // (the ids of its pointer and its keyboard held by callbacks of
+    // `wl_display.sync` meanwhile: the ids a client makes must follow each
+    // other, and the server frees those of the callbacks once it answers
+    // them, before it reads the requests of the devices)
+    const reserved = concat(request(DISPLAY, 0u32, le32(POINTER)), request(DISPLAY, 0u32, le32(KEYBOARD)));
     const seat = g.seat != 0u32
-        ? concat(concat(bind(g.seat, "wl_seat", 4u32, SEAT), request(SEAT, 0u32, le32(POINTER))), request(SEAT, 1u32, le32(KEYBOARD)))
-        : concat(concat(request(DISPLAY, 0u32, le32(SEAT)), request(DISPLAY, 0u32, le32(POINTER))), request(DISPLAY, 0u32, le32(KEYBOARD)));
+        ? concat(bind(g.seat, "wl_seat", 4u32, SEAT), reserved)
+        : concat(request(DISPLAY, 0u32, le32(SEAT)), reserved);
     return concat(concat(concat(concat(concat(concat(binds, surface), role), toplevel), named), commit), seat);
+}
+
+// the devices of the seat it now has (`caps` of `wl_seat.capabilities`: 1
+// a pointer, 2 a keyboard) and had not (`had`): its pointer and its
+// keyboard asked as POINTER and KEYBOARD
+export function devicesRequests(caps: u32, had: u32): u8[] {
+    const fresh = caps & ~had;
+    const pointer = (fresh & 1u32) != 0u32 ? request(SEAT, 0u32, le32(POINTER)) : [];
+    const keyboard = (fresh & 2u32) != 0u32 ? request(SEAT, 1u32, le32(KEYBOARD)) : [];
+    return concat(pointer, keyboard);
 }
 
 // `wl_shm.create_pool` of `bytes` bytes (its descriptor sent beside it),
@@ -174,9 +192,16 @@ export function imageRequests(pool: u32, buffer: u32, bytes: i64, w: i64, h: i64
 }
 
 // the shapes of the pointer asked of the compositor (`wp_cursor_shape_v1`):
-// its manager bound as `manager`, the device of the pointer as `device`
+// its manager bound as `manager`; the device of the pointer as `device`,
+// once the pointer is asked (`shapeDeviceRequest`)
 export function shapeRequests(g: Globals, manager: u32, device: u32): u8[] {
-    return concat(bind(g.cursorShape, "wp_cursor_shape_manager_v1", 1u32, manager), request(manager, 1u32, concat(le32(device), le32(POINTER))));
+    // (the id of the device held by a callback meanwhile: the ids follow
+    // each other)
+    return concat(bind(g.cursorShape, "wp_cursor_shape_manager_v1", 1u32, manager), request(DISPLAY, 0u32, le32(device)));
+}
+
+export function shapeDeviceRequest(manager: u32, device: u32): u8[] {
+    return request(manager, 1u32, concat(le32(device), le32(POINTER)));
 }
 
 // the shape of the pointer set by the device `device` at the entry `serial`
@@ -236,6 +261,21 @@ export function outputRequests(g: Globals, id: u32): u8[] {
 // (`wl_surface.set_buffer_scale`)
 export function scaleRequest(scale: i64): u8[] {
     return request(SURFACE, 8u32, i32le(i32(scale)));
+}
+
+// the scale of the window in 120ths (`wp_fractional_scale_v1`) and its
+// images shown at its size in units whatever theirs (`wp_viewporter`):
+// the viewporter bound as `viewporter`, the manager as `manager`, the
+// viewport of the window `viewport`, its fractional scale `fraction`
+export function fractionalRequests(g: Globals, viewporter: u32, manager: u32, viewport: u32, fraction: u32): u8[] {
+    const binds = concat(bind(g.viewporter, "wp_viewporter", 1u32, viewporter), bind(g.fractional, "wp_fractional_scale_manager_v1", 1u32, manager));
+    return concat(concat(binds, request(viewporter, 1u32, concat(le32(viewport), le32(SURFACE)))), request(manager, 1u32, concat(le32(fraction), le32(SURFACE))));
+}
+
+// the images of the window shown at `w` by `h` units
+// (`wp_viewport.set_destination`)
+export function destinationRequest(viewport: u32, w: i64, h: i64): u8[] {
+    return request(viewport, 2u32, concat(i32le(i32(w)), i32le(i32(h))));
 }
 
 // the manager of the data of the seat bound as `manager` (version 3), the

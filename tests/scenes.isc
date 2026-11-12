@@ -74,6 +74,10 @@ action main(args: string[k]): i32 {
             // window of 520 by 420 units, 780 by 630 pixels
             const [sp15, su15] = laidOut({ ...interface(780, 630, 0u64), scale: 1.5f32 }, f, { ...todo.initial(), field: editing("Pain"), focused: true }, todo.view, 0u64);
             scene(args[0], "todo150", 780, 630, white, sp15);
+            // the list at its start at a scale of 1.5 (what a compositor of a
+            // fractional scale shows: tests/display.sh, sway)
+            const [ss15, su15] = laidOut({ ...interface(780, 630, 0u64), scale: 1.5f32 }, f, todo.initial(), todo.view, 0u64);
+            scene(args[0], "todo150start", 780, 630, white, ss15);
             // the focus of the keyboard on the button Ajouter: its ring
             const [fp, fu] = laidOut({ ...interface(520, 420, 0u64), focus: todo.ADD, ring: true }, f, todo.initial(), todo.view, 0u64);
             scene(args[0], "focus", 520, 420, white, fp);

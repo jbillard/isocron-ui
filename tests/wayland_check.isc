@@ -13,7 +13,7 @@ action main(args: string[k]): i32 {
     const [evs, rest] = wl.events(concat(concat(global, done), [6u8, 0u8, 0u8, 0u8, 0u8, 0u8, 12u8]));
     print(evs.length);
     print(rest);
-    const g = wl.globalsOf(evs, { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32, cursorShape: 0u32, output: 0u32, data: 0u32 });
+    const g = wl.globalsOf(evs, { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32, cursorShape: 0u32, output: 0u32, data: 0u32, viewporter: 0u32, fractional: 0u32 });
     print(g.wmBase);
     print(map(evs, (e) => wl.input(e)));
     // a configuration of the toplevel, a ping, a motion of the pointer
@@ -22,5 +22,16 @@ action main(args: string[k]): i32 {
     print(wl.input({ obj: wl.POINTER, op: 2u32, args: concat(concat(wl.le32(1000u32), wl.i32le(2560i32)), wl.i32le(-128i32)) }));
     print(wl.socketPath("", "/run/user/1001"));
     print(wl.socketPath("/tmp/w", "/run/user/1001"));
+    // the devices of a seat asked as it tells them (a pointer, then a
+    // keyboard more: the keyboard alone), the callback of a held id (4
+    // bytes: nothing of the pointer)
+    print([wl.devicesRequests(1u32, 0u32), wl.devicesRequests(3u32, 1u32), wl.devicesRequests(1u32, 1u32)] as const);
+    print(wl.input({ obj: wl.POINTER, op: 0u32, args: wl.le32(7u32) }));
+    // the fractional scale and the viewport of the window (ids 20 to 23,
+    // the globals 41 and 42), its images shown at 520 by 420 units
+    const g = { compositor: 1u32, shm: 2u32, wmBase: 3u32, seat: 4u32, cursorShape: 0u32, output: 0u32, data: 0u32, viewporter: 41u32, fractional: 42u32 };
+    print(wl.fractionalRequests(g, 20u32, 21u32, 22u32, 23u32).length);
+    print(wl.destinationRequest(22u32, 520, 420));
+    print(wl.globalsOf([{ obj: wl.REGISTRY, op: 0u32, args: concat(concat(wl.le32(9u32), wl.str("wp_fractional_scale_manager_v1")), wl.le32(1u32)) }, { obj: wl.REGISTRY, op: 0u32, args: concat(concat(wl.le32(8u32), wl.str("wp_viewporter")), wl.le32(1u32)) }], g));
     return 0;
 }

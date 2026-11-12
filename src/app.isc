@@ -793,6 +793,14 @@ type State = {
     scale: i64,
     lw: i64,
     lh: i64,
+    // the devices of the seat asked (1 its pointer, 2 its keyboard)
+    caps: u32,
+    // the pixels of a unit (the integer scale, or the fractional one in
+    // 120ths divided), the viewport and the fractional scale of the window
+    // (0: the compositor has none)
+    px: f32,
+    viewport: u32,
+    fraction: u32,
     manager: u32,
     device: u32,
     lastOffer: u32,
@@ -987,7 +995,7 @@ action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f
     return match (unix.connect(path)) {
         Ok(c) => {
             const asked = net.write(c, concat(wl.request(wl.DISPLAY, 1u32, wl.le32(wl.REGISTRY)), wl.request(wl.DISPLAY, 0u32, wl.le32(wl.SYNC))));
-            const g = globals(c, [], { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32, cursorShape: 0u32, output: 0u32, data: 0u32 });
+            const g = globals(c, [], { compositor: 0u32, shm: 0u32, wmBase: 0u32, seat: 0u32, cursorShape: 0u32, output: 0u32, data: 0u32, viewporter: 0u32, fractional: 0u32 });
             if (g.compositor == 0u32 || g.shm == 0u32 || g.wmBase == 0u32) {
                 net.close(c);
                 return m;
@@ -1010,7 +1018,7 @@ action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f
                 pending: [], shown: false, next: g.cursorShape != 0u32 ? wl.POOL + 2u32 : wl.POOL + 5u32, pool: 0u32, buffer: 0u32,
                 keymap: parseKeymap(""), mods: 0u32, entry: 0u32, shape: -1,
                 shapes: g.cursorShape != 0u32 ? wl.POOL + 1u32 : 0u32, cursorSurface: wl.POOL, cursorFirst: wl.POOL + 2u32, cursorScale: 1,
-                output: 0u32, scale: 1, lw: width, lh: height,
+                output: 0u32, scale: 1, lw: width, lh: height, caps: 0u32, px: 1.0f32, viewport: 0u32, fraction: 0u32,
                 manager: 0u32, device: 0u32, lastOffer: 0u32, lastMime: "", offer: 0u32, mime: "", source: 0u32, text: "", serial: 0u32, fds: [], fdAt: 0,
                 done: false, failed: "",
             };
@@ -1019,8 +1027,17 @@ action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f
             const bound = g.output != 0u32 ? net.write(c, wl.outputRequests(g, st.next)) : Ok(());
             // the selections of the other programs: the manager of the data
             // and the device of the seat (the next two ids)
-            const st2 = g.data != 0u32 && g.seat != 0u32 ? { ...st1, manager: st1.next, device: st1.next + 1u32, next: st1.next + 2u32 } : st1;
+            const st2a = g.data != 0u32 && g.seat != 0u32 ? { ...st1, manager: st1.next, device: st1.next + 1u32, next: st1.next + 2u32 } : st1;
             const data = g.data != 0u32 && g.seat != 0u32 ? net.write(c, wl.dataRequests(g, st1.next, st1.next + 1u32)) : Ok(());
+            // the fractional scale when the compositor has it (the next four
+            // ids: the viewporter, the manager, the viewport, the scale), the
+            // images then shown at the size of the window in units
+            const fractional = g.viewporter != 0u32 && g.fractional != 0u32 && sys.env("ISC_UI_NO_FRACTIONAL") == None;
+            const st2 = fractional ? { ...st2a, viewport: st2a.next + 2u32, fraction: st2a.next + 3u32, next: st2a.next + 4u32 } : st2a;
+            const fr = fractional ? net.write(c, concat(wl.fractionalRequests(g, st2a.next, st2a.next + 1u32, st2a.next + 2u32, st2a.next + 3u32), wl.destinationRequest(st2a.next + 2u32, width, height))) : Ok(());
+            if (sys.env("ISC_UI_TRACE") != None) {
+                print(["Wayland fractional scale", fractional] as const);
+            }
             const end = loopWayland(c, f, m, { ...interface(width, height, clock()), labels: labels }, st2, view, update);
             net.close(c);
             return end;
@@ -1110,6 +1127,16 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
         const gone = net.write(c, wl.sourceDestroy(st.source));
         return handle(c, f, m, evs, i + 1, ui, { ...st, source: 0u32, text: "" }, view, update);
     }
+    // the fractional scale of the window (`preferred_scale`, in 120ths): the
+    // images drawn at it, their size in units kept by the viewport
+    if (st.fraction != 0u32 && e.obj == st.fraction && e.op == 0u32 && e.args.length >= 4) {
+        const k = f32(wl.word(e.args, 0)) / 120.0f32;
+        if (k <= 0.0f32 || k == st.px) {
+            return handle(c, f, m, evs, i + 1, ui, st, view, update);
+        }
+        const [u1, m1] = steps(ui, m, [Scaled(k), Resized(i64(f32(st.lw) * k + 0.5f32), i64(f32(st.lh) * k + 0.5f32))], now, update);
+        return handle(c, f, m1, evs, i + 1, { ...u1, asked: [] }, { ...st, px: k }, view, update);
+    }
     // the selections of the others: an offer made (its types follow), the
     // selection set (an offer, or none)
     if (st.device != 0u32 && e.obj == st.device && e.op == 0u32 && e.args.length >= 4) {
@@ -1136,17 +1163,20 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
             if (w <= 0 || h <= 0) {
                 return [m, ui, st] as const;
             }
-            const [mm, u, s2] = feedWayland(c, ui, m, now, st, update, Resized(w * st.scale, h * st.scale));
+            const [mm, u, s2] = feedWayland(c, ui, m, now, st, update, Resized(i64(f32(w) * st.px + 0.5f32), i64(f32(h) * st.px + 0.5f32)));
+            // (the images shown at the size in units)
+            const shown = st.viewport != 0u32 ? net.write(c, wl.destinationRequest(st.viewport, w, h)) : Ok(());
             return [mm, u, { ...s2, lw: w, lh: h }] as const;
         },
         wl.OutputScale(obj, k) => {
-            if (obj != st.output || k < 1 || k == st.scale) {
+            // (the fractional scale, when there is one, is the window's)
+            if (obj != st.output || k < 1 || k == st.scale || st.fraction != 0u32) {
                 return [m, ui, st] as const;
             }
             const set = net.write(c, wl.scaleRequest(k));
             const [u1, m1] = steps(ui, m, [Scaled(f32(k)), Resized(st.lw * k, st.lh * k)], now, update);
             // the pointer drawn here: its images at the scale of the screen
-            const st2 = st.shapes == 0u32 ? cursorImages(c, { ...st, scale: k }, k) : { ...st, scale: k };
+            const st2 = st.shapes == 0u32 ? cursorImages(c, { ...st, scale: k, px: f32(k) }, k) : { ...st, scale: k, px: f32(k) };
             return [m1, { ...u1, asked: [] }, shapeShown(c, st2, u1.cursor)] as const;
         },
         wl.Configure(serial) => {
@@ -1158,10 +1188,19 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
             const pong = net.write(c, wl.request(wl.WM_BASE, 3u32, wl.le32(serial)));
             return [m, ui, st] as const;
         },
-        wl.Pointer(x, y) => feedWayland(c, ui, m, now, st, update, Moved(f32(x) * f32(st.scale), f32(y) * f32(st.scale))),
+        // the devices the seat has: asked once each
+        wl.Capabilities(caps) => {
+            const asked = net.write(c, wl.devicesRequests(caps & 3u32, st.caps));
+            // the device of the shapes of the pointer once it is asked (the
+            // manager's id one before it)
+            const pointerNow = (caps & 1u32) != 0u32 && (st.caps & 1u32) == 0u32;
+            const shaped = pointerNow && st.shapes != 0u32 ? net.write(c, wl.shapeDeviceRequest(st.shapes - 1u32, st.shapes)) : Ok(());
+            return [m, ui, { ...st, caps: st.caps | (caps & 3u32) }] as const;
+        },
+        wl.Pointer(x, y) => feedWayland(c, ui, m, now, st, update, Moved(f32(x) * st.px, f32(y) * st.px)),
         // its entry: its serial kept (the shape of the pointer set with it)
         wl.Enter(serial, x, y) => {
-            const [mm, u, s2] = feedWayland(c, ui, m, now, st, update, Moved(f32(x) * f32(st.scale), f32(y) * f32(st.scale)));
+            const [mm, u, s2] = feedWayland(c, ui, m, now, st, update, Moved(f32(x) * st.px, f32(y) * st.px));
             return [mm, u, shapeShown(c, { ...s2, entry: serial, shape: -1 }, u.cursor)] as const;
         },
         wl.Leave => [m, ui, { ...st, entry: 0u32 }] as const,
@@ -1184,7 +1223,12 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
             } : [m, ui, st] as const;
         },
         wl.Close => feedWayland(c, ui, m, now, st, update, Closed),
-        wl.Failure(msg) => [m, ui, { ...st, done: true, failed: msg }] as const,
+        wl.Failure(msg) => {
+            if (sys.env("ISC_UI_TRACE") != None) {
+                print(["Wayland error", msg] as const);
+            }
+            return [m, ui, { ...st, done: true, failed: msg }] as const;
+        },
         _ => [m, ui, st] as const,
     };
     return handle(c, f, nm, evs, i + 1, nu, ns, view, update);
