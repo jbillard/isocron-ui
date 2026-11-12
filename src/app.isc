@@ -1193,7 +1193,7 @@ action handle<M>(c: net.Conn, f: Font, m: M, evs: wl.Event[n], i: i64, ui: Ui, s
 // ----- X11 ---------------------------------------------------------------
 
 // the atoms the window of X11 asks, in their order
-const ATOMS: string[] = ["WM_PROTOCOLS", "WM_DELETE_WINDOW", "_NET_WM_NAME", "UTF8_STRING", "CLIPBOARD", "TARGETS", "ISOCRON_PASTE"];
+const ATOMS: string[] = ["WM_PROTOCOLS", "WM_DELETE_WINDOW", "_NET_WM_NAME", "UTF8_STRING", "CLIPBOARD", "TARGETS", "ISOCRON_PASTE", "INCR"];
 const A_PROTOCOLS: i64 = 0;
 const A_DELETE: i64 = 1;
 const A_NET_NAME: i64 = 2;
@@ -1201,6 +1201,10 @@ const A_UTF8: i64 = 3;
 const A_CLIPBOARD: i64 = 4;
 const A_TARGETS: i64 = 5;
 const A_PASTE: i64 = 6;
+const A_INCR: i64 = 7;
+// the bytes of a part of a large selection given (INCR): a selection
+// larger is given in parts
+const CHUNK: i64 = 65536;
 // the atoms every server has (their numbers fixed by the protocol)
 const XA_ATOM: u32 = 4u32;
 const XA_RESOURCE_MANAGER: u32 = 23u32;
@@ -1225,6 +1229,16 @@ type XState = {
     atoms: u32[],
     owner: boolean,
     text: string,
+    // MIT-SHM: its opcode (0: the images sent in strips), the id of the
+    // segment of a frame
+    shm: i64,
+    seg: u32,
+    // a large selection given in parts: to whom, into which property, of
+    // which type, from which byte (0: none)
+    incrTo: u32,
+    incrProperty: u32,
+    incrTarget: u32,
+    incrAt: i64,
     done: boolean,
 };
 
@@ -1254,7 +1268,8 @@ action repliesX(c: net.Conn, pending: u8[], want: i64, got: x11.Message[], other
         return [got, others, pending] as const;
     }
     const [ms, rest, gone] = readX(c, pending, 1000);
-    if (gone || ms.length == 0) {
+    // (bytes of a message not whole yet, a large reply: read on)
+    if (gone || (ms.length == 0 && rest.length == pending.length)) {
         return [got, others, rest] as const;
     }
     return repliesX(c, rest, want, concat(got, filter(ms, (m) => m.code == 1)), concat(others, filter(ms, (m) => m.code != 1)));
@@ -1269,7 +1284,7 @@ action eventX(c: net.Conn, st: XState, code: i64, seen: x11.Message[]): [boolean
         return [true, seen[k], { ...st, queued: concat(st.queued, rest) }] as const;
     }
     const [ms, rest, gone] = readX(c, st.pending, 1000);
-    if (gone || ms.length == 0) {
+    if (gone || (ms.length == 0 && rest.length == st.pending.length)) {
         return [false, { code: 0, bytes: [] }, { ...st, pending: rest, queued: concat(st.queued, seen) }] as const;
     }
     return eventX(c, { ...st, pending: rest }, code, concat(seen, ms));
@@ -1306,8 +1321,27 @@ action stripsX(c: net.Conn, st: XState, px: u32[n], w: i64, h: i64, y: i64, rows
 action drawX11<M>(c: net.Conn, f: Font, m: M, view: (M) => Element, ui: Ui, st: XState): Ui {
     const [ps, next] = laidOut(ui, f, m, view, clock());
     const px = render(ui.w, ui.h, rgb(0xFFFFFFu32), ps);
-    const sent = stripsX(c, st, px, ui.w, ui.h, 0, x11.rowsPerRequest(ui.w, st.setup.maxRequest));
+    const shown = st.shm > 0 && st.setup.littleImages && shmShown(c, st, px, ui.w, ui.h);
+    const sent = shown || stripsX(c, st, px, ui.w, ui.h, 0, x11.rowsPerRequest(ui.w, st.setup.maxRequest));
     return next;
+}
+
+// the image `px` shown by MIT-SHM: written into a new memory shared with
+// the server (its descriptor sent with `ShmAttachFd`), copied into the
+// window, the segment detached (the server has copied it when it reads
+// the next request: the memory of the next frame is another); false when
+// the memory cannot be made
+action shmShown(c: net.Conn, st: XState, px: u32[n], w: i64, h: i64): boolean {
+    return match (unix.shared(w * h * 4)) {
+        Ok(mem) => {
+            const written = unix.writeSharedU32(mem, 0, px);
+            const attached = unix.sendWithFds(c, x11.shmAttachFd(st.shm, st.seg), [unix.sharedFd(mem)]);
+            unix.closeShared(mem);
+            const put = net.write(c, concat(x11.shmPutImage(st.shm, st.window, st.gc, w, h, st.setup.depth, st.seg), x11.shmDetach(st.shm, st.seg)));
+            return written == Ok(()) && attached == Ok(()) && put == Ok(());
+        },
+        Err(e) => false,
+    };
 }
 
 // the text of the selection `CLIPBOARD` of another program asked as
@@ -1325,8 +1359,46 @@ action pasteX(c: net.Conn, st: XState): [string, XState] {
     if (rs.length == 0) {
         return ["", st2] as const;
     }
-    const b = x11.propertyValue(rs[0]);
-    return [utf8Valid(b) ? stringOf(b) : "", st2] as const;
+    // a large selection: its parts read as they come (INCR)
+    const [b, st3] = x11.propertyType(rs[0]) == st.atoms[A_INCR] ? partsX(c, st2, []) : [x11.propertyValue(rs[0]), st2] as const;
+    return [utf8Valid(b) ? stringOf(b) : "", st3] as const;
+}
+
+// the parts of a large selection after `got`: each written into the
+// property of the window by the program that gives it, read and deleted
+// (the next then written), until an empty one; what was read when the
+// program stops (a second without a part)
+action partsX(c: net.Conn, st: XState, got: u8[]): [u8[], XState] {
+    const [found, ev, st1] = propertyNewX(c, st, []);
+    if (!found) {
+        return [got, st1] as const;
+    }
+    const read = net.write(c, x11.getProperty(st1.window, st1.atoms[A_PASTE], true));
+    const [rs, others, rest] = repliesX(c, st1.pending, 1, [], []);
+    const st2 = { ...st1, pending: rest, queued: concat(st1.queued, others) };
+    if (rs.length == 0) {
+        return [got, st2] as const;
+    }
+    const part = x11.propertyValue(rs[0]);
+    if (sys.env("ISC_UI_TRACE") != None) {
+        print(["X11 INCR part", part.length] as const);
+    }
+    return part.length == 0 ? [got, st2] as const : partsX(c, st2, concat(got, part));
+}
+
+// the property of the paste of the window given a new value (a part of a
+// large selection): the event, the others kept in their order
+action propertyNewX(c: net.Conn, st: XState, seen: x11.Message[]): [boolean, x11.Message, XState] {
+    const k = findIndex(seen, (m) => m.code == x11.PROPERTY && x11.u32At(m.bytes, 4) == st.window && x11.u32At(m.bytes, 8) == st.atoms[A_PASTE] && m.bytes[16] == 0u8);
+    if (k >= 0) {
+        const rest = concat(seen.slice(0, k), seen.slice(k + 1, seen.length));
+        return [true, seen[k], { ...st, queued: concat(st.queued, rest) }] as const;
+    }
+    const [ms, rest, gone] = readX(c, st.pending, 1000);
+    if (gone || (ms.length == 0 && rest.length == st.pending.length)) {
+        return [false, { code: 0, bytes: [] }, { ...st, pending: rest, queued: concat(st.queued, seen) }] as const;
+    }
+    return propertyNewX(c, { ...st, pending: rest }, concat(seen, ms));
 }
 
 // the event `ev` given to `step`, what the model asks done: a text copied
@@ -1360,10 +1432,25 @@ action answerX(c: net.Conn, st: XState, e: x11.Message): XState {
     const property = named == 0u32 ? target : named;
     const types = st.atoms[A_TARGETS] == target;
     const text = target == st.atoms[A_UTF8] || target == XA_STRING;
+    // a text larger than a part: given in parts (INCR), the program that
+    // pastes asking each by deleting the property (its changes followed)
+    const total = bytes(st.text).length;
+    const large = text && st.owner && total > CHUNK;
     const written = types ? net.write(c, x11.changeProperty(requestor, property, XA_ATOM, 32, x11.words([st.atoms[A_TARGETS], st.atoms[A_UTF8], XA_STRING])))
-        : (text && st.owner ? net.write(c, x11.changeProperty(requestor, property, target, 8, bytes(st.text))) : Ok(()));
+        : (large ? net.write(c, concat(x11.selectEvents(requestor, 0x400000u32), x11.changeProperty(requestor, property, st.atoms[A_INCR], 32, x11.le32(u32(total)))))
+        : (text && st.owner ? net.write(c, x11.changeProperty(requestor, property, target, 8, bytes(st.text))) : Ok(())));
     const told = net.write(c, x11.selectionNotify(requestor, x11.u32At(b, 16), target, types || (text && st.owner) ? property : 0u32, x11.u32At(b, 4)));
-    return st;
+    return large ? { ...st, incrTo: requestor, incrProperty: property, incrTarget: target, incrAt: 0 } : st;
+}
+
+// the property of a large selection deleted by the program that pastes
+// it: its next part written (an empty one after the last: the end)
+action nextPartX(c: net.Conn, st: XState): XState {
+    const b = bytes(st.text);
+    const end = min(b.length, st.incrAt + CHUNK);
+    const written = net.write(c, x11.changeProperty(st.incrTo, st.incrProperty, st.incrTarget, 8, b.slice(st.incrAt, end)));
+    // (the empty part written: no more parts)
+    return st.incrAt >= b.length ? { ...st, incrTo: 0u32 } : { ...st, incrAt: end };
 }
 
 // the modifiers of the state `state` of an event of X11 given to the
@@ -1426,6 +1513,15 @@ action answerMessageX<M>(c: net.Conn, m: M, e: x11.Message, ui: Ui, st: XState, 
     if (e.code == x11.SELECTION_REQUEST) {
         return [m, ui, answerX(c, st, e)] as const;
     }
+    if (e.code == x11.PROPERTY) {
+        // (state 1: deleted)
+        const next = st.incrTo != 0u32 && x11.u32At(b, 4) == st.incrTo && x11.u32At(b, 8) == st.incrProperty && b[16] == 1u8;
+        return [m, ui, next ? nextPartX(c, st) : st] as const;
+    }
+    if (e.code == 0 && st.shm > 0 && i64(b[10]) == st.shm) {
+        // an error of MIT-SHM: the images sent in strips from now on
+        return [m, { ...ui, redraw: true }, { ...st, shm: 0 }] as const;
+    }
     if (e.code == x11.SELECTION_CLEAR) {
         return [m, ui, x11.u32At(b, 12) == st.atoms[A_CLIPBOARD] ? { ...st, owner: false, text: "" } : st] as const;
     }
@@ -1468,6 +1564,12 @@ action loopX11<M>(c: net.Conn, f: Font, m: M, ui: Ui, st: XState, view: (M) => E
     return loopX11(c, f, nm, { ...u2, redraw: false }, { ...ns, shape: u2.cursor }, view, update);
 }
 
+// MIT-SHM of a version that passes memories by descriptors (1.2 and after)
+function shmRecent(m: x11.Message): boolean {
+    const [major, minor] = x11.shmVersionOf(m);
+    return major > 1 || (major == 1 && minor >= 2);
+}
+
 // the connection to the server of `display`: its abstract socket, else
 // its file
 action connectX(display: string): Result<net.Conn, IoError> {
@@ -1500,15 +1602,25 @@ action runX11<M>(title: string, width: i64, height: i64, labels: string[], f: Fo
             }
             // the atoms, the table of the keyboard, the resources of the
             // server (its density): replies in this order
-            const asked = net.write(c, concat(concat(x11.internAtoms(ATOMS, 0, []),
-                x11.keyboardMapping(setup.minKeycode, setup.maxKeycode - setup.minKeycode + 1)), x11.getProperty(setup.root, XA_RESOURCE_MANAGER, false)));
-            const [rs, others, rest] = repliesX(c, [], ATOMS.length + 2, [], []);
-            if (rs.length < ATOMS.length + 2) {
+            const asked = net.write(c, concat(concat(concat(x11.internAtoms(ATOMS, 0, []),
+                x11.keyboardMapping(setup.minKeycode, setup.maxKeycode - setup.minKeycode + 1)), x11.getProperty(setup.root, XA_RESOURCE_MANAGER, false)), x11.queryExtension("MIT-SHM")));
+            const [rs, others0, rest0] = repliesX(c, [], ATOMS.length + 3, [], []);
+            if (rs.length < ATOMS.length + 3) {
                 fail(title, "the server of X11 did not answer");
                 net.close(c);
                 return m;
             }
             const atoms = map(iota(ATOMS.length), (k) => x11.atomOf(rs[k]));
+            // MIT-SHM from its version 1.2 (memories passed by descriptors);
+            // ISC_UI_NO_SHM set: the images in strips
+            const [hasShm, shmMajor, shmEvent] = x11.extensionOf(rs[ATOMS.length + 2]);
+            const wantShm = hasShm && sys.env("ISC_UI_NO_SHM") == None;
+            const vq = wantShm ? net.write(c, x11.shmQueryVersion(shmMajor)) : Ok(());
+            const [vs, others, rest] = wantShm ? repliesX(c, rest0, 1, [], others0) : [[], others0, rest0] as const;
+            const shmOk = vs.length == 1 && shmRecent(vs[0]);
+            if (sys.env("ISC_UI_TRACE") != None) {
+                print(["X11 MIT-SHM", shmOk] as const);
+            }
             const keymap = x11.keymapOf(rs[ATOMS.length], setup.minKeycode);
             const resources = x11.propertyValue(rs[ATOMS.length + 1]);
             const scale = scaleOf(utf8Valid(resources) ? stringOf(resources) : "");
@@ -1526,7 +1638,8 @@ action runX11<M>(title: string, width: i64, height: i64, labels: string[], f: Fo
                 concat(x11.setCursor(window, id(4)), x11.mapWindow(window))));
             const st = {
                 setup: setup, window: window, gc: id(2), cursorFirst: id(4), shape: ARROW, keymap: keymap, mods: 0,
-                pending: rest, queued: others, atoms: atoms, owner: false, text: "", done: false,
+                pending: rest, queued: others, atoms: atoms, owner: false, text: "",
+                shm: shmOk ? shmMajor : 0, seg: id(10), incrTo: 0u32, incrProperty: 0u32, incrTarget: 0u32, incrAt: 0, done: false,
             };
             const ui = { ...interface(pw, ph, clock()), labels: labels, scale: scale, redraw: false };
             const end = loopX11(c, f, m, ui, st, view, update);

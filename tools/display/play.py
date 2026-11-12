@@ -28,6 +28,7 @@ The actions, in their order:
   move:X,Y     the pointer moved to a point of the window
   wait:SECONDS
   copy:TEXT    TEXT made the selection of another program (wl-copy)
+  copyseq:N    the lines 1 to N (`seq`) made it
   paste:FILE   the selection, of whatever program, written to FILE (wl-paste)
 Then the program's output to its end.
 
@@ -224,6 +225,16 @@ def main():
                 subprocess.run(["docker", "exec", name, "sh", "-c", "kill $(pidof %s)" % server_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             elif kind == "wait":
                 time.sleep(float(arg))
+            elif kind == "copyseq":
+                # the lines 1 to N made the selection of another program
+                # (under X11 by xsel, which gives a selection larger than a
+                # request of the core protocol in parts, INCR; xclip gives
+                # it whole, BIG-REQUESTS)
+                tool = ("xsel --clipboard --input --nodetach" if x11
+                        else "wl-copy --foreground --type 'text/plain;charset=utf-8'")
+                env = (["-e", "DISPLAY=:1"] if x11 else ["-e", "WAYLAND_DISPLAY=wayland-test", "-e", "XDG_RUNTIME_DIR=/run/display"])
+                subprocess.run(["docker", "exec", "-d", *env, name, "sh", "-c", "seq 1 %d | %s" % (int(arg), tool)], check=True)
+                time.sleep(0.8)
             elif kind == "copy" and x11:
                 # (xclip stays to give the text: started apart)
                 subprocess.run(["docker", "exec", "-d", "-e", "DISPLAY=:1", name, "sh", "-c",

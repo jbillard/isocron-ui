@@ -1,0 +1,49 @@
+// A program of the tests of the clipboard of large texts (tests/display.sh):
+// Ctrl+V pastes the selection of another program (its length and its CRC-32
+// printed at the end), Ctrl+C gives one of `count` lines ("ligne 0" to
+// "ligne count - 1", each ended by a line feed: 700 000 bytes and more for
+// 70 000), parts of a selection of X11 (INCR) or a pipe of Wayland larger
+// than any one write.
+// usage: clip_app count [--font=file]
+import { rgb } from "../src/paint";
+import { Element, Div, Label, Fill, style, textStyle } from "../src/ui";
+import { Input as HandInput, Effect, Key, Paste, Copy, AskPaste, WITH_CTRL } from "../src/input";
+import { runWith, loadFont, fail } from "../src/app";
+import { crc32 } from "../src/png";
+
+type Model = { lines: i64, length: i64, crc: u32 };
+
+// the text of `n` lines
+function lines(n: i64): string {
+    return join(map(iota(n), (i) => `ligne ${i}\n`), "");
+}
+
+function update(m: Model, i: HandInput): [Model, Effect[]] {
+    return match (i) {
+        Key(k, mods) => (mods & WITH_CTRL) != 0 && k == 118 ? [m, [AskPaste]] as const
+            : ((mods & WITH_CTRL) != 0 && k == 99 ? [m, [Copy(lines(m.lines))]] as const : [m, []] as const),
+        Paste(s) => [{ ...m, length: bytes(s).length, crc: crc32(bytes(s)) }, []] as const,
+        _ => [m, []] as const,
+    };
+}
+
+function view(m: Model): Element {
+    return Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), padding: 20.0f32, background: rgb(0xFFFFFFu32) }, [
+        Label(textStyle(16.0f32, rgb(0x111827u32)), `collé : ${m.length} octets`),
+    ]);
+}
+
+action main(args: string[k]): i32 {
+    const n = args.length > 0 ? parseI64(args[0]) : 70000;
+    return match (loadFont(args)) {
+        Ok(f) => {
+            const end = runWith("isocron-ui : presse-papiers", 400, 200, ["Couper", "Copier", "Coller", "Tout sélectionner"], f, { lines: n, length: 0, crc: 0u32 }, view, update);
+            print([end.length, end.crc] as const);
+            return 0;
+        },
+        Err(e) => {
+            fail("isocron-ui : presse-papiers", e);
+            return 1;
+        },
+    };
+}

@@ -106,4 +106,23 @@ for mode in wayland x11; do
     tip="$(python3 "$here/../tools/display/pixel.py" "$out/tip-$mode.png" 612 82)"
     [ "$tip" = "17 24 39" ] || { echo "FAILED: the tooltip under $mode: $tip"; exit 1; }
 done
-echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx; the keyboard: $tabwl, $tabx; the long list: $longwl, $longx; selections: $selwl, $selx; the live gallery: tooltips and animations"
+# large texts through the clipboard: 588 895 bytes of another program
+# pasted (X11: by xsel, in parts, INCR; Wayland: a pipe), 828 890 copied and
+# read by another (xclip, given in parts; wl-paste); their lengths and CRCs
+"$iscc" build tests/clip_app.isc -o "$out/clip"
+for mode in wayland x11; do
+    x=""; [ "$mode" = x11 ] && x=1
+    big="$(cd "$out" && PLAY_X11=$x ISC_UI_TRACE=1 python3 "$here/../tools/display/play.py" 400 200 move:200,100 copyseq:100000 wait:0.5 key:ctrl+v wait:3 key:ctrl+c "paste:$out/big-$mode.txt" endserver -- "$out/clip" 70000)"
+    [ "$(echo "$big" | tail -1)" = "(588895, 3239055117)" ] || { echo "FAILED: a large paste under $mode: $(echo "$big" | tail -1)"; exit 1; }
+    [ "$(python3 -c "import sys, zlib; b = open(sys.argv[1], 'rb').read(); print(len(b), zlib.crc32(b))" "$out/big-$mode.txt")" = "828890 2854953365" ] || { echo "FAILED: a large copy under $mode"; exit 1; }
+    if [ "$mode" = x11 ]; then
+        [ "$(echo "$big" | grep -c 'X11 INCR part')" -gt 100 ] || { echo "FAILED: the paste under X11 not in parts"; exit 1; }
+    fi
+done
+# the image of X11 by MIT-SHM (the trace says it is used) and in strips:
+# the same pixels
+shm="$(cd "$out" && PLAY_X11=1 ISC_UI_TRACE=1 python3 "$here/../tools/display/play.py" 520 420 move:20,20 "shot:$out/shm.png" endserver -- "$out/todo" | grep -c 'MIT-SHM, true')"
+[ "$shm" = 1 ] || { echo "FAILED: MIT-SHM not used"; exit 1; }
+(cd "$out" && PLAY_X11=1 ISC_UI_NO_SHM=1 python3 "$here/../tools/display/play.py" 520 420 move:20,20 "shot:$out/strips.png" endserver -- "$out/todo" > /dev/null)
+cmp -s "$out/shm.png" "$out/strips.png" || { echo "FAILED: MIT-SHM and the strips differ"; exit 1; }
+echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx; the keyboard: $tabwl, $tabx; the long list: $longwl, $longx; selections: $selwl, $selx; the live gallery: tooltips and animations; large clipboards; MIT-SHM and strips the same"

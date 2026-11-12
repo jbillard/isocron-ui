@@ -254,7 +254,9 @@ export function atomOf(m: Message): u32 {
 // the events a window of the library asks: keys pressed and released,
 // buttons, the pointer entering, leaving and moving, its exposure, its
 // structure (its size), its focus
-export const EVENTS: u32 = 0x1u32 | 0x2u32 | 0x4u32 | 0x8u32 | 0x10u32 | 0x20u32 | 0x40u32 | 0x8000u32 | 0x20000u32 | 0x200000u32;
+// (and the changes of its properties: the parts of a large selection come
+// by them)
+export const EVENTS: u32 = 0x1u32 | 0x2u32 | 0x4u32 | 0x8u32 | 0x10u32 | 0x20u32 | 0x40u32 | 0x8000u32 | 0x20000u32 | 0x200000u32 | 0x400000u32;
 
 // the window `id` of `w` by `h` pixels at (0, 0) of `root` (its visual and
 // depth those of its parent), white, with the events `EVENTS`
@@ -291,7 +293,61 @@ export function glyphCursors(first: u32, font: u32, glyphs: i64[], k: i64, acc: 
 // the property `property` of `w` read (any type, its first 64 KiB),
 // deleted after when `remove` (`GetProperty`: its reply)
 export function getProperty(w: u32, property: u32, remove: boolean): u8[] {
-    return request(20, remove ? 1 : 0, concat(concat(concat(le32(w), le32(property)), le32(0u32)), concat(le32(0u32), le32(16384u32))));
+    // (at most 4 MiB at once)
+    return request(20, remove ? 1 : 0, concat(concat(concat(le32(w), le32(property)), le32(0u32)), concat(le32(0u32), le32(1048576u32))));
+}
+
+// the type of the reply `m` to `getProperty`
+export function propertyType(m: Message): u32 {
+    return u32At(m.bytes, 8);
+}
+
+// the events of the window `w` that are not its own asked `mask` (the
+// changes of the properties of a program that pastes a large selection)
+export function selectEvents(w: u32, mask: u32): u8[] {
+    return request(2, 0, concat(concat(le32(w), le32(0x800u32)), le32(mask)));
+}
+
+// the extension named `name` asked (`QueryExtension`: its reply)
+export function queryExtension(name: string): u8[] {
+    const b = bytes(name);
+    return request(98, 0, concat(concat(le16(b.length), [0u8, 0u8]), b));
+}
+
+// the reply `m` to `queryExtension`: present, its major opcode, its first
+// event
+export function extensionOf(m: Message): [boolean, i64, i64] {
+    return [m.bytes[8] != 0u8, i64(m.bytes[9]), i64(m.bytes[10])] as const;
+}
+
+// the version of MIT-SHM (`ShmQueryVersion`, the extension's opcode
+// `major`: its reply)
+export function shmQueryVersion(major: i64): u8[] {
+    return request(major, 0, []);
+}
+
+// the reply `m` to `shmQueryVersion`: its major and minor version
+export function shmVersionOf(m: Message): [i64, i64] {
+    return [u16At(m.bytes, 8), u16At(m.bytes, 10)] as const;
+}
+
+// the memory whose descriptor is sent beside this request attached as the
+// segment `seg` (`ShmAttachFd`, version 1.2)
+export function shmAttachFd(major: i64, seg: u32): u8[] {
+    return request(major, 6, concat(le32(seg), [1u8, 0u8, 0u8, 0u8]));
+}
+
+// the segment `seg` detached (`ShmDetach`)
+export function shmDetach(major: i64, seg: u32): u8[] {
+    return request(major, 2, le32(seg));
+}
+
+// the image of `w` by `h` pixels at the start of the segment `seg` drawn
+// into `win` at (0, 0) (`ShmPutImage`, ZPixmap of `depth`), an event
+// `ShmCompletion` sent when the server has copied it
+export function shmPutImage(major: i64, win: u32, gc: u32, w: i64, h: i64, depth: i64, seg: u32): u8[] {
+    const sizes = concat(concat(concat(le16(w), le16(h)), concat(le16(0), le16(0))), concat(concat(le16(w), le16(h)), concat(le16(0), le16(0))));
+    return request(major, 3, concat(concat(concat(le32(win), le32(gc)), sizes), concat([u8(depth), 2u8, 1u8, 0u8], concat(le32(seg), le32(0u32)))));
 }
 
 // the value of the reply `m` to `getProperty` (its bytes)
@@ -437,3 +493,4 @@ export const SELECTION_REQUEST: i64 = 30;
 export const SELECTION_NOTIFY: i64 = 31;
 export const CLIENT_MESSAGE: i64 = 33;
 export const MAPPING: i64 = 34;
+export const PROPERTY: i64 = 28;
