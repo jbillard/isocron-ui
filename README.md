@@ -279,7 +279,11 @@ folder (`tests/fonts/`).
   its tasks at the end. `todo_xml_app.isc`: the same, its view made from
   `todo.ui.xml` and `todo.style` (`todo_view.isc`). `scripted_app.isc`:
   the generic application, any interface of XML, styles and Lua
-  (`scripted/todo.ui.xml`: the same list of tasks).
+  (`scripted/todo.ui.xml`: the same list of tasks; `scripted/editor.ui.xml`:
+  an editor of code in the manner of Visual Studio Code, the files of the
+  folder of the view in a tree, opened in tabs and coloured, a palette
+  (Ctrl+P), the side bar and the panel shown or hidden (Ctrl+B, Ctrl+J)
+  and resized by their edges; its icons drawn by `tools/icons.py`).
 - `long_list_app.isc` (`long_list.isc`): 100 000 tasks (or the number
   given) in a long list; prints those ticked.
 - `gallery_app.isc` (`gallery_live.isc`, `gallery_plate.isc`): the plate of

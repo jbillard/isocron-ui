@@ -1,0 +1,383 @@
+/* The styles of the editor (editor.ui.xml): a dark theme */
+
+.window {
+    width: fill;
+    height: fill;
+    background: #1E1E1E;
+    cursor: arrow;
+}
+
+/* the bar of the title and its menus */
+.titlebar {
+    width: fill;
+    height: 30;
+    background: #3C3C3C;
+    direction: row;
+    align: center;
+    stretch: false;
+    padX: 6;
+    gap: 2;
+}
+
+.menu {
+    padX: 8;
+    padY: 3;
+    radius: 4;
+    cursor: arrow;
+}
+
+.menu:hover {
+    background: #505050;
+}
+
+.menuText {
+    size: 13;
+    color: #CCCCCC;
+}
+
+.titleText {
+    size: 12;
+    color: #CCCCCC;
+}
+
+.main {
+    width: fill;
+    height: fill;
+    stretch: true;
+}
+
+/* the bar of the activities */
+.activity {
+    width: 48;
+    height: fill;
+    background: #333333;
+    align: center;
+    stretch: false;
+}
+
+.act {
+    width: 48;
+    height: 48;
+    justify: center;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.act:hover {
+    background: #3F3F3F;
+}
+
+/* the side bar */
+.sideRow {
+    height: fill;
+    stretch: true;
+}
+
+.sidebar {
+    height: fill;
+    background: #252526;
+}
+
+.sideBody {
+    width: fill;
+    height: fill;
+}
+
+.sideHeader {
+    width: fill;
+    height: 35;
+    padX: 20;
+    align: center;
+    stretch: false;
+}
+
+.sideTitle {
+    size: 11;
+    color: #BBBBBB;
+}
+
+.rootRow {
+    width: fill;
+    height: 22;
+    padX: 4;
+    gap: 2;
+    align: center;
+    stretch: false;
+}
+
+.rootText {
+    size: 11;
+    color: #CCCCCC;
+}
+
+.searchRow {
+    width: fill;
+    padX: 12;
+    padY: 6;
+}
+
+.treeBox {
+    width: fill;
+    height: fill;
+}
+
+.node {
+    width: fill;
+    height: 22;
+    gap: 4;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.node:hover {
+    background: #2A2D2E;
+}
+
+.nodeText {
+    size: 13;
+    color: #CCCCCC;
+}
+
+.placeholder {
+    size: 13;
+    color: #858585;
+}
+
+.fileIcon {
+    width: 10;
+    height: 10;
+    radius: 2;
+}
+
+/* the edges that resize the side bar and the panel */
+.sashV {
+    width: 4;
+    height: fill;
+    background: #252526;
+    cursor: arrow;
+}
+
+.sashV:hover {
+    background: #0E639C;
+}
+
+.sashV:active {
+    background: #007ACC;
+}
+
+.sashH {
+    width: fill;
+    height: 4;
+    background: #2B2B2B;
+    cursor: arrow;
+}
+
+.sashH:hover {
+    background: #0E639C;
+}
+
+.sashH:active {
+    background: #007ACC;
+}
+
+/* the editor: its tabs, the path of its file, its code */
+.center {
+    width: fill;
+    height: fill;
+}
+
+.tabs {
+    width: fill;
+    height: 35;
+    background: #252526;
+    stretch: true;
+}
+
+.tab {
+    height: 35;
+    padX: 12;
+    gap: 6;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.tab:hover {
+    background: #313131;
+}
+
+.close {
+    width: 20;
+    height: 20;
+    radius: 4;
+    justify: center;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.close:hover {
+    background: #505050;
+}
+
+.closeText {
+    size: 14;
+    color: #CCCCCC;
+}
+
+.crumbs {
+    width: fill;
+    height: 22;
+    padX: 16;
+    align: center;
+    stretch: false;
+}
+
+.crumb {
+    size: 12;
+    color: #A9A9A9;
+}
+
+.code {
+    width: fill;
+    height: fill;
+    clip: true;
+}
+
+.line {
+    width: fill;
+    height: 19;
+    align: center;
+    stretch: false;
+}
+
+.gutter {
+    width: 64;
+    padX: 18;
+}
+
+.lineNo {
+    size: 13;
+    color: #858585;
+    textAlign: end;
+}
+
+.more {
+    size: 12;
+    color: #858585;
+}
+
+.welcome {
+    width: fill;
+    padding: 80;
+    gap: 12;
+    align: center;
+    stretch: false;
+}
+
+.welcomeTitle {
+    size: 40;
+    color: #3C3C3C;
+}
+
+.welcomeText {
+    size: 13;
+    color: #858585;
+}
+
+/* the palette */
+.paletteRow {
+    width: fill;
+    justify: center;
+    padY: 8;
+    stretch: false;
+}
+
+.palette {
+    width: 600;
+    padding: 6;
+    gap: 2;
+    radius: 6;
+    background: #252526;
+    shadowBlur: 12;
+    shadowY: 4;
+    shadowColor: rgba(0, 0, 0, 0.6);
+}
+
+.match {
+    width: fill;
+    height: 24;
+    padX: 8;
+    gap: 8;
+    radius: 3;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.match:hover {
+    background: #2A2D2E;
+}
+
+.matchText {
+    size: 13;
+    color: #CCCCCC;
+}
+
+/* the panel */
+.panelWrap {
+    width: fill;
+}
+
+.panel {
+    width: fill;
+    background: #1E1E1E;
+}
+
+.panelTabs {
+    width: fill;
+    height: 35;
+    padX: 16;
+    gap: 22;
+    align: center;
+    stretch: false;
+}
+
+.panelTab {
+    size: 11;
+    color: #969696;
+}
+
+.panelTabOn {
+    size: 11;
+    color: #E7E7E7;
+}
+
+.panelBody {
+    width: fill;
+    height: fill;
+    padX: 16;
+}
+
+.logText {
+    size: 12;
+    color: #CCCCCC;
+}
+
+/* the bar of the state */
+.status {
+    width: fill;
+    height: 22;
+    background: #007ACC;
+    padX: 10;
+    gap: 16;
+    align: center;
+    stretch: false;
+}
+
+.statusText {
+    size: 12;
+    color: #FFFFFF;
+}

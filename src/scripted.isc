@@ -523,7 +523,7 @@ function tagTpl(g: G, scope: string[n], name: string, attrs: Attr[m], kids: Node
         if (src == "") {
             return [fault(g0, line, "<image> needs src=\"a file of PNG\""), []] as const;
         }
-        const g1 = isExpr(src) || findIndex(g0.images, (x) => x == src) >= 0 ? g0 : { ...g0, images: concat(g0.images, [src]) };
+        const g1 = src.indexOf("{") >= 0 || findIndex(g0.images, (x) => x == src) >= 0 ? g0 : { ...g0, images: concat(g0.images, [src]) };
         const [g2, v] = textVal(g1, scope, isExpr(src) ? `{${src.slice(1, src.length - 1)}}` : src, line);
         const [g3, ps] = propsOf(g2, scope, attrs, ["src", "width", "height"], [KIND_TEXT, KIND_F32, KIND_F32], line);
         return [g3, [TImage(v, filter(ps, (p) => p.k > 0), line)]] as const;
@@ -668,7 +668,8 @@ export type Cx = { file: string, classes: Cls[], binds: string[], pics: Picture[
 // and `host.listFolder(path, done)` ask a file or a folder, read after the
 // input that asked them (when the view is read, at once); `done` is then
 // called with the text of the file or the sequence of the names in the
-// folder (those of folders ending with `/`), or with nil and the reason
+// folder (those of folders ending with `/`), or with nil and the reason;
+// `host.folder` is the folder of the view
 const HOST_LUA: string = join([
     "host = { requests = {}, pending = {} }",
     "function host.readFile(path, done)",
@@ -797,7 +798,11 @@ action loaded(path: string, rattrs: Attr[n], rkids: Node[m], rline: i64): Result
     if (faults.length > 0 || ts.length != 1) {
         return Err(join(faults, "\n"));
     }
-    const [h0, hf] = lua.load(lua.newVm(), HOST_LUA, "host");
+    // (`host.folder`: the folder of the view, without its last separator,
+    // "." for the current one)
+    const folder = dir == "" ? "." : dir.slice(0, dir.length - 1);
+    const quoted = join(split(join(split(folder, "\\"), "\\\\"), "\""), "\\\"");
+    const [h0, hf] = lua.load(lua.newVm(), `${HOST_LUA}\nhost.folder = "${quoted}"`, "host");
     const [h1, hr] = lua.call(h0, hf, []);
     const ran = scriptsRun(h1, map(namesIn(attr(rattrs, "script"), " "), (x) => dir + x), 0);
     return match (ran) {
@@ -915,9 +920,11 @@ function called(b: B, f: i64, args: V[n]): [B, V] {
     const fns = lua.global(b.vm, REG);
     const [v1, rs] = lua.call(b.vm, lua.element(b.vm, fns, f + 1), args);
     if (lua.failed(v1)) {
-        return [{ ...b, vm: lua.recover(v1), err: b.err == "" ? lua.errorText(v1) : b.err }, lua.nilValue()] as const;
+        const why = b.err == "" ? lua.errorText(v1) : b.err;
+        return [{ ...b, vm: lua.recover(v1), err: why }, lua.nilValue()] as const;
     }
-    return [{ ...b, vm: v1 }, rs.length > 0 ? rs[0] : lua.nilValue()] as const;
+    const r = rs.length > 0 ? rs[0] : lua.nilValue();
+    return [{ ...b, vm: v1 }, r] as const;
 }
 
 // the value of a property of the kind `kind` given by Lua (`v`), PNone
@@ -969,7 +976,8 @@ function texted(b: B, val: Val, args: V[n]): [B, string] {
         Lit(pv) => [b, textOfPV(pv)] as const,
         Fn(f) => {
             const [b1, v] = called(b, f, args);
-            return [b1, lua.plainText(b1.vm, v)] as const;
+            const s = lua.plainText(b1.vm, v);
+            return [b1, s] as const;
         },
     };
 }
@@ -988,7 +996,8 @@ function applied<S>(b: B, file: string, s: S, ps: Prop[n], names: string[k], kin
 
 // a place added: its message
 function place(b: B, h: H): [B, i64] {
-    return [{ ...b, hs: concat(b.hs, [h]) }, b.hs.length] as const;
+    const id = b.hs.length;
+    return [{ ...b, hs: concat(b.hs, [h]) }, id] as const;
 }
 
 function handOf(b: B, id: i64): Hand {
@@ -1077,6 +1086,10 @@ function argText2(b: B, file: string, ps: Prop[n], k: i64, args: V[m], line: i64
     return [b1, numOf(pv, 0.0f32)] as const;
 }
 
+// the child `kid` made for each element of the sequence `seq` (from the
+// `i`-th of `count`), after the elements `acc`
+// (a recursion: `b`, given at each step, is not copied; the elements made
+// before, nodes, are counted, not copied)
 function eachMade(b: B, cx: Cx, kid: Tpl, args: V[m], seq: V, count: i64, i: i64, acc: Element[]): [B, Element[]] {
     if (i > count) {
         return [b, acc] as const;

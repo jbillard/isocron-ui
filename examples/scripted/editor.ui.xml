@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- An editor of code in the manner of Visual Studio Code, read when the
+     generic application starts (examples/scripted_app.isc): its elements
+     here, its styles in editor.style, what it does in editor.lua (the
+     files of the current folder in a tree, opened in tabs, coloured).
+       scripted_app examples/scripted/editor.ui.xml
+     Ctrl+P finds a file, Ctrl+B shows or hides the side bar, Ctrl+J the
+     panel, Ctrl+W closes the tab; the side bar and the panel are resized
+     by their edges. -->
+<view title="Isocron : éditeur" width="1100" height="720"
+      styles="editor.style" script="editor.lua" onkey="return onKey(key, ctrl)"
+      images="icons/files.png icons/files_on.png icons/search.png icons/search_on.png icons/branch.png icons/branch_on.png icons/blocks.png icons/blocks_on.png icons/gear.png icons/closed.png icons/open.png icons/blank.png">
+  <column class="window">
+    <!-- the bar of the title: the menus, the name of the file -->
+    <row class="titlebar">
+      <each items="{menus}" as="m">
+        <row class="menu" onclick=""><text class="menuText">{m}</text></row>
+      </each>
+      <box width="fill"/>
+      <text class="titleText">{title()}</text>
+      <box width="fill"/>
+    </row>
+    <row class="main">
+      <!-- the bar of the activities: each shows its view in the side bar -->
+      <column class="activity">
+        <each items="{activities}" as="v">
+          <box class="act" onclick="showView(v)" tip="{viewNames[v]}"><image src="icons/{icon(v)}" width="24" height="24"/></box>
+        </each>
+        <box height="fill"/>
+        <box class="act" onclick=""><image src="icons/gear.png" width="24" height="24"/></box>
+      </column>
+      <!-- the side bar and its edge, which resizes it -->
+      <each items="{sidebarShown and {1} or {}}" as="s">
+        <row class="sideRow">
+          <column class="sidebar" width="{sidebarWidth}">
+            <row class="sideHeader"><text class="sideTitle">{viewTitle()}</text></row>
+            <!-- the explorer: the tree of the folder -->
+            <each items="{view == 'files' and {1} or {}}" as="v1">
+              <column class="sideBody">
+                <row class="rootRow"><image src="icons/open.png" width="16" height="16"/><text class="rootText">{rootTitle()}</text></row>
+                <box class="treeBox" scroll="0">
+                  <each items="{visibleNodes()}" as="n">
+                    <row class="node" onclick="clickNode(n)" background="{n.path == current and '#37373D' or 'transparent'}">
+                      <box width="{n.depth * 12 + 8}" height="1"/>
+                      <image src="{chevron(n)}" width="16" height="16"/>
+                      <box class="fileIcon" background="{n.dir and 'transparent' or fileColor(n.name)}"/>
+                      <text class="nodeText">{n.name}</text>
+                    </row>
+                  </each>
+                </box>
+              </column>
+            </each>
+            <!-- the search: the files whose path holds the letters typed -->
+            <each items="{view == 'search' and {1} or {}}" as="v2">
+              <column class="sideBody">
+                <row class="searchRow"><field bind="search" hint="Rechercher" autofocus="true"/></row>
+                <box class="treeBox" scroll="3">
+                  <each items="{found(search, 200)}" as="m">
+                    <row class="node" onclick="openFile(m)" background="{m == current and '#37373D' or 'transparent'}">
+                      <box width="12" height="1"/>
+                      <box class="fileIcon" background="{fileColor(m)}"/>
+                      <text class="nodeText">{rel(m)}</text>
+                    </row>
+                  </each>
+                </box>
+              </column>
+            </each>
+            <each items="{(view == 'branch' or view == 'blocks') and {1} or {}}" as="v3">
+              <column class="sideBody"><text class="placeholder">Cette vue reste à faire.</text></column>
+            </each>
+          </column>
+          <box class="sashV" onclick="from = sidebarWidth" ondrag="sidebarWidth = math.max(170, math.min(480, from + dx))"/>
+        </row>
+      </each>
+      <column class="center">
+        <!-- the palette: a file found by the letters of its path -->
+        <each items="{palette and {1} or {}}" as="p">
+          <row class="paletteRow">
+            <column class="palette">
+              <field bind="query" hint="Rechercher un fichier par son nom" autofocus="true" onenter="openChoice()" onchange="choice = 1"/>
+              <each items="{matches()}" as="m" index="k">
+                <row class="match" onclick="choice = k; openChoice()" background="{k == choice and '#04395E' or 'transparent'}">
+                  <box class="fileIcon" background="{fileColor(m)}"/>
+                  <text class="matchText">{rel(m)}</text>
+                </row>
+              </each>
+            </column>
+          </row>
+        </each>
+        <!-- the tabs -->
+        <row class="tabs">
+          <each items="{tabs}" as="t" index="k">
+            <row class="tab" onclick="selectTab(k)" background="{k == active and '#1E1E1E' or '#2D2D2D'}">
+              <box class="fileIcon" background="{fileColor(t.name)}"/>
+              <text size="13" color="{k == active and '#FFFFFF' or '#969696'}">{t.name}</text>
+              <row class="close" onclick="closeTab(k)"><text class="closeText">×</text></row>
+            </row>
+          </each>
+        </row>
+        <row class="crumbs"><text class="crumb">{breadcrumb()}</text></row>
+        <!-- the code of the file of the tab, its lines numbered -->
+        <box class="code" scroll="1">
+          <each items="{codeLines()}" as="line" index="n">
+            <row class="line">
+              <box class="gutter"><text class="lineNo" font="mono">{n}</text></box>
+              <each items="{line}" as="tok">
+                <text font="mono" size="13" color="{tok.color}">{tok.text}</text>
+              </each>
+            </row>
+          </each>
+          <each items="{more()}" as="m">
+            <row class="line"><box class="gutter"/><text class="more">{m}</text></row>
+          </each>
+          <each items="{#tabs == 0 and {1} or {}}" as="e">
+            <column class="welcome">
+              <text class="welcomeTitle">Isocron</text>
+              <text class="welcomeText">Ouvrez un fichier dans l'explorateur, ou Ctrl+P pour le chercher.</text>
+              <text class="welcomeText">Ctrl+B : la barre latérale · Ctrl+J : le panneau · Ctrl+W : fermer l'onglet</text>
+            </column>
+          </each>
+        </box>
+        <!-- the panel and its edge, which resizes it -->
+        <each items="{panelShown and {1} or {}}" as="q">
+          <column class="panelWrap">
+            <box class="sashH" onclick="from = panelHeight" ondrag="panelHeight = math.max(60, math.min(400, from - dy))"/>
+            <column class="panel" height="{panelHeight}">
+              <row class="panelTabs">
+                <text class="panelTab">PROBLÈMES</text>
+                <text class="panelTabOn">SORTIE</text>
+                <text class="panelTab">TERMINAL</text>
+              </row>
+              <box class="panelBody" scroll="2">
+                <each items="{log}" as="l">
+                  <text font="mono" class="logText">{l}</text>
+                </each>
+              </box>
+            </column>
+          </column>
+        </each>
+      </column>
+    </row>
+    <!-- the bar of the state -->
+    <row class="status">
+      <text class="statusText">{rootTitle()}</text>
+      <text class="statusText">{#tabs} onglet{#tabs > 1 and 's' or ''}</text>
+      <box width="fill"/>
+      <text class="statusText">{statusRight()}</text>
+    </row>
+  </column>
+</view>

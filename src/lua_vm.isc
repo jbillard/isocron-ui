@@ -3526,7 +3526,10 @@ export function call(vm: Vm, f: V, args: V[n]): [Vm, V[]] {
         return [v1, []] as const;
     }
     const cnt = v1.mtop - at;
-    return [v1, map(iota(cnt), (i) => reg(v1, at + i))] as const;
+    // (the results read before the machine is given back: read after it
+    // in the tuple, the machine was copied whole at each call)
+    const rs = map(iota(cnt), (i) => reg(v1, at + i));
+    return [v1, rs] as const;
 }
 
 export function failed(vm: Vm): boolean {
