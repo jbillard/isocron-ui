@@ -1,0 +1,955 @@
+// The reading of Lua (5.4, the part an interface needs) for the generic
+// application of the library: its tokens, then its tree, the names of its
+// locals resolved while it is read (each local a slot of the frame of its
+// function; one that a function inside reads or writes marked captured: it
+// then lives in a cell of the heap, as an upvalue of Lua). Not read: goto
+// and labels, the attributes of locals (<const>, <close>), the operators
+// on bits. Its faults name their line.
+
+// ----- tokens ------------------------------------------------------------
+
+export const T_NAME: i64 = 0;
+export const T_INT: i64 = 1;
+export const T_FLOAT: i64 = 2;
+export const T_STRING: i64 = 3;
+export const T_OP: i64 = 4;
+export const T_END: i64 = 5;
+
+// a token: its kind, its text (a name, a keyword, an operator, the value of
+// a string), its number, its line
+export type Token = { kind: i64, text: string, int: i64, float: f64, line: i64 };
+
+const KEYWORDS: string[] = ["and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while"];
+
+// the operators of more than one byte, longest first
+const OPS: string[] = ["...", "==", "~=", "<=", ">=", "..", "//", "::"];
+
+export type Lexed = Tokens(Token[]) | LexFault(string, i64);
+
+function isDigit(c: u8): boolean {
+    return c >= 48u8 && c <= 57u8;
+}
+
+function isHexDigit(c: u8): boolean {
+    return isDigit(c) || (c >= 97u8 && c <= 102u8) || (c >= 65u8 && c <= 70u8);
+}
+
+function isNameStart(c: u8): boolean {
+    return (c >= 97u8 && c <= 122u8) || (c >= 65u8 && c <= 90u8) || c == 95u8;
+}
+
+function isNameByte(c: u8): boolean {
+    return isNameStart(c) || isDigit(c);
+}
+
+function hexValue(c: u8): i64 {
+    return isDigit(c) ? i64(c) - 48 : (c >= 97u8 ? i64(c) - 87 : i64(c) - 55);
+}
+
+// the first place from `at` where `b` holds the bytes of `s` (-1: none)
+function findFrom(b: u8[n], s: string, at: i64): i64 {
+    const t = bytes(s);
+    const m = t.length;
+    if (at + m > n) {
+        return -1;
+    }
+    return count(iota(m), (k) => b[at + k] == t[k]) == m ? at : findFrom(b, s, at + 1);
+}
+
+// the level of a long bracket at `at` (`[[` 0, `[=[` 1...; -1: none)
+function longLevel(b: u8[n], at: i64): i64 {
+    if (at >= n || b[at] != 91u8) {
+        return -1;
+    }
+    const eq = countEq(b, at + 1, 0);
+    return at + 1 + eq < n && b[at + 1 + eq] == 91u8 ? eq : -1;
+}
+
+function countEq(b: u8[n], at: i64, k: i64): i64 {
+    return at < n && b[at] == 61u8 ? countEq(b, at + 1, k + 1) : k;
+}
+
+// the tokens of the source `src`
+export function lex(src: string): Lexed {
+    return lexFrom(bytes(src), 0, 1, []);
+}
+
+function lexFrom(b: u8[n], at: i64, line: i64, acc: Token[]): Lexed {
+    if (at >= n) {
+        return Tokens(concat(acc, [{ kind: T_END, text: "<eof>", int: 0, float: 0.0, line: line }]));
+    }
+    const c = b[at];
+    if (c == 10u8) {
+        return lexFrom(b, at + 1, line + 1, acc);
+    }
+    if (c == 32u8 || c == 9u8 || c == 13u8) {
+        return lexFrom(b, at + 1, line, acc);
+    }
+    // comments: `--` to the end of the line, or `--[[ ... ]]`
+    if (c == 45u8 && at + 1 < n && b[at + 1] == 45u8) {
+        const level = longLevel(b, at + 2);
+        if (level >= 0) {
+            const close = "]" + "=".repeat(level) + "]";
+            const end = findFrom(b, close, at + 4 + level);
+            if (end < 0) {
+                return LexFault("a comment not closed", line);
+            }
+            return lexFrom(b, end + level + 2, line + count(iota(end - at), (k) => b[at + k] == 10u8), acc);
+        }
+        const nl = findFrom(b, "\n", at);
+        return nl < 0 ? lexFrom(b, n, line, acc) : lexFrom(b, nl, line, acc);
+    }
+    if (isNameStart(c)) {
+        const e = nameEnd(b, at);
+        const word = stringOf(b.slice(at, e));
+        const keyword = findIndex(KEYWORDS, (k) => k == word) >= 0;
+        return lexFrom(b, e, line, concat(acc, [{ kind: keyword ? T_OP : T_NAME, text: word, int: 0, float: 0.0, line: line }]));
+    }
+    if (isDigit(c) || (c == 46u8 && at + 1 < n && isDigit(b[at + 1]))) {
+        return numberAt(b, at, line, acc);
+    }
+    if (c == 34u8 || c == 39u8) {
+        return stringAt(b, at, line, acc);
+    }
+    const level = longLevel(b, at);
+    if (level >= 0) {
+        const close = "]" + "=".repeat(level) + "]";
+        const end = findFrom(b, close, at + 2 + level);
+        if (end < 0) {
+            return LexFault("a long string not closed", line);
+        }
+        // (a line feed right after the opening dropped)
+        const start = at + 2 + level < n && b[at + 2 + level] == 10u8 ? at + 3 + level : at + 2 + level;
+        const text = stringOf(b.slice(start, end));
+        return lexFrom(b, end + level + 2, line + count(iota(end - at), (k) => b[at + k] == 10u8), concat(acc, [{ kind: T_STRING, text: text, int: 0, float: 0.0, line: line }]));
+    }
+    const multi = findIndex(OPS, (o) => findFrom(b, o, at) == at);
+    if (multi >= 0) {
+        return lexFrom(b, at + bytes(OPS[multi]).length, line, concat(acc, [{ kind: T_OP, text: OPS[multi], int: 0, float: 0.0, line: line }]));
+    }
+    const single = "+-*/%^#&~|<>=(){}[];:,.";
+    if (count(bytes(single), (x) => x == c) > 0) {
+        return lexFrom(b, at + 1, line, concat(acc, [{ kind: T_OP, text: stringOf([c]), int: 0, float: 0.0, line: line }]));
+    }
+    return LexFault(`a character unexpected: \`${stringOf([c])}\``, line);
+}
+
+function nameEnd(b: u8[n], at: i64): i64 {
+    return at < n && isNameByte(b[at]) ? nameEnd(b, at + 1) : at;
+}
+
+function digitsEnd(b: u8[n], at: i64, hex: boolean): i64 {
+    return at < n && (hex ? isHexDigit(b[at]) : isDigit(b[at])) ? digitsEnd(b, at + 1, hex) : at;
+}
+
+// a number at `at`: decimal or hexadecimal, an integer when it has neither
+// a point nor an exponent and fits in 64 bits, else a float
+function numberAt(b: u8[n], at: i64, line: i64, acc: Token[]): Lexed {
+    const hex = at + 1 < n && b[at] == 48u8 && (b[at + 1] == 120u8 || b[at + 1] == 88u8);
+    if (hex) {
+        const e = digitsEnd(b, at + 2, true);
+        if (e == at + 2) {
+            return LexFault("a hexadecimal number without digits", line);
+        }
+        // (integers of more than 16 digits wrap, as in Lua)
+        const v = fold(b.slice(at + 2, e), 0, (x, d) => x * 16 + hexValue(d));
+        return lexFrom(b, e, line, concat(acc, [{ kind: T_INT, text: stringOf(b.slice(at, e)), int: v, float: f64(v), line: line }]));
+    }
+    const intEnd = digitsEnd(b, at, false);
+    const point = intEnd < n && b[intEnd] == 46u8;
+    const fracEnd = point ? digitsEnd(b, intEnd + 1, false) : intEnd;
+    const exp = fracEnd < n && (b[fracEnd] == 101u8 || b[fracEnd] == 69u8);
+    const expSign = exp && fracEnd + 1 < n && (b[fracEnd + 1] == 43u8 || b[fracEnd + 1] == 45u8) ? 1 : 0;
+    const expEnd = exp ? digitsEnd(b, fracEnd + 1 + expSign, false) : fracEnd;
+    if (exp && expEnd == fracEnd + 1 + expSign) {
+        return LexFault("an exponent without digits", line);
+    }
+    const text = stringOf(b.slice(at, expEnd));
+    if (expEnd < n && isNameStart(b[expEnd])) {
+        return LexFault(`a malformed number near \`${text}\``, line);
+    }
+    if (!point && !exp) {
+        return match (tryParseI64(text)) {
+            Ok(v) => lexFrom(b, expEnd, line, concat(acc, [{ kind: T_INT, text: text, int: v, float: f64(v), line: line }])),
+            Err(e) => lexFrom(b, expEnd, line, concat(acc, [{ kind: T_FLOAT, text: text, int: 0, float: floatOf(text), line: line }])),
+        };
+    }
+    return lexFrom(b, expEnd, line, concat(acc, [{ kind: T_FLOAT, text: text, int: 0, float: floatOf(text), line: line }]));
+}
+
+function floatOf(text: string): f64 {
+    // (`.5` and `5.` read as 0.5 and 5.0)
+    const t = text.startsWith(".") ? "0" + text : text;
+    const u = t.endsWith(".") ? t + "0" : (t.indexOf(".e") >= 0 || t.indexOf(".E") >= 0 ? join(split(join(split(t, ".e"), ".0e"), ".E"), ".0E") : t);
+    return match (tryParseF64(u)) {
+        Ok(v) => v,
+        Err(e) => 0.0,
+    };
+}
+
+// a string in quotes at `at`, its escapes replaced
+function stringAt(b: u8[n], at: i64, line: i64, acc: Token[]): Lexed {
+    return stringFrom(b, at + 1, b[at], line, line, [], acc);
+}
+
+function stringFrom(b: u8[n], at: i64, quote: u8, line: i64, start: i64, got: u8[], acc: Token[]): Lexed {
+    if (at >= n || b[at] == 10u8) {
+        return LexFault("a string not closed", start);
+    }
+    const c = b[at];
+    if (c == quote) {
+        return lexFrom(b, at + 1, line, concat(acc, [{ kind: T_STRING, text: stringOf(got), int: 0, float: 0.0, line: start }]));
+    }
+    if (c != 92u8) {
+        return stringFrom(b, at + 1, quote, line, start, concat(got, [c]), acc);
+    }
+    if (at + 1 >= n) {
+        return LexFault("a string not closed", start);
+    }
+    const e = b[at + 1];
+    const simple = e == 110u8 ? 10 : (e == 116u8 ? 9 : (e == 114u8 ? 13 : (e == 92u8 ? 92 : (e == 34u8 ? 34 : (e == 39u8 ? 39 : (e == 97u8 ? 7 : (e == 98u8 ? 8 : (e == 102u8 ? 12 : (e == 118u8 ? 11 : (e == 10u8 ? 10 : -1))))))))));
+    if (simple >= 0) {
+        return stringFrom(b, at + 2, quote, e == 10u8 ? line + 1 : line, start, concat(got, [u8(simple)]), acc);
+    }
+    if (e == 120u8 && at + 3 < n && isHexDigit(b[at + 2]) && isHexDigit(b[at + 3])) {
+        return stringFrom(b, at + 4, quote, line, start, concat(got, [u8(hexValue(b[at + 2]) * 16 + hexValue(b[at + 3]))]), acc);
+    }
+    if (isDigit(e)) {
+        const end = min(digitsEnd(b, at + 1, false), at + 4);
+        const v = fold(b.slice(at + 1, end), 0, (x, d) => x * 10 + i64(d) - 48);
+        return v > 255 ? LexFault("a decimal escape too large", line) : stringFrom(b, end, quote, line, start, concat(got, [u8(v)]), acc);
+    }
+    if (e == 122u8) {
+        // \z: the blanks after it skipped
+        const skip = skipBlanks(b, at + 2);
+        return stringFrom(b, skip, quote, line + count(iota(skip - at), (k) => b[at + k] == 10u8), start, got, acc);
+    }
+    return LexFault(`an invalid escape \`\\${stringOf([e])}\``, line);
+}
+
+function skipBlanks(b: u8[n], at: i64): i64 {
+    return at < n && (b[at] == 32u8 || b[at] == 9u8 || b[at] == 10u8 || b[at] == 13u8) ? skipBlanks(b, at + 1) : at;
+}
+
+// ----- the tree ----------------------------------------------------------
+
+// the binary operators (`EBin`)
+export const OP_ADD: i64 = 0;
+export const OP_SUB: i64 = 1;
+export const OP_MUL: i64 = 2;
+export const OP_DIV: i64 = 3;
+export const OP_IDIV: i64 = 4;
+export const OP_MOD: i64 = 5;
+export const OP_POW: i64 = 6;
+export const OP_CONCAT: i64 = 7;
+export const OP_EQ: i64 = 8;
+export const OP_NE: i64 = 9;
+export const OP_LT: i64 = 10;
+export const OP_LE: i64 = 11;
+export const OP_GT: i64 = 12;
+export const OP_GE: i64 = 13;
+
+// the unary ones (`EUn`)
+export const UN_NEG: i64 = 0;
+export const UN_NOT: i64 = 1;
+export const UN_LEN: i64 = 2;
+
+// the hash of a string (FNV-1a of its bytes): the place of a key in a
+// table; that of a constant string computed once, when it is read
+export function hashString(s: string): i64 {
+    return fold(bytes(s), -3750763034362895579, (h, c) => (h ^ i64(c)) * 1099511628211);
+}
+
+// a place a name reads: a local of the frame (its slot), a local captured
+// by a function inside (its slot holds its cell), an upvalue of the closure
+// (its index), or a global (its name and hash)
+export type Place = Local(i64) | Cell(i64) | Up(i64) | Global(string, i64);
+
+// an expression; a string keeps its hash; an index, a call, an operation
+// keep their line (their faults name it); a table constructor its
+// positional values, its keys and their values, and whether its last
+// positional value gives all its values (a call, `...`)
+export type Expr = ENil | ETrue | EFalse | EInt(i64) | EFloat(f64) | EStr(string, i64) | EVararg
+    | EFunc(i64) | EName(Place) | EIndex(Expr, Expr, i64)
+    | ECall(Expr, Expr[], i64) | EMethod(Expr, string, i64, Expr[], i64)
+    | EBin(i64, Expr, Expr, i64) | EAnd(Expr, Expr) | EOr(Expr, Expr) | EUn(i64, Expr, i64)
+    | ETable(Expr[], Expr[], Expr[], boolean, i64) | EParen(Expr);
+
+// a statement, with its line; `if` with its condition, its block and the
+// block of `else` (an `elseif` a single `if` there)
+export type Stat = SLocal(Place[], Expr[], i64) | SLocalFunc(Place, i64, i64) | SAssign(Expr[], Expr[], i64) | SCall(Expr, i64)
+    | SIf(Expr, Stat[], Stat[], i64) | SWhile(Expr, Stat[], i64) | SRepeat(Stat[], Expr, i64)
+    | SNumFor(Place, Expr, Expr, Expr, Stat[], i64) | SGenFor(Place[], Expr[], Stat[], i64)
+    | SReturn(Expr[], i64) | SBreak(i64) | SDo(Stat[], i64);
+
+// a function read: its parameters (the first slots; those captured), whether
+// it takes `...`, its body, its number of slots, its upvalues (each the
+// local of the function around it, `true` and its slot, or an upvalue of
+// it, `false` and its index), its name and line, the names of its slots
+// and upvalues (for the messages of its faults)
+export type Proto = { nparams: i64, paramCell: boolean[], vararg: boolean, body: Stat[], slots: i64, upFromLocal: boolean[], upIndex: i64[], name: string, line: i64, slotNames: string[], upNames: string[] };
+
+// a chunk read: its functions, `main` the chunk itself (no parameters,
+// `...` its arguments)
+export type Chunk = { protos: Proto[], main: i64 };
+
+export type ParsedLua = Program(Chunk) | ParseFault(string, i64);
+
+// ----- the parser --------------------------------------------------------
+
+// a function being read: its locals in scope (their names and slots), its
+// number of slots, which are captured, its upvalues, whether it takes `...`
+type Fs = { names: string[], slotOf: i64[], nslots: i64, captured: boolean[], slotNames: string[], upNames: string[], upFromLocal: boolean[], upIndex: i64[], vararg: boolean };
+
+// the reader: its tokens and place, the functions being read (the
+// innermost last), those read, the loops around (`break`), its fault
+type P = { toks: Token[], pos: i64, fs: Fs[], protos: Proto[], loops: i64, err: string, errLine: i64 };
+
+function tk(p: P): Token {
+    return p.toks[p.pos];
+}
+
+function isOp(p: P, s: string): boolean {
+    const t = p.toks[p.pos];
+    return t.kind == T_OP && t.text == s;
+}
+
+function adv(p: P): P {
+    return p.pos + 1 < p.toks.length ? { ...p, pos: p.pos + 1 } : p;
+}
+
+function near(t: Token): string {
+    return t.kind == T_END ? "<eof>" : (t.kind == T_STRING ? `'"${t.text}"'` : `'${t.text}'`);
+}
+
+// the fault `msg` at the current token (the first fault kept; the reader
+// then at the end)
+function fail(p: P, msg: string): P {
+    if (p.err != "") {
+        return p;
+    }
+    const t = p.toks[p.pos];
+    return { ...p, err: `${msg} near ${near(t)}`, errLine: t.line, pos: p.toks.length - 1 };
+}
+
+function expect(p: P, s: string): P {
+    return isOp(p, s) ? adv(p) : fail(p, `'${s}' expected`);
+}
+
+// `s` closing `what` opened at `line`
+function expectClose(p: P, s: string, what: string, line: i64): P {
+    if (isOp(p, s)) {
+        return adv(p);
+    }
+    return tk(p).line == line ? fail(p, `'${s}' expected`) : fail(p, `'${s}' expected (to close '${what}' at line ${line})`);
+}
+
+function expectName(p: P): [P, string] {
+    const t = tk(p);
+    return t.kind == T_NAME ? [adv(p), t.text] as const : [fail(p, "<name> expected"), "_"] as const;
+}
+
+// ----- scopes and names ----------------------------------------------------
+
+function fsTop(p: P): i64 {
+    return p.fs.length - 1;
+}
+
+// the local `name` declared in the innermost function: its slot
+function declareLocal(p: P, name: string): [P, i64] {
+    const level = p.fs.length - 1;
+    const f = p.fs[level];
+    const slot = f.nslots;
+    const g = { ...f, names: concat(f.names, [name]), slotOf: concat(f.slotOf, [slot]), nslots: slot + 1, captured: concat(f.captured, [false]), slotNames: concat(f.slotNames, [name]) };
+    return [{ ...p, fs: p.fs.with(level, g) }, slot] as const;
+}
+
+function declareAll(p: P, names: string[n], k: i64, acc: Place[]): [P, Place[]] {
+    if (k >= n) {
+        return [p, acc] as const;
+    }
+    const [q, slot] = declareLocal(p, names[k]);
+    return declareAll(q, names, k + 1, concat(acc, [Local(slot)]));
+}
+
+// the number of locals in scope (the mark of a block)
+function scopeMark(p: P): i64 {
+    return p.fs[p.fs.length - 1].names.length;
+}
+
+// the locals declared since `mark` out of scope
+function closeScope(p: P, mark: i64): P {
+    const level = p.fs.length - 1;
+    const f = p.fs[level];
+    return { ...p, fs: p.fs.with(level, { ...f, names: f.names.slice(0, mark), slotOf: f.slotOf.slice(0, mark) }) };
+}
+
+function lastIndexOf(xs: string[n], name: string): i64 {
+    return fold(iota(n), -1, (acc, i) => xs[i] == name ? i : acc);
+}
+
+// the place `name` reads in the function at `level`: its local, its
+// upvalue (made when a function around has it), or a global
+function resolve(p: P, level: i64, name: string): [P, Place] {
+    const f = p.fs[level];
+    const k = lastIndexOf(f.names, name);
+    if (k >= 0) {
+        return [p, Local(f.slotOf[k])] as const;
+    }
+    const u = findIndex(f.upNames, (x) => x == name);
+    if (u >= 0) {
+        return [p, Up(u)] as const;
+    }
+    if (level == 0) {
+        return [p, Global(name, hashString(name))] as const;
+    }
+    const [q, outer] = resolve(p, level - 1, name);
+    return match (outer) {
+        Local(s) => {
+            const o = q.fs[level - 1];
+            const r = { ...q, fs: q.fs.with(level - 1, { ...o, captured: o.captured.with(s, true) }) };
+            return addUp(r, level, name, true, s);
+        },
+        Up(j) => addUp(q, level, name, false, j),
+        _ => [q, outer] as const,
+    };
+}
+
+function addUp(p: P, level: i64, name: string, fromLocal: boolean, index: i64): [P, Place] {
+    const f = p.fs[level];
+    const g = { ...f, upNames: concat(f.upNames, [name]), upFromLocal: concat(f.upFromLocal, [fromLocal]), upIndex: concat(f.upIndex, [index]) };
+    return [{ ...p, fs: p.fs.with(level, g) }, Up(f.upNames.length)] as const;
+}
+
+// ----- the locals captured -----------------------------------------------
+
+// the tree of a function with its captured locals read through their cells
+function rwPlace(pl: Place, cap: boolean[n]): Place {
+    return match (pl) {
+        Local(s) => cap[s] ? Cell(s) : pl,
+        _ => pl,
+    };
+}
+
+function rwExprs(es: Expr[n], cap: boolean[m]): Expr[n] {
+    return map(es, (e) => rwExpr(e, cap));
+}
+
+function rwExpr(e: Expr, cap: boolean[n]): Expr {
+    return match (e) {
+        EName(pl) => EName(rwPlace(pl, cap)),
+        EIndex(a, k, line) => EIndex(rwExpr(a, cap), rwExpr(k, cap), line),
+        ECall(f, args, line) => ECall(rwExpr(f, cap), rwExprs(args, cap), line),
+        EMethod(o, name, h, args, line) => EMethod(rwExpr(o, cap), name, h, rwExprs(args, cap), line),
+        EBin(op, a, b, line) => EBin(op, rwExpr(a, cap), rwExpr(b, cap), line),
+        EAnd(a, b) => EAnd(rwExpr(a, cap), rwExpr(b, cap)),
+        EOr(a, b) => EOr(rwExpr(a, cap), rwExpr(b, cap)),
+        EUn(op, a, line) => EUn(op, rwExpr(a, cap), line),
+        ETable(pos, keys, vals, multi, line) => ETable(rwExprs(pos, cap), rwExprs(keys, cap), rwExprs(vals, cap), multi, line),
+        EParen(a) => EParen(rwExpr(a, cap)),
+        _ => e,
+    };
+}
+
+function rwStats(ss: Stat[n], cap: boolean[m]): Stat[n] {
+    return map(ss, (s) => rwStat(s, cap));
+}
+
+function rwStat(s: Stat, cap: boolean[n]): Stat {
+    return match (s) {
+        SLocal(places, es, line) => SLocal(map(places, (pl) => rwPlace(pl, cap)), rwExprs(es, cap), line),
+        SLocalFunc(pl, k, line) => SLocalFunc(rwPlace(pl, cap), k, line),
+        SAssign(ts, es, line) => SAssign(rwExprs(ts, cap), rwExprs(es, cap), line),
+        SCall(e, line) => SCall(rwExpr(e, cap), line),
+        SIf(c, a, b, line) => SIf(rwExpr(c, cap), rwStats(a, cap), rwStats(b, cap), line),
+        SWhile(c, body, line) => SWhile(rwExpr(c, cap), rwStats(body, cap), line),
+        SRepeat(body, c, line) => SRepeat(rwStats(body, cap), rwExpr(c, cap), line),
+        SNumFor(pl, a, b, c, body, line) => SNumFor(rwPlace(pl, cap), rwExpr(a, cap), rwExpr(b, cap), rwExpr(c, cap), rwStats(body, cap), line),
+        SGenFor(places, es, body, line) => SGenFor(map(places, (pl) => rwPlace(pl, cap)), rwExprs(es, cap), rwStats(body, cap), line),
+        SReturn(es, line) => SReturn(rwExprs(es, cap), line),
+        SDo(body, line) => SDo(rwStats(body, cap), line),
+        _ => s,
+    };
+}
+
+// ----- expressions ---------------------------------------------------------
+
+function isMulti(e: Expr): boolean {
+    return match (e) {
+        ECall(f, a, l) => true,
+        EMethod(o, n, h, a, l) => true,
+        EVararg => true,
+        _ => false,
+    };
+}
+
+// the priorities of the binary operator `t` (left, right, its code; -1:
+// not one), those of Lua
+function binary(t: Token): [i64, i64, i64] {
+    if (t.kind != T_OP) {
+        return [-1, -1, -1] as const;
+    }
+    const s = t.text;
+    return s == "or" ? [1, 1, -2] as const : (s == "and" ? [2, 2, -3] as const
+        : (s == "==" ? [3, 3, OP_EQ] as const : (s == "~=" ? [3, 3, OP_NE] as const : (s == "<" ? [3, 3, OP_LT] as const
+        : (s == "<=" ? [3, 3, OP_LE] as const : (s == ">" ? [3, 3, OP_GT] as const : (s == ">=" ? [3, 3, OP_GE] as const
+        : (s == ".." ? [9, 8, OP_CONCAT] as const : (s == "+" ? [10, 10, OP_ADD] as const : (s == "-" ? [10, 10, OP_SUB] as const
+        : (s == "*" ? [11, 11, OP_MUL] as const : (s == "/" ? [11, 11, OP_DIV] as const : (s == "//" ? [11, 11, OP_IDIV] as const
+        : (s == "%" ? [11, 11, OP_MOD] as const : (s == "^" ? [14, 13, OP_POW] as const : [-1, -1, -1] as const)))))))))))))));
+}
+
+function unary(op: i64, e: Expr, line: i64): Expr {
+    if (op == UN_NEG) {
+        return match (e) {
+            EInt(v) => EInt(-v),
+            EFloat(v) => EFloat(-v),
+            _ => EUn(op, e, line),
+        };
+    }
+    return EUn(op, e, line);
+}
+
+// an expression whose operators bind tighter than `limit`
+function expr(p: P, limit: i64): [P, Expr] {
+    const t = tk(p);
+    const un = t.kind != T_OP ? -1 : (t.text == "not" ? UN_NOT : (t.text == "-" ? UN_NEG : (t.text == "#" ? UN_LEN : -1)));
+    if (t.kind == T_OP && t.text == "~") {
+        return [fail(p, "the operators on bits are not read"), ENil] as const;
+    }
+    if (un >= 0) {
+        const [q, e] = expr(adv(p), 12);
+        return binLoop(q, unary(un, e, t.line), limit);
+    }
+    const [q, e] = simple(p);
+    return binLoop(q, e, limit);
+}
+
+function binLoop(p: P, left: Expr, limit: i64): [P, Expr] {
+    const t = tk(p);
+    if (p.err != "") {
+        return [p, left] as const;
+    }
+    if (t.kind == T_OP && (t.text == "&" || t.text == "|" || t.text == "~")) {
+        return [fail(p, "the operators on bits are not read"), left] as const;
+    }
+    const [lp, rp, op] = binary(t);
+    if (lp <= limit) {
+        return [p, left] as const;
+    }
+    const [q, right] = expr(adv(p), rp);
+    const e = op == -2 ? EOr(left, right) : (op == -3 ? EAnd(left, right) : EBin(op, left, right, t.line));
+    return binLoop(q, e, limit);
+}
+
+function simple(p: P): [P, Expr] {
+    const t = tk(p);
+    if (t.kind == T_INT) {
+        return [adv(p), EInt(t.int)] as const;
+    }
+    if (t.kind == T_FLOAT) {
+        return [adv(p), EFloat(t.float)] as const;
+    }
+    if (t.kind == T_STRING) {
+        return [adv(p), EStr(t.text, hashString(t.text))] as const;
+    }
+    if (t.kind == T_OP) {
+        if (t.text == "nil") {
+            return [adv(p), ENil] as const;
+        }
+        if (t.text == "true") {
+            return [adv(p), ETrue] as const;
+        }
+        if (t.text == "false") {
+            return [adv(p), EFalse] as const;
+        }
+        if (t.text == "...") {
+            return p.fs[p.fs.length - 1].vararg ? [adv(p), EVararg] as const : [fail(p, "cannot use '...' outside a vararg function"), ENil] as const;
+        }
+        if (t.text == "function") {
+            return funcBody(adv(p), "anonymous", t.line, false);
+        }
+        if (t.text == "{") {
+            return tableCons(p);
+        }
+    }
+    return suffixed(p);
+}
+
+function primary(p: P): [P, Expr] {
+    const t = tk(p);
+    if (t.kind == T_NAME) {
+        const [q, place] = resolve(p, fsTop(p), t.text);
+        return [adv(q), EName(place)] as const;
+    }
+    if (t.kind == T_OP && t.text == "(") {
+        const [q, e] = expr(adv(p), 0);
+        return [expectClose(q, ")", "(", t.line), EParen(e)] as const;
+    }
+    return [fail(p, "unexpected symbol"), ENil] as const;
+}
+
+function suffixed(p: P): [P, Expr] {
+    const [q, e] = primary(p);
+    return suffixes(q, e);
+}
+
+function suffixes(p: P, e: Expr): [P, Expr] {
+    const t = tk(p);
+    if (p.err != "" || (t.kind != T_OP && t.kind != T_STRING)) {
+        return [p, e] as const;
+    }
+    if (t.kind == T_OP && t.text == ".") {
+        const [q, name] = expectName(adv(p));
+        return suffixes(q, EIndex(e, EStr(name, hashString(name)), t.line));
+    }
+    if (t.kind == T_OP && t.text == "[") {
+        const [q, k] = expr(adv(p), 0);
+        return suffixes(expect(q, "]"), EIndex(e, k, t.line));
+    }
+    if (t.kind == T_OP && t.text == ":") {
+        const [q, name] = expectName(adv(p));
+        const [r, args] = callArgs(q);
+        return suffixes(r, EMethod(e, name, hashString(name), args, t.line));
+    }
+    if (t.kind == T_STRING || t.text == "(" || t.text == "{") {
+        const [r, args] = callArgs(p);
+        return suffixes(r, ECall(e, args, t.line));
+    }
+    return [p, e] as const;
+}
+
+function callArgs(p: P): [P, Expr[]] {
+    const t = tk(p);
+    if (t.kind == T_STRING) {
+        return [adv(p), [EStr(t.text, hashString(t.text))]] as const;
+    }
+    if (isOp(p, "{")) {
+        const [q, e] = tableCons(p);
+        return [q, [e]] as const;
+    }
+    if (isOp(p, "(")) {
+        if (isOp(adv(p), ")")) {
+            return [adv(adv(p)), []] as const;
+        }
+        const [q, es] = exprList(adv(p));
+        return [expectClose(q, ")", "(", t.line), es] as const;
+    }
+    return [fail(p, "function arguments expected"), []] as const;
+}
+
+function exprList(p: P): [P, Expr[]] {
+    const [q, e] = expr(p, 0);
+    return exprMore(q, [e]);
+}
+
+function exprMore(p: P, acc: Expr[]): [P, Expr[]] {
+    if (!isOp(p, ",") || p.err != "") {
+        return [p, acc] as const;
+    }
+    const [q, e] = expr(adv(p), 0);
+    return exprMore(q, concat(acc, [e]));
+}
+
+function tableCons(p: P): [P, Expr] {
+    const line = tk(p).line;
+    return fields(adv(p), [], [], [], false, line);
+}
+
+function fields(p: P, pos: Expr[], keys: Expr[], vals: Expr[], multi: boolean, line: i64): [P, Expr] {
+    if (p.err != "") {
+        return [p, ENil] as const;
+    }
+    if (isOp(p, "}")) {
+        return [adv(p), ETable(pos, keys, vals, multi, line)] as const;
+    }
+    if (isOp(p, "[")) {
+        const [q, k] = expr(adv(p), 0);
+        const [r, v] = expr(expect(expect(q, "]"), "="), 0);
+        return fieldSep(r, pos, concat(keys, [k]), concat(vals, [v]), false, line);
+    }
+    const t = tk(p);
+    const after = p.toks[min(p.pos + 1, p.toks.length - 1)];
+    if (t.kind == T_NAME && after.kind == T_OP && after.text == "=") {
+        const [r, v] = expr(adv(adv(p)), 0);
+        return fieldSep(r, pos, concat(keys, [EStr(t.text, hashString(t.text))]), concat(vals, [v]), false, line);
+    }
+    const [r, v] = expr(p, 0);
+    return fieldSep(r, concat(pos, [v]), keys, vals, isMulti(v), line);
+}
+
+function fieldSep(p: P, pos: Expr[], keys: Expr[], vals: Expr[], multi: boolean, line: i64): [P, Expr] {
+    if (isOp(p, ",") || isOp(p, ";")) {
+        return fields(adv(p), pos, keys, vals, multi, line);
+    }
+    if (isOp(p, "}")) {
+        return fields(p, pos, keys, vals, multi, line);
+    }
+    return [expectClose(p, "}", "{", line), ENil] as const;
+}
+
+// the parameters and body of a function from its `(`: the function made,
+// its upvalues taken from the function around
+function funcBody(p: P, name: string, line: i64, method: boolean): [P, Expr] {
+    const open = expect(p, "(");
+    const fresh = { names: [], slotOf: [], nslots: 0, captured: [], slotNames: [], upNames: [], upFromLocal: [], upIndex: [], vararg: false };
+    const q = { ...open, fs: concat(open.fs, [fresh]), loops: 0 };
+    const r = method ? withSelf(q) : q;
+    const [s, nparams] = params(r, method ? 1 : 0);
+    const [u, body] = block(s, []);
+    const v = expectClose(u, "end", "function", line);
+    return endFunction(v, body, nparams, name, line, p.loops);
+}
+
+function withSelf(p: P): P {
+    const [q, slot] = declareLocal(p, "self");
+    return q;
+}
+
+function params(p: P, n: i64): [P, i64] {
+    if (isOp(p, ")")) {
+        return [adv(p), n] as const;
+    }
+    if (isOp(p, "...")) {
+        const level = p.fs.length - 1;
+        const q = { ...p, fs: p.fs.with(level, { ...p.fs[level], vararg: true }) };
+        return [expect(adv(q), ")"), n] as const;
+    }
+    const [q, name] = expectName(p);
+    const [r, slot] = declareLocal(q, name);
+    if (q.err != "") {
+        return [r, n] as const;
+    }
+    return isOp(r, ",") ? params(adv(r), n + 1) : [expect(r, ")"), n + 1] as const;
+}
+
+// the function being read closed: its tree with its captured locals
+// rewritten, kept among the functions read
+function endFunction(p: P, body: Stat[n], nparams: i64, name: string, line: i64, loops: i64): [P, Expr] {
+    const level = p.fs.length - 1;
+    const f = p.fs[level];
+    const cap = f.captured;
+    const rewritten = count(cap, (c) => c) == 0 ? body : rwStats(body, cap);
+    const proto = { nparams: nparams, paramCell: cap.slice(0, nparams), vararg: f.vararg, body: rewritten, slots: f.nslots, upFromLocal: f.upFromLocal, upIndex: f.upIndex, name: name, line: line, slotNames: f.slotNames, upNames: f.upNames };
+    const k = p.protos.length;
+    return [{ ...p, fs: p.fs.slice(0, level), protos: concat(p.protos, [proto]), loops: loops }, EFunc(k)] as const;
+}
+
+// ----- statements ----------------------------------------------------------
+
+function blockEnd(p: P): boolean {
+    const t = tk(p);
+    return t.kind == T_END || (t.kind == T_OP && (t.text == "end" || t.text == "else" || t.text == "elseif" || t.text == "until"));
+}
+
+// the statements of a block, until its end
+function block(p: P, acc: Stat[]): [P, Stat[]] {
+    if (p.err != "" || blockEnd(p)) {
+        return [p, acc] as const;
+    }
+    if (isOp(p, ";")) {
+        return block(adv(p), acc);
+    }
+    if (isOp(p, "return")) {
+        const line = tk(p).line;
+        const q = adv(p);
+        const [r, es] = blockEnd(q) || isOp(q, ";") ? [q, []] as const : exprList(q);
+        const s = isOp(r, ";") ? adv(r) : r;
+        return [blockEnd(s) ? s : fail(s, "<eof> expected"), concat(acc, [SReturn(es, line)])] as const;
+    }
+    const [q, st] = statement(p);
+    return block(q, concat(acc, [st]));
+}
+
+// a block in a scope of its own
+function scoped(p: P): [P, Stat[]] {
+    const mark = scopeMark(p);
+    const [q, body] = block(p, []);
+    return [closeScope(q, mark), body] as const;
+}
+
+function loopBody(p: P): [P, Stat[]] {
+    const [q, body] = scoped({ ...p, loops: p.loops + 1 });
+    return [{ ...q, loops: q.loops - 1 }, body] as const;
+}
+
+function statement(p: P): [P, Stat] {
+    const t = tk(p);
+    const line = t.line;
+    if (t.kind != T_OP) {
+        return exprStat(p);
+    }
+    const w = t.text;
+    if (w == "if") {
+        return ifStat(adv(p), line);
+    }
+    if (w == "while") {
+        const [q, c] = expr(adv(p), 0);
+        const [r, body] = loopBody(expect(q, "do"));
+        return [expectClose(r, "end", "while", line), SWhile(c, body, line)] as const;
+    }
+    if (w == "do") {
+        const [r, body] = scoped(adv(p));
+        return [expectClose(r, "end", "do", line), SDo(body, line)] as const;
+    }
+    if (w == "repeat") {
+        const mark = scopeMark(p);
+        const [q, body] = block({ ...adv(p), loops: p.loops + 1 }, []);
+        const [r, c] = expr(expectClose({ ...q, loops: q.loops - 1 }, "until", "repeat", line), 0);
+        return [closeScope(r, mark), SRepeat(body, c, line)] as const;
+    }
+    if (w == "for") {
+        return forStat(adv(p), line);
+    }
+    if (w == "function") {
+        return funcStat(adv(p), line);
+    }
+    if (w == "local") {
+        return isOp(adv(p), "function") ? localFunc(adv(adv(p)), line) : localStat(adv(p), line);
+    }
+    if (w == "break") {
+        return p.loops > 0 ? [adv(p), SBreak(line)] as const : [fail(p, "break outside a loop"), SBreak(line)] as const;
+    }
+    if (w == "goto" || w == "::") {
+        return [fail(p, "goto and labels are not read"), SBreak(line)] as const;
+    }
+    return exprStat(p);
+}
+
+function ifStat(p: P, line: i64): [P, Stat] {
+    const at = tk(p).line;
+    const [q, c] = expr(p, 0);
+    const [r, body] = scoped(expect(q, "then"));
+    if (isOp(r, "elseif")) {
+        const [s, rest] = ifStat(adv(r), line);
+        return [s, SIf(c, body, [rest], at)] as const;
+    }
+    if (isOp(r, "else")) {
+        const [s, other] = scoped(adv(r));
+        return [expectClose(s, "end", "if", line), SIf(c, body, other, at)] as const;
+    }
+    return [expectClose(r, "end", "if", line), SIf(c, body, [], at)] as const;
+}
+
+function forStat(p: P, line: i64): [P, Stat] {
+    const [q, first] = expectName(p);
+    if (isOp(q, "=")) {
+        const [r, a] = expr(adv(q), 0);
+        const [s, b] = expr(expect(r, ","), 0);
+        const [u, c] = isOp(s, ",") ? expr(adv(s), 0) : [s, EInt(1)] as const;
+        const v = expect(u, "do");
+        const mark = scopeMark(v);
+        const [w, slot] = declareLocal(v, first);
+        const [x, body] = loopBody(w);
+        return [expectClose(closeScope(x, mark), "end", "for", line), SNumFor(Local(slot), a, b, c, body, line)] as const;
+    }
+    const [r, names] = nameList(q, [first]);
+    const [s, es] = exprList(expect(r, "in"));
+    const u = expect(s, "do");
+    const mark = scopeMark(u);
+    const [v, places] = declareAll(u, names, 0, []);
+    const [w, body] = loopBody(v);
+    return [expectClose(closeScope(w, mark), "end", "for", line), SGenFor(places, es, body, line)] as const;
+}
+
+function nameList(p: P, acc: string[]): [P, string[]] {
+    if (!isOp(p, ",") || p.err != "") {
+        return [p, acc] as const;
+    }
+    const [q, name] = expectName(adv(p));
+    return nameList(q, concat(acc, [name]));
+}
+
+function funcStat(p: P, line: i64): [P, Stat] {
+    const [q, first] = expectName(p);
+    const [r, place] = resolve(q, fsTop(q), first);
+    return funcName(r, EName(place), first, line);
+}
+
+function funcName(p: P, target: Expr, name: string, line: i64): [P, Stat] {
+    if (isOp(p, ".") || isOp(p, ":")) {
+        const method = isOp(p, ":");
+        const [q, key] = expectName(adv(p));
+        const t = EIndex(target, EStr(key, hashString(key)), line);
+        const full = name + (method ? ":" : ".") + key;
+        if (method) {
+            const [r, f] = funcBody(q, full, line, true);
+            return [r, SAssign([t], [f], line)] as const;
+        }
+        return funcName(q, t, full, line);
+    }
+    const [r, f] = funcBody(p, name, line, false);
+    return [r, SAssign([target], [f], line)] as const;
+}
+
+function localFunc(p: P, line: i64): [P, Stat] {
+    const [q, name] = expectName(p);
+    const [r, slot] = declareLocal(q, name);
+    const [s, f] = funcBody(r, name, line, false);
+    return match (f) {
+        EFunc(k) => [s, SLocalFunc(Local(slot), k, line)] as const,
+        _ => [s, SLocalFunc(Local(slot), 0, line)] as const,
+    };
+}
+
+function localStat(p: P, line: i64): [P, Stat] {
+    const [q, first] = expectName(p);
+    const [r, names] = nameList(q, [first]);
+    if (isOp(r, "<")) {
+        return [fail(r, "the attributes of locals are not read"), SBreak(line)] as const;
+    }
+    const [s, es] = isOp(r, "=") ? exprList(adv(r)) : [r, []] as const;
+    const [u, places] = declareAll(s, names, 0, []);
+    return [u, SLocal(places, es, line)] as const;
+}
+
+function assignable(e: Expr): boolean {
+    return match (e) {
+        EName(pl) => true,
+        EIndex(a, k, l) => true,
+        _ => false,
+    };
+}
+
+function exprStat(p: P): [P, Stat] {
+    const line = tk(p).line;
+    const [q, e] = suffixed(p);
+    if (isOp(q, "=") || isOp(q, ",")) {
+        const [r, targets] = targetList(q, [e]);
+        if (count(targets, (t) => !assignable(t)) > 0) {
+            return [fail(r, "syntax error"), SBreak(line)] as const;
+        }
+        const [s, es] = exprList(expect(r, "="));
+        return [s, SAssign(targets, es, line)] as const;
+    }
+    return isMulti(e) && match (e) {
+        EVararg => false,
+        _ => true,
+    } ? [q, SCall(e, line)] as const : [fail(q, "syntax error"), SBreak(line)] as const;
+}
+
+function targetList(p: P, acc: Expr[]): [P, Expr[]] {
+    if (!isOp(p, ",") || p.err != "") {
+        return [p, acc] as const;
+    }
+    const [q, e] = suffixed(adv(p));
+    return targetList(q, concat(acc, [e]));
+}
+
+// the chunk `src`: its functions, the chunk itself `main`, or the first
+// fault with its line
+export function parseLua(src: string): ParsedLua {
+    return match (lex(src)) {
+        LexFault(m, line) => ParseFault(m, line),
+        Tokens(toks) => {
+            const fresh = { names: [], slotOf: [], nslots: 0, captured: [], slotNames: [], upNames: [], upFromLocal: [], upIndex: [], vararg: true };
+            const p = { toks: toks, pos: 0, fs: [fresh], protos: [], loops: 0, err: "", errLine: 0 };
+            const [q, body] = block(p, []);
+            const r = tk(q).kind == T_END ? q : fail(q, "'<eof>' expected");
+            if (r.err != "") {
+                return ParseFault(r.err, r.errLine);
+            }
+            const [s, main] = endFunction(r, body, 0, "main chunk", 0, 0);
+            return Program({ protos: s.protos, main: s.protos.length - 1 });
+        },
+    };
+}

@@ -1,0 +1,4 @@
+ÉTÉ	été	éa
+false	'string.sub' would cut a character of UTF-8 (the strings of this Lua are texts)
+false	'string.char' would cut a character of UTF-8 (the strings of this Lua are texts)
+é	é

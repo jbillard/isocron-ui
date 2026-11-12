@@ -1,0 +1,674 @@
+// The texts of the interpreter of Lua (src/lua.isc): numbers written as
+// Lua writes them (`%.14g`, `%d`), read as it reads them (`tonumber`, the
+// strings of arithmetic), `string.format`, and its patterns (`find`,
+// `match`, `gmatch`, `gsub`: the matcher of lstrlib.c, on the bytes).
+
+// ----- numbers written -----------------------------------------------------
+
+// the decimal digits of the string `s` of a number written without sign
+// and exponent ("123.456", "0.00012"): its digits, the place of its point
+// (the number of digits before it)
+function digitsOf(s: string): [string, i64] {
+    const dot = s.indexOf(".");
+    const whole = dot < 0 ? s : s.slice(0, dot);
+    const frac = dot < 0 ? "" : s.slice(dot + 1, s.length);
+    return [whole + frac, whole.length] as const;
+}
+
+// `d` without the zeros it starts with: its digits, how many were dropped
+function unpadded(d: string, k: i64): [string, i64] {
+    return k < d.length && d.slice(k, k + 1) == "0" ? unpadded(d, k + 1) : [d.slice(k, d.length), k] as const;
+}
+
+// the digits `d` (all those of an exact value, or the shortest of a large
+// one) rounded to `n`, an exact half to the even digit (as printf does),
+// and whether the rounding made one more digit (999 to 1000)
+function roundDigits(d: string, n: i64): [string, boolean] {
+    if (d.length <= n) {
+        return [d + "0".repeat(n - d.length), false] as const;
+    }
+    const b = bytes(d);
+    const half = b[n] == 53u8 && count(b.slice(n + 1, b.length), (c) => c != 48u8) == 0;
+    const lastOdd = n > 0 && (b[n - 1] & 1u8) == 1u8;
+    const up = half ? lastOdd : b[n] >= 53u8;
+    const kept = b.slice(0, n);
+    if (!up) {
+        return [stringOf(kept), false] as const;
+    }
+    // the carry from the last digit kept
+    const nines = fold(iota(n), 0, (acc, i) => b[n - 1 - i] == 57u8 && acc == i ? acc + 1 : acc);
+    if (nines == n) {
+        return ["1" + "0".repeat(n - 1), true] as const;
+    }
+    const at = n - 1 - nines;
+    return [stringOf(kept.slice(0, at)) + stringOf([b[at] + 1u8]) + "0".repeat(nines), false] as const;
+}
+
+// all the decimal digits of `x` (> 0, finite) and the power of ten of the
+// first: those of its exact value (`toFixed(100)` writes all of them from
+// 1e-80 to 1e21), else the shortest that read back to it
+function exactDigits(x: f64): [string, i64] {
+    if (x < 1e-80 || x >= 1e21) {
+        return bigDigits(x);
+    }
+    const [all, point] = digitsOf(x.toFixed(100));
+    const [d, dropped] = unpadded(all, 0);
+    return [d, point - dropped - 1] as const;
+}
+
+// the exact digits of `x` (> 0, finite) by big integers: `x` is `q` times
+// 2^e, `q` an integer below 2^53 (each step by two exact), so its digits
+// are those of q 2^e, or of q 5^-e at the power -e of ten
+function bigDigits(x: f64): [string, i64] {
+    const [q, e] = binary(x, 0);
+    const b = BigInt(i64(q));
+    if (e >= 0) {
+        const d = String(b * 2n ** BigInt(e));
+        return [d, d.length - 1] as const;
+    }
+    const d = String(b * 5n ** BigInt(-e));
+    return [d, d.length - 1 + e] as const;
+}
+
+function binary(q: f64, e: i64): [f64, i64] {
+    if (q >= 9007199254740992.0) {
+        return binary(q * 0.5, e + 1);
+    }
+    return q == floor(q) ? [q, e] as const : binary(q * 2.0, e - 1);
+}
+
+// the `n` significant digits of `x` (> 0, finite) and the power of ten of
+// the first: `x` is about d1.d2 d3 ... times 10^e
+export function significant(x: f64, n: i64): [string, i64] {
+    const [d, e] = exactDigits(x);
+    const [r, longer] = roundDigits(d, n);
+    return [r, longer ? e + 1 : e] as const;
+}
+
+// `x` (>= 0, finite) with `p` decimals, as `%.{p}f` writes it (an exact
+// half to the even digit)
+export function fixed(x: f64, p: i64): string {
+    const [d, e] = x == 0.0 ? ["0", 0] as const : exactDigits(x);
+    // the digits kept: the value times 10^p, rounded
+    const keep = e + 1 + p;
+    const digits = x == 0.0 || keep < 0 ? "0" : (keep == 0 ? roundZero(d) : roundedAll(d, keep));
+    const padded = digits.length < p + 1 ? "0".repeat(p + 1 - digits.length) + digits : digits;
+    const w = padded.length - p;
+    return p > 0 ? padded.slice(0, w) + "." + padded.slice(w, padded.length) : padded;
+}
+
+function roundedAll(d: string, keep: i64): string {
+    const [r, longer] = roundDigits(d, keep);
+    return longer ? r + "0" : r;
+}
+
+// a value below one unit of the last place kept, its digits `d`: 1 above a
+// half, else 0 (an exact half to the even digit, 0)
+function roundZero(d: string): string {
+    const b = bytes(d);
+    const above = b[0] > 53u8 || (b[0] == 53u8 && count(b.slice(1, b.length), (c) => c != 48u8) > 0);
+    return above ? "1" : "0";
+}
+
+// the digits `d` without the zeros they end with
+function trimZeros(d: string): string {
+    return d.endsWith("0") ? trimZeros(d.slice(0, d.length - 1)) : d;
+}
+
+// the exponent of `%e`: its sign and at least two digits
+function exponent(e: i64, upper: boolean): string {
+    const a = abs(e);
+    return (upper ? "E" : "e") + (e < 0 ? "-" : "+") + (a < 10 ? "0" : "") + `${a}`;
+}
+
+// `x` (>= 0, finite) as `%.{p}e`
+function fmtE(x: f64, p: i64, upper: boolean, alt: boolean): string {
+    if (x == 0.0) {
+        return "0" + (p > 0 || alt ? "." : "") + "0".repeat(p) + exponent(0, upper);
+    }
+    const [d, e] = significant(x, p + 1);
+    return d.slice(0, 1) + (p > 0 || alt ? "." : "") + d.slice(1, d.length) + exponent(e, upper);
+}
+
+// `x` (>= 0, finite) as `%.{p}g`: the digits of `%e` or `%f`, the zeros at
+// their end dropped (kept with `#`)
+function fmtG(x: f64, p0: i64, upper: boolean, alt: boolean): string {
+    const p = p0 == 0 ? 1 : p0;
+    if (x == 0.0) {
+        return alt ? "0." + "0".repeat(p - 1) : "0";
+    }
+    const [d, e] = significant(x, p);
+    if (e < -4 || e >= p) {
+        const mant = alt ? d.slice(1, d.length) : trimZeros(d.slice(1, d.length));
+        return d.slice(0, 1) + (mant == "" && !alt ? "" : ".") + mant + exponent(e, upper);
+    }
+    if (e >= 0) {
+        const whole = d.slice(0, e + 1);
+        const frac = alt ? d.slice(e + 1, d.length) : trimZeros(d.slice(e + 1, d.length));
+        return whole + (frac == "" && !alt ? "" : ".") + frac;
+    }
+    const frac = "0".repeat(-e - 1) + d;
+    const kept = alt ? frac : trimZeros(frac);
+    return "0" + (kept == "" && !alt ? "" : ".") + kept;
+}
+
+// `x` written as `tostring` writes a float: `%.14g`, then `.0` when it
+// looks like an integer
+export function floatText(x: f64): string {
+    if (x != x) {
+        return x < 0.0 ? "-nan" : "nan";
+    }
+    if (x == 1.0 / 0.0) {
+        return "inf";
+    }
+    if (x == -1.0 / 0.0) {
+        return "-inf";
+    }
+    const neg = x < 0.0 || (x == 0.0 && 1.0 / x < 0.0);
+    const g = fmtG(abs(x), 14, false, false);
+    const t = (neg ? "-" : "") + g;
+    return t.indexOf(".") >= 0 || t.indexOf("e") >= 0 ? t : t + ".0";
+}
+
+// ----- numbers read ----------------------------------------------------------
+
+// a number read from a string: an integer, a float, or none
+export type Number = NInt(i64) | NFloat(f64) | NNone;
+
+function isSpace(c: u8): boolean {
+    return c == 32u8 || (c >= 9u8 && c <= 13u8);
+}
+
+function hexDigit(c: u8): i64 {
+    return c >= 48u8 && c <= 57u8 ? i64(c) - 48 : (c >= 97u8 && c <= 102u8 ? i64(c) - 87 : (c >= 65u8 && c <= 70u8 ? i64(c) - 55 : -1));
+}
+
+// the number the string `s` writes, as `tonumber` and arithmetic read it:
+// blanks around it, a sign, a decimal integer (a float when it does not
+// fit), a decimal float (`1.5`, `.5`, `5.`, `1e3`), a hexadecimal integer
+// (`0x1F`, wrapping); `inf` and `nan` are not numbers of Lua
+export function readNumber(s: string): Number {
+    const t = s.trim();
+    if (t == "") {
+        return NNone;
+    }
+    const b = bytes(t);
+    const neg = b[0] == 45u8;
+    const signed = b[0] == 45u8 || b[0] == 43u8;
+    const body = signed ? t.slice(1, t.length) : t;
+    const bb = bytes(body);
+    if (bb.length > 2 && bb[0] == 48u8 && (bb[1] == 120u8 || bb[1] == 88u8)) {
+        const ds = bb.slice(2, bb.length);
+        if (count(ds, (c) => hexDigit(c) >= 0) == ds.length) {
+            const v = fold(ds, 0, (acc, c) => acc * 16 + hexDigit(c));
+            return NInt(neg ? -v : v);
+        }
+        return hexFloat(ds, neg);
+    }
+    const plain = count(bb, (c) => c >= 48u8 && c <= 57u8 || c == 46u8 || c == 101u8 || c == 69u8 || c == 43u8 || c == 45u8) == bb.length;
+    if (!plain || bb.length == 0) {
+        return NNone;
+    }
+    const isInt = count(bb, (c) => c >= 48u8 && c <= 57u8) == bb.length;
+    if (isInt) {
+        return match (tryParseI64(t)) {
+            Ok(v) => NInt(v),
+            Err(e) => match (tryParseF64(t)) {
+                Ok(f) => NFloat(f),
+                Err(x) => NNone,
+            },
+        };
+    }
+    // a float: at least a digit before the exponent
+    const ePos = findIndex(bb, (c) => c == 101u8 || c == 69u8);
+    const mant = ePos < 0 ? bb : bb.slice(0, ePos);
+    if (count(mant, (c) => c >= 48u8 && c <= 57u8) == 0 || count(mant, (c) => c == 43u8 || c == 45u8) > 0) {
+        return NNone;
+    }
+    const norm0 = body.startsWith(".") ? "0" + body : body;
+    const norm = join(split(join(split(norm0, ".e"), ".0e"), ".E"), ".0E");
+    const fixed = norm.endsWith(".") ? norm + "0" : norm;
+    return match (tryParseF64((neg ? "-" : "") + fixed)) {
+        Ok(f) => NFloat(f),
+        Err(e) => NNone,
+    };
+}
+
+// a hexadecimal float (`1.8p3`, `.4`, `Ap-2`): its digits, a point, an
+// exponent of two
+function hexFloat(ds: u8[n], neg: boolean): Number {
+    const pAt = findIndex(ds, (c) => c == 112u8 || c == 80u8);
+    const mant = pAt < 0 ? ds : ds.slice(0, pAt);
+    const dot = findIndex(mant, (c) => c == 46u8);
+    const whole = dot < 0 ? mant : mant.slice(0, dot);
+    const frac = dot < 0 ? mant.slice(0, 0) : mant.slice(dot + 1, mant.length);
+    const digits = concat(whole, frac);
+    if (digits.length == 0 || count(digits, (c) => hexDigit(c) >= 0) != digits.length) {
+        return NNone;
+    }
+    const expText = pAt < 0 ? "0" : stringOf(ds.slice(pAt + 1, n));
+    return match (tryParseI64(expText)) {
+        Ok(p) => {
+            const v = fold(digits, 0.0, (acc, c) => acc * 16.0 + f64(hexDigit(c)));
+            const scaled = v * 2.0 ** f64(p - 4 * frac.length);
+            return NFloat(neg ? -scaled : scaled);
+        },
+        Err(e) => NNone,
+    };
+}
+
+// ----- string.format -------------------------------------------------------
+
+// a directive of `string.format`: its flags, width, precision (-1: none)
+// and conversion
+type Spec = { left: boolean, plus: boolean, space: boolean, alt: boolean, zero: boolean, width: i64, prec: i64, conv: u8 };
+
+// `s` padded to the width of `sp` (zeros after a sign with `0`)
+function padded(sp: Spec, s: string, numeric: boolean): string {
+    const n = s.length;
+    if (n >= sp.width) {
+        return s;
+    }
+    if (sp.left) {
+        return s + " ".repeat(sp.width - n);
+    }
+    if (sp.zero && numeric) {
+        const signed = s.startsWith("-") || s.startsWith("+") || s.startsWith(" ");
+        return signed ? s.slice(0, 1) + "0".repeat(sp.width - n) + s.slice(1, n) : "0".repeat(sp.width - n) + s;
+    }
+    return " ".repeat(sp.width - n) + s;
+}
+
+function signOf(sp: Spec, neg: boolean): string {
+    return neg ? "-" : (sp.plus ? "+" : (sp.space ? " " : ""));
+}
+
+// the digits of `v` (>= 0, as unsigned when `v` < 0) in `base`
+function inBase(v: i64, base: i64, upper: boolean): string {
+    const digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    if (v == 0) {
+        return "0";
+    }
+    // (an unsigned value: its highest bits first)
+    const hi = v < 0 ? inBase(i64(u64(v) / u64(base)), base, upper) : (v >= base ? inBase(v / base, base, upper) : "");
+    const low = v < 0 ? i64(u64(v) % u64(base)) : v % base;
+    return (hi == "0" ? "" : hi) + digits.slice(low, low + 1);
+}
+
+// an integer formatted by `%d`, `%x`, `%X`, `%o`
+export function formatInt(sp: Spec, v: i64): string {
+    const c = sp.conv;
+    if (c == 100u8 || c == 105u8) {
+        const digits = v < 0 ? (v == -9223372036854775807 - 1 ? "9223372036854775808" : `${-v}`) : `${v}`;
+        const prec = sp.prec >= 0 && digits.length < sp.prec ? "0".repeat(sp.prec - digits.length) + digits : digits;
+        return padded(sp, signOf(sp, v < 0) + prec, sp.prec < 0);
+    }
+    const base = c == 111u8 ? 8 : 16;
+    const digits = inBase(v, base, c == 88u8);
+    const prec = sp.prec >= 0 && digits.length < sp.prec ? "0".repeat(sp.prec - digits.length) + digits : digits;
+    const prefix = sp.alt && v != 0 ? (c == 111u8 ? "0" : (c == 88u8 ? "0X" : "0x")) : "";
+    return padded(sp, prefix + prec, sp.prec < 0);
+}
+
+// a float formatted by `%f`, `%e`, `%g` (and their capitals)
+export function formatFloat(sp: Spec, x: f64): string {
+    const c = sp.conv;
+    const upper = c == 69u8 || c == 71u8 || c == 70u8;
+    if (x != x || x == 1.0 / 0.0 || x == -1.0 / 0.0) {
+        const word = x != x ? "nan" : "inf";
+        return padded({ ...sp, zero: false }, signOf(sp, x < 0.0) + (upper ? word.toUpperCase() : word), false);
+    }
+    const neg = x < 0.0 || (x == 0.0 && 1.0 / x < 0.0);
+    const a = abs(x);
+    const p = sp.prec < 0 ? 6 : sp.prec;
+    const body = c == 102u8 || c == 70u8 ? (fixed(a, min(p, 99)) + (sp.alt && p == 0 ? "." : ""))
+        : (c == 101u8 || c == 69u8 ? fmtE(a, p, upper, sp.alt) : fmtG(a, p, upper, sp.alt));
+    return padded(sp, signOf(sp, neg) + body, true);
+}
+
+// `s` as `%q` writes it: in quotes, its quotes, backslashes, line feeds and
+// control characters escaped
+export function quotedString(s: string): string {
+    return stringOf(concat(quoteFrom(bytes(s), 0, [34u8]), [34u8]));
+}
+
+function quoteFrom(b: u8[n], i: i64, acc: u8[]): u8[] {
+    if (i >= n) {
+        return acc;
+    }
+    const c = b[i];
+    // a control character in decimal, three digits when a digit follows
+    const digitNext = i + 1 < n && b[i + 1] >= 48u8 && b[i + 1] <= 57u8;
+    const code = `${i64(c)}`;
+    const esc = c == 34u8 || c == 92u8 || c == 10u8 ? [92u8, c] : (c < 32u8 || c == 127u8 ? concat([92u8], bytes(digitNext ? code.padStart(3, "0") : code)) : [c]);
+    return quoteFrom(b, i + 1, concat(acc, esc));
+}
+
+// a directive read from `fmt` at `at` (after its `%`): the spec and the
+// place after it, or the place -1 when it is not a directive of Lua
+export function readSpec(fmt: u8[n], at: i64): [Spec, i64] {
+    const flags = flagsEnd(fmt, at);
+    const fl = fmt.slice(at, flags);
+    const [width, w] = digitsAt(fmt, flags, 0, 0);
+    const hasPrec = w < n && fmt[w] == 46u8;
+    const [prec, p] = hasPrec ? digitsAt(fmt, w + 1, 0, 0) : [-1, w] as const;
+    const sp = {
+        left: count(fl, (c) => c == 45u8) > 0,
+        plus: count(fl, (c) => c == 43u8) > 0,
+        space: count(fl, (c) => c == 32u8) > 0,
+        alt: count(fl, (c) => c == 35u8) > 0,
+        zero: count(fl, (c) => c == 48u8) > 0,
+        width: width,
+        prec: prec,
+        conv: p < n ? fmt[p] : 0u8,
+    };
+    // (a width or a precision of more than two digits refused, as by Lua)
+    const ok = p < n && w - flags <= 2 && p - w <= 3 && count(bytes("diuoxXcsqfFeEgGa%"), (c) => c == fmt[p]) > 0;
+    return [sp, ok ? p + 1 : -1] as const;
+}
+
+function flagsEnd(fmt: u8[n], at: i64): i64 {
+    return at < n && (fmt[at] == 45u8 || fmt[at] == 43u8 || fmt[at] == 32u8 || fmt[at] == 35u8 || fmt[at] == 48u8) ? flagsEnd(fmt, at + 1) : at;
+}
+
+function digitsAt(fmt: u8[n], at: i64, v: i64, k: i64): [i64, i64] {
+    return at < n && fmt[at] >= 48u8 && fmt[at] <= 57u8 && k < 3 ? digitsAt(fmt, at + 1, v * 10 + i64(fmt[at]) - 48, k + 1) : [v, at] as const;
+}
+
+// `s` as `%s` writes it, cut to its precision (at a character of UTF-8)
+export function formatString(sp: Spec, s: string): string {
+    const cut = sp.prec >= 0 && sp.prec < s.length ? s.slice(0, charStart(bytes(s), sp.prec)) : s;
+    return padded({ ...sp, zero: false }, cut, false);
+}
+
+// the first place at or before `at` that starts a character of UTF-8
+export function charStart(b: u8[n], at: i64): i64 {
+    return at > 0 && at < n && (b[at] & 192u8) == 128u8 ? charStart(b, at - 1) : at;
+}
+
+// the bytes `b` are UTF-8
+export function isUtf8(b: u8[n]): boolean {
+    return utf8From(b, 0);
+}
+
+function utf8From(b: u8[n], at: i64): boolean {
+    if (at >= n) {
+        return true;
+    }
+    const c = b[at];
+    const len = c < 128u8 ? 1 : (c >= 194u8 && c < 224u8 ? 2 : (c >= 224u8 && c < 240u8 ? 3 : (c >= 240u8 && c < 245u8 ? 4 : 0)));
+    if (len == 0 || at + len > n) {
+        return false;
+    }
+    const tail = count(iota(len - 1), (k) => (b[at + 1 + k] & 192u8) == 128u8) == len - 1;
+    // (no overlong form of three bytes, no surrogate, nothing past U+10FFFF)
+    const second = len > 1 ? b[at + 1] : 128u8;
+    const fine = !(c == 224u8 && second < 160u8) && !(c == 237u8 && second >= 160u8) && !(c == 240u8 && second < 144u8) && !(c == 244u8 && second >= 144u8);
+    return tail && fine && utf8From(b, at + len);
+}
+
+// ----- patterns ------------------------------------------------------------
+
+// a capture: its start, its length (-1 not closed yet, -2 a position)
+export type Cap = { start: i64, len: i64 };
+
+const CAP_OPEN: i64 = -1;
+const CAP_POSITION: i64 = -2;
+
+// (a matcher reads its subject `s` and its pattern `p`, given to each of
+// its functions: kept in a record, they were copied at each call)
+
+// what a match gives: its end in the subject (-1: no match), its captures,
+// its fault
+export type Matched = { end: i64, caps: Cap[], fault: string };
+
+function noMatch(caps: Cap[n], fault: string): Matched {
+    return { end: -1, caps: caps, fault: fault };
+}
+
+// the class `cl` (the letter after `%`) holds the byte `c`
+function classHolds(c: u8, cl: u8): boolean {
+    const lower = cl | 32u8;
+    const alpha = (c >= 97u8 && c <= 122u8) || (c >= 65u8 && c <= 90u8);
+    const digit = c >= 48u8 && c <= 57u8;
+    const r = lower == 97u8 ? alpha
+        : (lower == 100u8 ? digit
+        : (lower == 108u8 ? c >= 97u8 && c <= 122u8
+        : (lower == 115u8 ? c == 32u8 || (c >= 9u8 && c <= 13u8)
+        : (lower == 117u8 ? c >= 65u8 && c <= 90u8
+        : (lower == 119u8 ? alpha || digit
+        : (lower == 120u8 ? digit || (c >= 97u8 && c <= 102u8) || (c >= 65u8 && c <= 70u8)
+        : (lower == 112u8 ? (c >= 33u8 && c <= 47u8) || (c >= 58u8 && c <= 64u8) || (c >= 91u8 && c <= 96u8) || (c >= 123u8 && c <= 126u8)
+        : (lower == 99u8 ? c < 32u8 || c == 127u8
+        : (lower == 103u8 ? c > 32u8 && c < 127u8 : false)))))))));
+    const isClass = count(bytes("adlsuwxpcg"), (x) => x == lower) > 0;
+    if (!isClass) {
+        return cl == c;
+    }
+    // a capital: the complement
+    return (cl >= 65u8 && cl <= 90u8) ? !r : r;
+}
+
+// the end of the single class at `pi` (after `%x`, `[...]` or a byte)
+function classEnd(s: u8[ns], p: u8[np], pi: i64): i64 {
+    const pn = p.length;
+    const c = p[pi];
+    if (c == 37u8) {
+        return pi + 1 >= pn ? -1 : pi + 2;
+    }
+    if (c == 91u8) {
+        const start = pi + 1 < pn && p[pi + 1] == 94u8 ? pi + 2 : pi + 1;
+        // (a first `]` is a byte of the set)
+        return bracketEnd(s, p, start, true);
+    }
+    return pi + 1;
+}
+
+function bracketEnd(s: u8[ns], p: u8[np], at: i64, first: boolean): i64 {
+    const pn = p.length;
+    if (at >= pn) {
+        return -1;
+    }
+    const c = p[at];
+    if (c == 93u8 && !first) {
+        return at + 1;
+    }
+    if (c == 37u8) {
+        return at + 1 >= pn ? -1 : bracketEnd(s, p, at + 2, false);
+    }
+    return bracketEnd(s, p, at + 1, false);
+}
+
+// the set `[...]` from `pi` (its `[`) to `ec` (its `]`) holds `c`
+function setHolds(s: u8[ns], p: u8[np], c: u8, pi: i64, ec: i64): boolean {
+    const negated = p[pi + 1] == 94u8;
+    const r = setFrom(s, p, c, negated ? pi + 2 : pi + 1, ec);
+    return negated ? !r : r;
+}
+
+function setFrom(s: u8[ns], p: u8[np], c: u8, at: i64, ec: i64): boolean {
+    if (at >= ec) {
+        return false;
+    }
+    const x = p[at];
+    if (x == 37u8 && at + 1 < ec) {
+        return classHolds(c, p[at + 1]) || setFrom(s, p, c, at + 2, ec);
+    }
+    if (at + 2 < ec && p[at + 1] == 45u8) {
+        return (x <= c && c <= p[at + 2]) || setFrom(s, p, c, at + 3, ec);
+    }
+    return x == c || setFrom(s, p, c, at + 1, ec);
+}
+
+// the byte at `si` of the subject matches the class from `pi` to `ep`
+function single(s: u8[ns], p: u8[np], si: i64, pi: i64, ep: i64): boolean {
+    if (si >= s.length) {
+        return false;
+    }
+    const c = s[si];
+    const q = p[pi];
+    return q == 46u8 ? true : (q == 37u8 ? classHolds(c, p[pi + 1]) : (q == 91u8 ? setHolds(s, p, c, pi, ep - 1) : q == c));
+}
+
+// the match of the pattern from `pi` on the subject from `si`
+function doMatch(s: u8[ns], p: u8[np], si: i64, pi: i64, caps: Cap[n], depth: i64): Matched {
+    const pn = p.length;
+    if (depth > 200) {
+        return noMatch(caps, "pattern too complex");
+    }
+    if (pi >= pn) {
+        return { end: si, caps: caps, fault: "" };
+    }
+    const c = p[pi];
+    if (c == 40u8) {
+        const position = pi + 1 < pn && p[pi + 1] == 41u8;
+        const opened = concat(caps, [{ start: si, len: position ? CAP_POSITION : CAP_OPEN }]);
+        const r = doMatch(s, p, si, position ? pi + 2 : pi + 1, opened, depth + 1);
+        return r.end < 0 ? noMatch(caps, r.fault) : r;
+    }
+    if (c == 41u8) {
+        const open = fold(iota(n), -1, (acc, k) => caps[k].len == CAP_OPEN ? k : acc);
+        if (open < 0) {
+            return noMatch(caps, "invalid pattern capture");
+        }
+        const closed = caps.with(open, { start: caps[open].start, len: si - caps[open].start });
+        const r = doMatch(s, p, si, pi + 1, closed, depth + 1);
+        return r.end < 0 ? noMatch(caps, r.fault) : r;
+    }
+    if (c == 36u8 && pi + 1 == pn) {
+        return si == s.length ? { end: si, caps: caps, fault: "" } : noMatch(caps, "");
+    }
+    if (c == 37u8 && pi + 1 < pn && p[pi + 1] == 98u8) {
+        return balanced(s, p, si, pi, caps, depth);
+    }
+    if (c == 37u8 && pi + 1 < pn && p[pi + 1] == 102u8) {
+        return frontier(s, p, si, pi, caps, depth);
+    }
+    if (c == 37u8 && pi + 1 < pn && p[pi + 1] >= 48u8 && p[pi + 1] <= 57u8) {
+        return backReference(s, p, si, pi, caps, depth);
+    }
+    const ep = classEnd(s, p, pi);
+    if (ep < 0) {
+        return noMatch(caps, c == 37u8 ? "malformed pattern (ends with '%')" : "malformed pattern (missing ']')");
+    }
+    const q = ep < pn ? p[ep] : 0u8;
+    if (!single(s, p, si, pi, ep)) {
+        // zero repetitions allowed
+        return q == 42u8 || q == 63u8 || q == 45u8 ? doMatch(s, p, si, ep + 1, caps, depth + 1) : noMatch(caps, "");
+    }
+    if (q == 63u8) {
+        const r = doMatch(s, p, si + 1, ep + 1, caps, depth + 1);
+        return r.end >= 0 || r.fault != "" ? r : doMatch(s, p, si, ep + 1, caps, depth + 1);
+    }
+    if (q == 43u8) {
+        return maxExpand(s, p, si + 1, pi, ep, caps, depth);
+    }
+    if (q == 42u8) {
+        return maxExpand(s, p, si, pi, ep, caps, depth);
+    }
+    if (q == 45u8) {
+        return minExpand(s, p, si, pi, ep, caps, depth);
+    }
+    return doMatch(s, p, si + 1, ep, caps, depth);
+}
+
+// the longest repetition of the class at `pi` from `si` that lets the rest
+// match, shorter ones after it
+function maxExpand(s: u8[ns], p: u8[np], si: i64, pi: i64, ep: i64, caps: Cap[n], depth: i64): Matched {
+    const most = repeats(s, p, si, pi, ep, 0);
+    return expandDown(s, p, si, ep, caps, depth, most);
+}
+
+function repeats(s: u8[ns], p: u8[np], si: i64, pi: i64, ep: i64, k: i64): i64 {
+    return single(s, p, si + k, pi, ep) ? repeats(s, p, si, pi, ep, k + 1) : k;
+}
+
+function expandDown(s: u8[ns], p: u8[np], si: i64, ep: i64, caps: Cap[n], depth: i64, k: i64): Matched {
+    if (k < 0) {
+        return noMatch(caps, "");
+    }
+    const r = doMatch(s, p, si + k, ep + 1, caps, depth + 1);
+    return r.end >= 0 || r.fault != "" ? r : expandDown(s, p, si, ep, caps, depth, k - 1);
+}
+
+// the shortest repetition that lets the rest match
+function minExpand(s: u8[ns], p: u8[np], si: i64, pi: i64, ep: i64, caps: Cap[n], depth: i64): Matched {
+    const r = doMatch(s, p, si, ep + 1, caps, depth + 1);
+    if (r.end >= 0 || r.fault != "") {
+        return r;
+    }
+    return single(s, p, si, pi, ep) ? minExpand(s, p, si + 1, pi, ep, caps, depth) : noMatch(caps, "");
+}
+
+// `%bxy`: a balanced run from `x` to its `y`
+function balanced(s: u8[ns], p: u8[np], si: i64, pi: i64, caps: Cap[n], depth: i64): Matched {
+    if (pi + 3 >= p.length + 0 && pi + 3 > p.length) {
+        return noMatch(caps, "malformed pattern (missing arguments to '%b')");
+    }
+    const open = p[pi + 2];
+    const close = p[pi + 3];
+    if (si >= s.length || s[si] != open) {
+        return noMatch(caps, "");
+    }
+    const end = balanceEnd(s, p, si + 1, open, close, 1);
+    return end < 0 ? noMatch(caps, "") : doMatch(s, p, end, pi + 4, caps, depth + 1);
+}
+
+function balanceEnd(s: u8[ns], p: u8[np], at: i64, open: u8, close: u8, level: i64): i64 {
+    if (at >= s.length) {
+        return -1;
+    }
+    const c = s[at];
+    if (c == close) {
+        return level == 1 ? at + 1 : balanceEnd(s, p, at + 1, open, close, level - 1);
+    }
+    return balanceEnd(s, p, at + 1, open, close, c == open ? level + 1 : level);
+}
+
+// `%f[set]`: the place between a byte not in the set and one in it
+function frontier(s: u8[ns], p: u8[np], si: i64, pi: i64, caps: Cap[n], depth: i64): Matched {
+    if (pi + 2 >= p.length || p[pi + 2] != 91u8) {
+        return noMatch(caps, "missing '[' after '%f' in pattern");
+    }
+    const ep = classEnd(s, p, pi + 2);
+    if (ep < 0) {
+        return noMatch(caps, "malformed pattern (missing ']')");
+    }
+    const before = si == 0 ? 0u8 : s[si - 1];
+    const here = si < s.length ? s[si] : 0u8;
+    const ok = !setHolds(s, p, before, pi + 2, ep - 1) && setHolds(s, p, here, pi + 2, ep - 1);
+    return ok ? doMatch(s, p, si, ep, caps, depth + 1) : noMatch(caps, "");
+}
+
+// `%1` to `%9`: the text of a capture again
+function backReference(s: u8[ns], p: u8[np], si: i64, pi: i64, caps: Cap[n], depth: i64): Matched {
+    const k = i64(p[pi + 1]) - 49;
+    if (k < 0 || k >= n || caps[k].len == CAP_OPEN) {
+        return noMatch(caps, `invalid capture index %${k + 1}`);
+    }
+    const len = caps[k].len;
+    const start = caps[k].start;
+    const same = si + len <= s.length && count(iota(len), (i) => s[start + i] == s[si + i]) == len;
+    return same ? doMatch(s, p, si + len, pi + 2, caps, depth + 1) : noMatch(caps, "");
+}
+
+// the first match of the pattern `p` in `s` from the byte `init` (`^`
+// anchoring it there): its start, and what it matched (`end` -1: none)
+export function findPattern(s: u8[n], p: u8[m], init: i64): [i64, Matched] {
+    const anchored = m > 0 && p[0] == 94u8;
+    return findFrom(s, p, init, anchored ? 1 : 0, anchored);
+}
+
+function findFrom(s: u8[ns], p: u8[np], si: i64, pi: i64, anchored: boolean): [i64, Matched] {
+    const r = doMatch(s, p, si, pi, [], 0);
+    if (r.end >= 0 || r.fault != "" || anchored || si >= s.length) {
+        return [si, r] as const;
+    }
+    return findFrom(s, p, si + 1, pi, anchored);
+}
+
+// the pattern `p` holds none of the bytes that make a pattern (a plain
+// search is then enough)
+export function plainPattern(p: string): boolean {
+    return count(bytes(p), (c) => count(bytes("^$*+?.([%-"), (x) => x == c) > 0) == 0;
+}

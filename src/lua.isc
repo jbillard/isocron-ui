@@ -1,0 +1,2454 @@
+// An interpreter of Lua (5.4, the part an interface needs) written in
+// Isocron, for the generic application of the library: the trees of
+// src/lua_parse.isc walked, its values those of Lua (nil, booleans,
+// integers of 64 bits, floats, strings, tables, functions), its tables of
+// an array part and a part of hashes, with metatables (`__index`,
+// `__newindex`, `__call`, the operators, `__eq`, `__lt`, `__le`, `__len`,
+// `__concat`, `__tostring`, `__pairs`), its closures sharing their
+// upvalues, its errors caught by `pcall`, its standard library (the base
+// functions, `string` with its patterns, `table`, `math`).
+//
+// Everything a program does is a new state: the tables, closures and cells
+// live in arrays of the state (a table is its row in `tabs` and its slots
+// in the store `sk`/`sv`), changed in place since the state is never
+// shared. A table that grows takes new slots at the end of the store; the
+// old ones, and the tables no longer reached, are taken back by `collect`,
+// which the application calls between two events.
+//
+// Where it differs from Lua: strings are texts of UTF-8 (`string.sub`, a
+// pattern or `string.char` that would cut a character is an error; `upper`
+// and `lower` change the letters of Unicode; `reverse` reverses the
+// characters); no coroutines, `goto`, operators on bits, `os`, `io`,
+// `load`, `require`; `gmatch` and the fields of a table constructor are
+// evaluated positional ones first; a recursion deeper than 400 calls is
+// "stack overflow".
+import { parseLua, Program, ParseFault, Proto, Chunk, Expr, Stat, Place, Local, Cell, Up, Global,
+    ENil, ETrue, EFalse, EInt, EFloat, EStr, EVararg, EFunc, EName, EIndex, ECall, EMethod, EBin, EAnd, EOr, EUn, ETable, EParen,
+    SLocal, SLocalFunc, SAssign, SCall, SIf, SWhile, SRepeat, SNumFor, SGenFor, SReturn, SBreak, SDo,
+    OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_IDIV, OP_MOD, OP_POW, OP_CONCAT, OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE,
+    UN_NEG, UN_NOT, UN_LEN, hashString } from "./lua_parse";
+import { floatText, readNumber, Number, NInt, NFloat, NNone, readSpec, formatInt, formatFloat, formatString, quotedString,
+    findPattern, Matched, Cap, plainPattern, isUtf8 } from "./lua_text";
+
+// ----- values and the state ----------------------------------------------
+
+// a value of Lua: a function `Fun(k)` is the closure `k` (k >= 0) or the
+// function of the library `-k - 1`
+export type Value = Nil | Bool(boolean) | Int(i64) | Num(f64) | Str(string) | Tab(i64) | Fun(i64);
+
+// a table: its array part (its first slot in the store, its length, its
+// room), its part of hashes (its first slot, its room, a power of two, its
+// slots taken), its metatable (-1: none)
+type TabInfo = { arr: i64, len: i64, acap: i64, hash: i64, cap: i64, used: i64, meta: i64 };
+
+// a closure: its function, the first of its upvalues in `ups`
+type ClInfo = { proto: i64, up: i64 };
+
+// what the statements leave: nothing, a `break`, a `return`, an error
+const FLOW_NORMAL: i64 = 0;
+const FLOW_BREAK: i64 = 1;
+const FLOW_RETURN: i64 = 2;
+const FLOW_ERROR: i64 = 3;
+
+// the depth of calls past which a call is an error
+const MAX_DEPTH: i64 = 400;
+
+// the state of the interpreter: the functions read (each with the first of
+// its chunk among them and the name of the chunk), the tables and their
+// store, the closures and their upvalues (cells), the frames (the stack,
+// the frame of the closure running, its `...`), what the statements left
+// (the values returned, the error), the tables of the globals and of the
+// methods of strings, the lines printed, the seed of `math.random`
+export type State = {
+    protos: Proto[], protoBase: i64[], protoChunk: string[],
+    tabs: TabInfo[], ntab: i64, sk: Value[], sv: Value[], stop: i64,
+    cls: ClInfo[], ncl: i64, ups: i64[], nup: i64, cells: Value[], ncell: i64,
+    stack: Value[], base: i64, top: i64, cl: i64, va: Value[],
+    flow: i64, ret: Value[], err: Value, depth: i64,
+    globals: i64, strings: i64, stringMeta: i64, out: string[], seed: i64,
+};
+
+// a copy of its own of a value read from the state (a view of it otherwise,
+// which keeps the state from being written in place while it lives)
+function fresh(v: Value): Value {
+    return match (v) {
+        Nil => Nil,
+        Bool(b) => Bool(b),
+        Int(i) => Int(i),
+        Num(x) => Num(x),
+        Str(s) => Str(s),
+        Tab(t) => Tab(t),
+        Fun(f) => Fun(f),
+    };
+}
+
+function isString(v: Value): boolean {
+    return match (v) {
+        Str(s) => true,
+        _ => false,
+    };
+}
+
+function isNil(v: Value): boolean {
+    return match (v) {
+        Nil => true,
+        _ => false,
+    };
+}
+
+export function truthy(v: Value): boolean {
+    return match (v) {
+        Nil => false,
+        Bool(b) => b,
+        _ => true,
+    };
+}
+
+export function typeName(v: Value): string {
+    return match (v) {
+        Nil => "nil",
+        Bool(b) => "boolean",
+        Int(i) => "number",
+        Num(x) => "number",
+        Str(s) => "string",
+        Tab(t) => "table",
+        Fun(f) => "function",
+    };
+}
+
+function emptyTab(): TabInfo {
+    return { arr: 0, len: 0, acap: 0, hash: 0, cap: 0, used: 0, meta: -1 };
+}
+
+function growV(xs: Value[n], need: i64): Value[] {
+    return need <= n ? xs : concat(xs, fill(max(max(n, need - n), 16), Nil));
+}
+
+function growI(xs: i64[n], need: i64): i64[] {
+    return need <= n ? xs : concat(xs, fill(max(max(n, need - n), 16), 0));
+}
+
+function growT(xs: TabInfo[n], need: i64): TabInfo[] {
+    return need <= n ? xs : concat(xs, fill(max(max(n, need - n), 16), emptyTab()));
+}
+
+function growC(xs: ClInfo[n], need: i64): ClInfo[] {
+    return need <= n ? xs : concat(xs, fill(max(max(n, need - n), 16), { proto: 0, up: 0 }));
+}
+
+function pow2Above(n: i64): i64 {
+    return pow2From(4, n);
+}
+
+function pow2From(p: i64, n: i64): i64 {
+    return p >= n ? p : pow2From(p * 2, n);
+}
+
+// the error `msg` at the line `line` of the chunk running (the first error
+// kept)
+// (a line below 0: the function of the library was called by another,
+// `pcall`: no place, as for Lua)
+function failAt(st: State, line: i64, msg: string): State {
+    if (st.flow == FLOW_ERROR) {
+        return st;
+    }
+    const chunk = st.cl >= 0 ? st.protoChunk[st.cls[st.cl].proto] : "?";
+    return { ...st, flow: FLOW_ERROR, err: Str(line < 0 ? msg : `${chunk}:${line}: ${msg}`) };
+}
+
+// ----- the store and the tables ------------------------------------------
+
+// `n` new slots of the store: the first
+function alloc(st: State, n: i64): [State, i64] {
+    const at = st.stop;
+    return [{ ...st, sk: growV(st.sk, at + n), sv: growV(st.sv, at + n), stop: at + n }, at] as const;
+}
+
+// a new table, room for `narr` values in its array part and `nhash` keys
+export function newTable(st: State, narr: i64, nhash: i64): [State, i64] {
+    const t = st.ntab;
+    const [s1, ab] = narr > 0 ? alloc(st, narr) : [st, 0] as const;
+    const cap = nhash > 0 ? pow2Above(nhash + nhash / 3 + 1) : 0;
+    const [s2, hb] = cap > 0 ? alloc(s1, cap) : [s1, 0] as const;
+    const info = { arr: ab, len: 0, acap: narr, hash: hb, cap: cap, used: 0, meta: -1 };
+    return [{ ...s2, tabs: growT(s2.tabs, t + 1).with(t, info), ntab: t + 1 }, t] as const;
+}
+
+function mix(x: i64): i64 {
+    const h = x * -7046029254386353131;
+    return h ^ (h >> 29);
+}
+
+// a key as tables keep it: a float of an integer value its integer
+function normKey(k: Value): Value {
+    return match (k) {
+        Num(x) => x == floor(x) && x >= -9.2e18 && x <= 9.2e18 ? Int(i64(x)) : k,
+        _ => k,
+    };
+}
+
+function keyHash(k: Value): i64 {
+    return match (k) {
+        Int(i) => mix(i),
+        Str(s) => hashString(s),
+        Bool(b) => b ? 7 : 3,
+        Num(x) => abs(x) < 1e15 ? mix(i64(x * 1024.0)) : 12345,
+        Tab(t) => mix(t * 31 + 1),
+        Fun(f) => mix(f * 37 + 2),
+        Nil => 0,
+    };
+}
+
+function keyEq(a: Value, b: Value): boolean {
+    return match (a) {
+        Int(x) => match (b) {
+            Int(y) => x == y,
+            _ => false,
+        },
+        Str(x) => match (b) {
+            Str(y) => x == y,
+            _ => false,
+        },
+        Bool(x) => match (b) {
+            Bool(y) => x == y,
+            _ => false,
+        },
+        Num(x) => match (b) {
+            Num(y) => x == y,
+            _ => false,
+        },
+        Tab(x) => match (b) {
+            Tab(y) => x == y,
+            _ => false,
+        },
+        Fun(x) => match (b) {
+            Fun(y) => x == y,
+            _ => false,
+        },
+        Nil => false,
+    };
+}
+
+// the slot of the key `k` (hash `h`) among `left` slots from `i` of the
+// part at `base`, -1 when absent
+function probe(sk: Value[n], base: i64, mask: i64, k: Value, i: i64, left: i64): i64 {
+    if (left == 0) {
+        return -1;
+    }
+    const at = base + i;
+    return match (sk[at]) {
+        Nil => -1,
+        other => keyEq(other, k) ? at : probe(sk, base, mask, k, (i + 1) & mask, left - 1),
+    };
+}
+
+function probeStr(sk: Value[n], base: i64, mask: i64, s: string, i: i64, left: i64): i64 {
+    if (left == 0) {
+        return -1;
+    }
+    const at = base + i;
+    return match (sk[at]) {
+        Nil => -1,
+        Str(y) => y == s ? at : probeStr(sk, base, mask, s, (i + 1) & mask, left - 1),
+        _ => probeStr(sk, base, mask, s, (i + 1) & mask, left - 1),
+    };
+}
+
+function hashSlot(st: State, t: i64, k: Value, h: i64): i64 {
+    const info = st.tabs[t];
+    return info.cap == 0 ? -1 : probe(st.sk, info.hash, info.cap - 1, k, h & (info.cap - 1), info.cap);
+}
+
+function slotValue(st: State, at: i64): Value {
+    return at < 0 ? Nil : st.sv[at];
+}
+
+// the value of the string key `s` (its hash `h`) in the table `t`, without
+// metatable
+export function rawGetStr(st: State, t: i64, s: string, h: i64): Value {
+    const info = st.tabs[t];
+    return info.cap == 0 ? Nil : slotValue(st, probeStr(st.sk, info.hash, info.cap - 1, s, h & (info.cap - 1), info.cap));
+}
+
+// the value of the key `k0` in the table `t`, without metatable
+export function rawGet(st: State, t: i64, k0: Value): Value {
+    const k = normKey(k0);
+    const info = st.tabs[t];
+    return match (k) {
+        Int(i) => i >= 1 && i <= info.len ? st.sv[info.arr + i - 1] : slotValue(st, hashSlot(st, t, k, mix(i))),
+        Str(s) => rawGetStr(st, t, s, hashString(s)),
+        Nil => Nil,
+        _ => slotValue(st, hashSlot(st, t, k, keyHash(k))),
+    };
+}
+
+// the key `k0` of the table `t` set to `v`, without metatable (the key
+// neither nil nor NaN)
+export function rawSet(st: State, t: i64, k0: Value, v: Value): State {
+    const k = normKey(k0);
+    return match (k) {
+        Int(i) => setInt(st, t, i, v),
+        Str(s) => hashSet(st, t, k, hashString(s), v),
+        _ => hashSet(st, t, k, keyHash(k), v),
+    };
+}
+
+function setInt(st: State, t: i64, i: i64, v: Value): State {
+    const info = st.tabs[t];
+    if (i >= 1 && i <= info.len) {
+        const s1 = { ...st, sv: st.sv.with(info.arr + i - 1, v) };
+        return isNil(v) && i == info.len ? shrink(s1, t) : s1;
+    }
+    if (i == info.len + 1 && !isNil(v)) {
+        return migrate(append(st, t, v), t);
+    }
+    return hashSet(st, t, Int(i), mix(i), v);
+}
+
+// the array part of `t` without the nils at its end
+function shrink(st: State, t: i64): State {
+    const info = st.tabs[t];
+    const n = lastNonNil(st.sv, info.arr, info.len - 1);
+    return { ...st, tabs: st.tabs.with(t, { ...info, len: n }) };
+}
+
+function lastNonNil(sv: Value[m], arr: i64, j: i64): i64 {
+    return j <= 0 ? 0 : (isNil(sv[arr + j - 1]) ? lastNonNil(sv, arr, j - 1) : j);
+}
+
+// `v` after the last value of the array part of `t`
+function append(st: State, t: i64, v: Value): State {
+    const info = st.tabs[t];
+    const s1 = info.len < info.acap ? st : regrowArr(st, t, max(4, info.acap * 2));
+    const i1 = s1.tabs[t];
+    return { ...s1, sv: s1.sv.with(i1.arr + i1.len, v), tabs: s1.tabs.with(t, { ...i1, len: i1.len + 1 }) };
+}
+
+// the array part of `t` moved to `cap` new slots
+function regrowArr(st: State, t: i64, cap: i64): State {
+    const info = st.tabs[t];
+    const [s1, base] = alloc(st, cap);
+    return { ...s1, sv: copyRange(s1.sv, info.arr, base, info.len), tabs: s1.tabs.with(t, { ...info, arr: base, acap: cap }) };
+}
+
+function copyRange(sv: Value[n], from: i64, to: i64, len: i64): Value[n] {
+    return fold(iota(len), sv, (acc, i) => acc.with(to + i, acc[from + i]));
+}
+
+// the integer keys after the array part moved into it from the hashes
+function migrate(st: State, t: i64): State {
+    const info = st.tabs[t];
+    if (info.cap == 0) {
+        return st;
+    }
+    const k = info.len + 1;
+    const at = hashSlot(st, t, Int(k), mix(k));
+    if (at < 0) {
+        return st;
+    }
+    const v = fresh(st.sv[at]);
+    if (isNil(v)) {
+        return st;
+    }
+    return migrate(append({ ...st, sv: st.sv.with(at, Nil) }, t, v), t);
+}
+
+// the key `k` (hash `h`) of the part of hashes of `t` set to `v` (a key
+// set to nil keeps its slot: `next` goes on from it)
+function hashSet(st: State, t: i64, k: Value, h: i64, v: Value): State {
+    const at = hashSlot(st, t, k, h);
+    if (at >= 0) {
+        return { ...st, sv: st.sv.with(at, v) };
+    }
+    if (isNil(v)) {
+        return st;
+    }
+    const info = st.tabs[t];
+    const s1 = (info.used + 1) * 4 > info.cap * 3 ? rehash(st, t) : st;
+    const i1 = s1.tabs[t];
+    const slot = emptySlot(s1.sk, i1.hash, i1.cap - 1, h & (i1.cap - 1));
+    return { ...s1, sk: s1.sk.with(slot, k), sv: s1.sv.with(slot, v), tabs: s1.tabs.with(t, { ...i1, used: i1.used + 1 }) };
+}
+
+function emptySlot(sk: Value[n], base: i64, mask: i64, i: i64): i64 {
+    return isNil(sk[base + i]) ? base + i : emptySlot(sk, base, mask, (i + 1) & mask);
+}
+
+// the part of hashes of `t` moved to new slots, twice its live keys
+function rehash(st: State, t: i64): State {
+    const info = st.tabs[t];
+    const live = info.cap == 0 ? 0 : count(iota(info.cap), (i) => !isNil(st.sk[info.hash + i]) && !isNil(st.sv[info.hash + i]));
+    const cap = pow2Above((live + 1) * 2);
+    const [s1, base] = alloc(st, cap);
+    const s2 = { ...s1, tabs: s1.tabs.with(t, { ...info, hash: base, cap: cap, used: 0 }) };
+    return reinsert(s2, t, info.hash, info.cap, 0);
+}
+
+function reinsert(st: State, t: i64, old: i64, oldCap: i64, i: i64): State {
+    if (i >= oldCap) {
+        return st;
+    }
+    // (copies of their own: the store they are read from is written by
+    // `place`)
+    const k = fresh(st.sk[old + i]);
+    const v = fresh(st.sv[old + i]);
+    const next = isNil(k) || isNil(v) ? st : place(st, t, k, v);
+    return reinsert(next, t, old, oldCap, i + 1);
+}
+
+// a key known to be absent placed in the part of hashes (its room enough)
+function place(st: State, t: i64, k: Value, v: Value): State {
+    const info = st.tabs[t];
+    const slot = emptySlot(st.sk, info.hash, info.cap - 1, keyHash(k) & (info.cap - 1));
+    return { ...st, sk: st.sk.with(slot, k), sv: st.sv.with(slot, v), tabs: st.tabs.with(t, { ...info, used: info.used + 1 }) };
+}
+
+// the place after `pos` in a walk of `t` (`pos` >= 0: the index in the
+// array part; < 0: the slot -pos - 1 of the hashes), its key and value; the
+// place -1 - cap - 1 at the end
+function walkFrom(st: State, t: i64, pos: i64): [i64, Value, Value] {
+    const info = st.tabs[t];
+    if (pos >= 0) {
+        if (pos < info.len) {
+            const v = st.sv[info.arr + pos];
+            return isNil(v) ? walkFrom(st, t, pos + 1) : [pos + 1, Int(pos + 1), v] as const;
+        }
+        return walkFrom(st, t, -1);
+    }
+    const slot = -pos - 1;
+    if (slot >= info.cap) {
+        return [-1 - info.cap - 1, Nil, Nil] as const;
+    }
+    const k = st.sk[info.hash + slot];
+    const v = st.sv[info.hash + slot];
+    return isNil(k) || isNil(v) ? walkFrom(st, t, pos - 1) : [pos - 1, k, v] as const;
+}
+
+// `next(t, k)`: the key after `k` and its value (nil at the end), or
+// false when `k` is not a key of `t`
+function nextOf(st: State, t: i64, k0: Value): [boolean, Value, Value] {
+    const k = normKey(k0);
+    const info = st.tabs[t];
+    const pos = match (k) {
+        Nil => 0,
+        Int(i) => i >= 1 && i <= info.len ? i : hashPos(st, t, k),
+        _ => hashPos(st, t, k),
+    };
+    if (pos == -999999999999) {
+        return [false, Nil, Nil] as const;
+    }
+    const [p, key, v] = walkFrom(st, t, pos);
+    return [true, key, v] as const;
+}
+
+function hashPos(st: State, t: i64, k: Value): i64 {
+    const at = hashSlot(st, t, k, keyHash(k));
+    return at < 0 ? -999999999999 : -(at - st.tabs[t].hash) - 2;
+}
+
+// ----- closures and cells --------------------------------------------------
+
+function newCell(st: State, v: Value): [State, i64] {
+    const c = st.ncell;
+    return [{ ...st, cells: growV(st.cells, c + 1).with(c, v), ncell: c + 1 }, c] as const;
+}
+
+function cellIndex(v: Value): i64 {
+    return match (v) {
+        Int(c) => c,
+        _ => -1,
+    };
+}
+
+// the closure of the function `j` of the chunk running, its upvalues the
+// cells of the locals of this frame or of the upvalues of this closure
+function makeClosure(st: State, j: i64): [State, Value] {
+    const me = st.cls[st.cl];
+    const p = st.protoBase[me.proto] + j;
+    const proto = st.protos[p];
+    const nu = proto.upIndex.length;
+    const cells = map(iota(nu), (i) => proto.upFromLocal[i] ? cellIndex(st.stack[st.base + proto.upIndex[i]]) : st.ups[me.up + proto.upIndex[i]]);
+    const ub = st.nup;
+    const k = st.ncl;
+    const ups = fold(iota(nu), growI(st.ups, ub + nu), (acc, i) => acc.with(ub + i, cells[i]));
+    return [{ ...st, ups: ups, nup: ub + nu, cls: growC(st.cls, k + 1).with(k, { proto: p, up: ub }), ncl: k + 1 }, Fun(k)] as const;
+}
+
+function readPlace(st: State, pl: Place): Value {
+    return match (pl) {
+        Local(s) => st.stack[st.base + s],
+        Cell(s) => st.cells[cellIndex(st.stack[st.base + s])],
+        Up(i) => st.cells[st.ups[st.cls[st.cl].up + i]],
+        Global(name, h) => rawGetStr(st, st.globals, name, h),
+    };
+}
+
+function writePlace(st: State, pl: Place, v: Value): State {
+    return match (pl) {
+        Local(s) => ({ ...st, stack: st.stack.with(st.base + s, v) }),
+        Cell(s) => {
+            const c = cellIndex(st.stack[st.base + s]);
+            return { ...st, cells: st.cells.with(c, v) };
+        },
+        Up(i) => {
+            const c = st.ups[st.cls[st.cl].up + i];
+            return { ...st, cells: st.cells.with(c, v) };
+        },
+        Global(name, h) => hashSet(st, st.globals, Str(name), h, v),
+    };
+}
+
+// a local declared with the value `v` (a captured one in a new cell)
+function declarePlace(st: State, pl: Place, v: Value): State {
+    return match (pl) {
+        Cell(s) => {
+            const [s1, c] = newCell(st, v);
+            return { ...s1, stack: s1.stack.with(s1.base + s, Int(c)) };
+        },
+        _ => writePlace(st, pl, v),
+    };
+}
+
+function declareAll(st: State, places: Place[n], vs: Value[m], i: i64): State {
+    if (i >= n) {
+        return st;
+    }
+    return declareAll(declarePlace(st, places[i], i < m ? vs[i] : Nil), places, vs, i + 1);
+}
+
+// ----- the names of the faults ---------------------------------------------
+
+function slotName(st: State, s: i64): string {
+    const names = st.protos[st.cls[st.cl].proto].slotNames;
+    return s < names.length ? names[s] : "?";
+}
+
+function upName(st: State, i: i64): string {
+    const names = st.protos[st.cls[st.cl].proto].upNames;
+    return i < names.length ? names[i] : "?";
+}
+
+// what the expression `e` is, for a message: ` (global 'x')`
+function describe(st: State, e: Expr): string {
+    return match (e) {
+        EName(pl) => match (pl) {
+            Global(name, h) => ` (global '${name}')`,
+            Local(s) => ` (local '${slotName(st, s)}')`,
+            Cell(s) => ` (local '${slotName(st, s)}')`,
+            Up(i) => ` (upvalue '${upName(st, i)}')`,
+        },
+        EIndex(o, k, line) => match (k) {
+            EStr(name, h) => ` (field '${name}')`,
+            _ => "",
+        },
+        EMethod(o, name, h, a, line) => ` (method '${name}')`,
+        EStr(s, h) => ` (constant '${s}')`,
+        _ => "",
+    };
+}
+
+// ----- numbers and strings -------------------------------------------------
+
+// the text of a value as `tostring` writes it without metamethod
+export function plainText(v: Value): string {
+    return match (v) {
+        Nil => "nil",
+        Bool(b) => b ? "true" : "false",
+        Int(i) => `${i}`,
+        Num(x) => floatText(x),
+        Str(s) => s,
+        Tab(t) => `table: 0x${hexOf(0x55550000 + t * 64)}`,
+        Fun(f) => f >= 0 ? `function: 0x${hexOf(0x66660000 + f * 64)}` : `function: builtin: ${PRIM_NAMES[-f - 1]}`,
+    };
+}
+
+function hexOf(v: i64): string {
+    const digits = "0123456789abcdef";
+    return v < 16 ? digits.slice(v, v + 1) : hexOf(v / 16) + digits.slice(v % 16, v % 16 + 1);
+}
+
+// a number of a value for arithmetic: itself, or the number a string
+// writes (`Nil` when none)
+function toNumber(v: Value): Value {
+    return match (v) {
+        Int(i) => v,
+        Num(x) => v,
+        Str(s) => match (readNumber(s)) {
+            NInt(i) => Int(i),
+            NFloat(x) => Num(x),
+            NNone => Nil,
+        },
+        _ => Nil,
+    };
+}
+
+function asFloat(v: Value): f64 {
+    return match (v) {
+        Int(i) => f64(i),
+        Num(x) => x,
+        _ => 0.0,
+    };
+}
+
+// the integer of a value (a float only when it has an integer value)
+function toInteger(v: Value): [boolean, i64] {
+    return match (v) {
+        Int(i) => [true, i] as const,
+        Num(x) => x == floor(x) && x >= -9.2233720368547758e18 && x < 9.2233720368547758e18 ? [true, i64(x)] as const : [false, 0] as const,
+        Str(s) => match (toNumber(v)) {
+            Int(i) => [true, i] as const,
+            Num(x) => x == floor(x) && abs(x) < 9.2e18 ? [true, i64(x)] as const : [false, 0] as const,
+            _ => [false, 0] as const,
+        },
+        _ => [false, 0] as const,
+    };
+}
+
+function floorDiv(a: i64, b: i64): i64 {
+    const q = a / b;
+    return a % b != 0 && (a < 0) != (b < 0) ? q - 1 : q;
+}
+
+function floorMod(a: i64, b: i64): i64 {
+    const r = a % b;
+    return r != 0 && (r < 0) != (b < 0) ? r + b : r;
+}
+
+function floatMod(a: f64, b: f64): f64 {
+    const m = a % b;
+    return (m > 0.0 ? b < 0.0 : (m < 0.0 && b != m)) ? m + b : m;
+}
+
+// ----- evaluation ----------------------------------------------------------
+
+function firstOf(r: [State, Value[]]): [State, Value] {
+    const [s, vs] = r;
+    return [s, vs.length > 0 ? vs[0] : Nil] as const;
+}
+
+function eval(st: State, e: Expr): [State, Value] {
+    return match (e) {
+        ENil => [st, Nil] as const,
+        ETrue => [st, Bool(true)] as const,
+        EFalse => [st, Bool(false)] as const,
+        EInt(v) => [st, Int(v)] as const,
+        EFloat(v) => [st, Num(v)] as const,
+        EStr(s, h) => [st, Str(s)] as const,
+        EVararg => {
+            const v = st.va.length > 0 ? st.va[0] : Nil;
+            return [st, v] as const;
+        },
+        EName(pl) => {
+            const v = readPlace(st, pl);
+            return [st, v] as const;
+        },
+        EFunc(j) => makeClosure(st, j),
+        EIndex(o, k, line) => evalIndex(st, o, k, line),
+        ECall(f, a, line) => firstOf(evalCall(st, e)),
+        EMethod(o, name, h, a, line) => firstOf(evalCall(st, e)),
+        EBin(op, a, b, line) => {
+            const [s1, x] = eval(st, a);
+            const [s2, y] = eval(s1, b);
+            return s2.flow != FLOW_NORMAL ? [s2, Nil] as const : binOp(s2, op, x, y, line, a, b);
+        },
+        EAnd(a, b) => {
+            const [s1, x] = eval(st, a);
+            return truthy(x) ? eval(s1, b) : [s1, x] as const;
+        },
+        EOr(a, b) => {
+            const [s1, x] = eval(st, a);
+            return truthy(x) ? [s1, x] as const : eval(s1, b);
+        },
+        EUn(op, a, line) => {
+            const [s1, x] = eval(st, a);
+            return s1.flow != FLOW_NORMAL ? [s1, Nil] as const : unaryOp(s1, op, x, line, a);
+        },
+        ETable(pos, keys, vals, multi, line) => evalTable(st, pos, keys, vals, multi, line),
+        EParen(a) => eval(st, a),
+    };
+}
+
+function evalIndex(st: State, o: Expr, k: Expr, line: i64): [State, Value] {
+    const [s1, ov] = eval(st, o);
+    return match (k) {
+        EStr(name, h) => indexStr(s1, ov, name, h, line, o),
+        _ => {
+            const [s2, kv] = eval(s1, k);
+            return index(s2, ov, kv, line, o);
+        },
+    };
+}
+
+// `ov.name` (`h` the hash of `name`), with the metatables
+function indexStr(st: State, ov: Value, name: string, h: i64, line: i64, o: Expr): [State, Value] {
+    return match (ov) {
+        Tab(t) => {
+            const v = rawGetStr(st, t, name, h);
+            return isNil(v) && st.tabs[t].meta >= 0 ? indexMeta(st, ov, Str(name), line, 0) : [st, v] as const;
+        },
+        Str(s) => {
+            const v = rawGetStr(st, st.strings, name, h);
+            return [st, v] as const;
+        },
+        _ => [failAt(st, line, `attempt to index a ${typeName(ov)} value${describe(st, o)}`), Nil] as const,
+    };
+}
+
+// `ov[kv]`, with the metatables
+function index(st: State, ov: Value, kv: Value, line: i64, o: Expr): [State, Value] {
+    return match (ov) {
+        Tab(t) => {
+            const v = rawGet(st, t, kv);
+            return isNil(v) && st.tabs[t].meta >= 0 ? indexMeta(st, ov, kv, line, 0) : [st, v] as const;
+        },
+        Str(s) => {
+            const v = rawGet(st, st.strings, kv);
+            return [st, v] as const;
+        },
+        _ => [failAt(st, line, `attempt to index a ${typeName(ov)} value${describe(st, o)}`), Nil] as const,
+    };
+}
+
+// the value of `kv` in `ov` (a table without it) by its `__index`
+function indexMeta(st: State, ov: Value, kv: Value, line: i64, depth: i64): [State, Value] {
+    if (depth > 100) {
+        return [failAt(st, line, "'__index' chain too long; possible loop"), Nil] as const;
+    }
+    const h = metaField(st, ov, "__index");
+    return match (h) {
+        Nil => [st, Nil] as const,
+        Fun(f) => firstOf(callValue(st, h, [ov, kv], line)),
+        Tab(t2) => {
+            const v = rawGet(st, t2, kv);
+            return isNil(v) && st.tabs[t2].meta >= 0 ? indexMeta(st, h, kv, line, depth + 1) : [st, v] as const;
+        },
+        _ => index(st, h, kv, line, ENil),
+    };
+}
+
+// the field `name` of the metatable of `v` (nil without one)
+function metaField(st: State, v: Value, name: string): Value {
+    return match (v) {
+        Tab(t) => {
+            const m = st.tabs[t].meta;
+            return m >= 0 ? rawGetStr(st, m, name, hashString(name)) : Nil;
+        },
+        _ => Nil,
+    };
+}
+
+// `ov[kv] = v`, with the metatables
+function setIndex(st: State, ov: Value, kv: Value, v: Value, line: i64, o: Expr): State {
+    return match (ov) {
+        Tab(t) => {
+            if (st.tabs[t].meta < 0 || !isNil(rawGet(st, t, kv))) {
+                return rawSetChecked(st, t, kv, v, line);
+            }
+            const h = metaField(st, ov, "__newindex");
+            return match (h) {
+                Nil => rawSetChecked(st, t, kv, v, line),
+                Fun(f) => {
+                    const [s1, rs] = callValue(st, h, [ov, kv, v], line);
+                    return s1;
+                },
+                _ => setIndex(st, h, kv, v, line, ENil),
+            };
+        },
+        _ => failAt(st, line, `attempt to index a ${typeName(ov)} value${describe(st, o)}`),
+    };
+}
+
+function rawSetChecked(st: State, t: i64, kv: Value, v: Value, line: i64): State {
+    return match (kv) {
+        Nil => failAt(st, line, "table index is nil"),
+        Num(x) => x != x ? failAt(st, line, "table index is NaN") : rawSet(st, t, kv, v),
+        _ => rawSet(st, t, kv, v),
+    };
+}
+
+// the values of a call or `...` (all of them), of another expression one
+function evalMulti(st: State, e: Expr): [State, Value[]] {
+    return match (e) {
+        ECall(f, a, line) => evalCall(st, e),
+        EMethod(o, name, h, a, line) => evalCall(st, e),
+        EVararg => {
+            const va = map(st.va, (x) => x);
+            return [st, va] as const;
+        },
+        _ => {
+            const [s, v] = eval(st, e);
+            return [s, [v]] as const;
+        },
+    };
+}
+
+// the values of the expressions `es`, the last giving all its values
+function evalArgs(st: State, es: Expr[n]): [State, Value[]] {
+    return n == 0 ? [st, []] as const : argsFrom(st, es, 0, []);
+}
+
+function argsFrom(st: State, es: Expr[n], i: i64, acc: Value[]): [State, Value[]] {
+    if (i == n - 1) {
+        const [s, vs] = evalMulti(st, es[i]);
+        return [s, concat(acc, vs)] as const;
+    }
+    const [s, v] = eval(st, es[i]);
+    return argsFrom(s, es, i + 1, concat(acc, [v]));
+}
+
+// the values of `es` adjusted to `want` (nils added, the rest dropped)
+function evalList(st: State, es: Expr[n], want: i64): [State, Value[]] {
+    const [s, vs] = evalArgs(st, es);
+    return [s, adjusted(vs, want)] as const;
+}
+
+function adjusted(vs: Value[n], want: i64): Value[] {
+    return n == want ? vs : (n > want ? vs.slice(0, want) : concat(vs, fill(want - n, Nil)));
+}
+
+// the values of a call `f(args)` or `o:name(args)`
+function evalCall(st: State, e: Expr): [State, Value[]] {
+    return match (e) {
+        ECall(f, args, line) => {
+            const [s1, fv] = eval(st, f);
+            const [s2, av] = evalArgs(s1, args);
+            return callNamed(s2, fv, av, line, f);
+        },
+        EMethod(o, name, h, args, line) => {
+            const [s1, ov] = eval(st, o);
+            const [s2, fv] = indexStr(s1, ov, name, h, line, o);
+            const [s3, av] = evalArgs(s2, args);
+            return callNamed(s3, fv, concat([ov], av), line, e);
+        },
+        _ => evalMulti(st, e),
+    };
+}
+
+// a call whose function was the expression `f` (named in its fault)
+function callNamed(st: State, fv: Value, args: Value[n], line: i64, f: Expr): [State, Value[]] {
+    if (st.flow != FLOW_NORMAL) {
+        return [st, []] as const;
+    }
+    return match (fv) {
+        Fun(k) => callValue(st, fv, args, line),
+        _ => isNil(metaField(st, fv, "__call")) ? [failAt(st, line, `attempt to call a ${typeName(fv)} value${describe(st, f)}`), []] as const : callValue(st, fv, args, line),
+    };
+}
+
+// the values of the call of `f` with `args`
+export function callValue(st: State, f: Value, args: Value[n], line: i64): [State, Value[]] {
+    if (st.flow != FLOW_NORMAL) {
+        return [st, []] as const;
+    }
+    return match (f) {
+        Fun(k) => k >= 0 ? callClosure(st, k, args, line) : callPrim(st, -k - 1, args, line),
+        _ => {
+            const mm = metaField(st, f, "__call");
+            return match (mm) {
+                Fun(g) => callValue(st, mm, concat([f], args), line),
+                _ => [failAt(st, line, `attempt to call a ${typeName(f)} value`), []] as const,
+            };
+        },
+    };
+}
+
+function callClosure(st: State, k: i64, args: Value[n], line: i64): [State, Value[]] {
+    if (st.depth >= MAX_DEPTH) {
+        return [failAt(st, line, "stack overflow"), []] as const;
+    }
+    // (the values saved: `va` a copy of its own, not a view of the state,
+    // which the call changes)
+    const oldBase = st.base;
+    const oldTop = st.top;
+    const oldCl = st.cl;
+    const oldVa = map(st.va, (x) => x);
+    // (what the call reads of its function copied: the state it is given
+    // changes)
+    const pi = st.cls[k].proto;
+    const nparams = st.protos[pi].nparams;
+    const slots = st.protos[pi].slots;
+    const vararg = st.protos[pi].vararg;
+    const cells = map(st.protos[pi].paramCell, (x) => x);
+    const body = map(st.protos[pi].body, (x) => x);
+    const nb = st.top;
+    const va = vararg && n > nparams ? args.slice(nparams, n) : [];
+    const s1 = { ...st, stack: growV(st.stack, nb + slots + 1), base: nb, top: nb + slots, cl: k, va: va, depth: st.depth + 1 };
+    const s2 = bindParams(s1, nparams, cells, args, 0);
+    const s3 = execBlock(s2, body, 0);
+    const results = s3.flow == FLOW_RETURN ? s3.ret : [];
+    const flow = s3.flow == FLOW_RETURN ? FLOW_NORMAL : s3.flow;
+    return [{ ...s3, base: oldBase, top: oldTop, cl: oldCl, va: oldVa, flow: flow, ret: [], depth: s3.depth - 1 }, results] as const;
+}
+
+function bindParams(st: State, nparams: i64, cells: boolean[m], args: Value[n], i: i64): State {
+    if (i >= nparams) {
+        return st;
+    }
+    const v = i < n ? args[i] : Nil;
+    const pl = cells[i] ? Cell(i) : Local(i);
+    return bindParams(declarePlace(st, pl, v), nparams, cells, args, i + 1);
+}
+
+// ----- operators -----------------------------------------------------------
+
+const EVENTS: string[] = ["__add", "__sub", "__mul", "__div", "__idiv", "__mod", "__pow", "__concat"];
+
+function binOp(st: State, op: i64, x: Value, y: Value, line: i64, a: Expr, b: Expr): [State, Value] {
+    if (op <= OP_POW) {
+        return arith(st, op, x, y, line, a, b);
+    }
+    if (op == OP_CONCAT) {
+        return concatOp(st, x, y, line, a, b);
+    }
+    if (op == OP_EQ || op == OP_NE) {
+        const [s1, r] = equal(st, x, y, line);
+        return [s1, Bool(op == OP_EQ ? r : !r)] as const;
+    }
+    const [s1, r] = op == OP_LT ? less(st, x, y, line, false) : (op == OP_LE ? less(st, x, y, line, true) : (op == OP_GT ? less(st, y, x, line, false) : less(st, y, x, line, true)));
+    return [s1, Bool(r)] as const;
+}
+
+function arith(st: State, op: i64, x: Value, y: Value, line: i64, a: Expr, b: Expr): [State, Value] {
+    return match (x) {
+        Int(i) => match (y) {
+            Int(j) => intArith(st, op, i, j, line),
+            Num(g) => [st, floatArith(op, f64(i), g)] as const,
+            _ => arithSlow(st, op, x, y, line, a, b),
+        },
+        Num(f) => match (y) {
+            Int(j) => [st, floatArith(op, f, f64(j))] as const,
+            Num(g) => [st, floatArith(op, f, g)] as const,
+            _ => arithSlow(st, op, x, y, line, a, b),
+        },
+        _ => arithSlow(st, op, x, y, line, a, b),
+    };
+}
+
+function intArith(st: State, op: i64, i: i64, j: i64, line: i64): [State, Value] {
+    if (op == OP_ADD) {
+        return [st, Int(i + j)] as const;
+    }
+    if (op == OP_SUB) {
+        return [st, Int(i - j)] as const;
+    }
+    if (op == OP_MUL) {
+        return [st, Int(i * j)] as const;
+    }
+    if (op == OP_IDIV) {
+        return j == 0 ? [failAt(st, line, "attempt to divide by zero"), Nil] as const : [st, Int(floorDiv(i, j))] as const;
+    }
+    if (op == OP_MOD) {
+        return j == 0 ? [failAt(st, line, "attempt to perform 'n%0'"), Nil] as const : [st, Int(floorMod(i, j))] as const;
+    }
+    return [st, floatArith(op, f64(i), f64(j))] as const;
+}
+
+function floatArith(op: i64, f: f64, g: f64): Value {
+    return op == OP_ADD ? Num(f + g) : (op == OP_SUB ? Num(f - g) : (op == OP_MUL ? Num(f * g)
+        : (op == OP_DIV ? Num(f / g) : (op == OP_POW ? Num(f ** g) : (op == OP_IDIV ? Num(floor(f / g)) : Num(floatMod(f, g)))))));
+}
+
+// an operation of numbers on other values: strings that write numbers,
+// then the metamethods, else an error naming the value
+function arithSlow(st: State, op: i64, x: Value, y: Value, line: i64, a: Expr, b: Expr): [State, Value] {
+    const nx = toNumber(x);
+    const ny = toNumber(y);
+    if (!isNil(nx) && !isNil(ny)) {
+        return arith(st, op, nx, ny, line, a, b);
+    }
+    const event = EVENTS[op];
+    const mx = metaField(st, x, event);
+    if (!isNil(mx)) {
+        return firstOf(callValue(st, mx, [x, y], line));
+    }
+    // a string: the metamethods of strings, which name both operands (as
+    // Lua 5.4.7 does) unless the second one has its own
+    const my = metaField(st, y, event);
+    if (isString(x) && isNil(my) || isString(y) && isNil(my)) {
+        return [failAt(st, line, `attempt to ${event.slice(2, event.length)} a '${typeName(x)}' with a '${typeName(y)}'`), Nil] as const;
+    }
+    if (!isNil(my)) {
+        return firstOf(callValue(st, my, [x, y], line));
+    }
+    const badX = isNil(nx);
+    const bad = badX ? x : y;
+    const what = match (bad) {
+        Str(s) => describe(st, badX ? a : b),
+        _ => describe(st, badX ? a : b),
+    };
+    return [failAt(st, line, `attempt to perform arithmetic on a ${typeName(bad)} value${what}`), Nil] as const;
+}
+
+// the text of a string or a number for `..` (false when neither)
+function concatText(v: Value): [boolean, string] {
+    return match (v) {
+        Str(s) => [true, s] as const,
+        Int(i) => [true, `${i}`] as const,
+        Num(x) => [true, floatText(x)] as const,
+        _ => [false, ""] as const,
+    };
+}
+
+function concatOp(st: State, x: Value, y: Value, line: i64, a: Expr, b: Expr): [State, Value] {
+    const [okx, sx] = concatText(x);
+    const [oky, sy] = concatText(y);
+    if (okx && oky) {
+        return [st, Str(sx + sy)] as const;
+    }
+    const mx = metaField(st, x, "__concat");
+    const mm = isNil(mx) ? metaField(st, y, "__concat") : mx;
+    if (!isNil(mm)) {
+        return firstOf(callValue(st, mm, [x, y], line));
+    }
+    const bad = okx ? y : x;
+    return [failAt(st, line, `attempt to concatenate a ${typeName(bad)} value${describe(st, okx ? b : a)}`), Nil] as const;
+}
+
+// the raw equality of two values (an integer equal to a float of its value)
+export function rawEqual(x: Value, y: Value): boolean {
+    return match (x) {
+        Int(i) => match (y) {
+            Int(j) => i == j,
+            Num(g) => f64(i) == g,
+            _ => false,
+        },
+        Num(f) => match (y) {
+            Int(j) => f == f64(j),
+            Num(g) => f == g,
+            _ => false,
+        },
+        Nil => isNil(y),
+        _ => keyEq(x, y),
+    };
+}
+
+function equal(st: State, x: Value, y: Value, line: i64): [State, boolean] {
+    if (rawEqual(x, y)) {
+        return [st, true] as const;
+    }
+    const tables = match (x) {
+        Tab(a) => match (y) {
+            Tab(b) => true,
+            _ => false,
+        },
+        _ => false,
+    };
+    if (!tables) {
+        return [st, false] as const;
+    }
+    const mx = metaField(st, x, "__eq");
+    const mm = isNil(mx) ? metaField(st, y, "__eq") : mx;
+    if (isNil(mm)) {
+        return [st, false] as const;
+    }
+    const [s1, r] = firstOf(callValue(st, mm, [x, y], line));
+    return [s1, truthy(r)] as const;
+}
+
+// `x < y` (`x <= y` with `orEqual`)
+function less(st: State, x: Value, y: Value, line: i64, orEqual: boolean): [State, boolean] {
+    const numbers = match (x) {
+        Int(i) => match (y) {
+            Int(j) => 1,
+            Num(g) => 2,
+            _ => 0,
+        },
+        Num(f) => match (y) {
+            Int(j) => 2,
+            Num(g) => 2,
+            _ => 0,
+        },
+        Str(s) => match (y) {
+            Str(t) => 3,
+            _ => 0,
+        },
+        _ => 0,
+    };
+    if (numbers == 1) {
+        const i = match (x) {
+            Int(v) => v,
+            _ => 0,
+        };
+        const j = match (y) {
+            Int(v) => v,
+            _ => 0,
+        };
+        return [st, orEqual ? i <= j : i < j] as const;
+    }
+    if (numbers == 2) {
+        const f = asFloat(x);
+        const g = asFloat(y);
+        return [st, orEqual ? f <= g : f < g] as const;
+    }
+    if (numbers == 3) {
+        const s = plainText(x);
+        const t = plainText(y);
+        return [st, orEqual ? s <= t : s < t] as const;
+    }
+    const event = orEqual ? "__le" : "__lt";
+    const mx = metaField(st, x, event);
+    const mm = isNil(mx) ? metaField(st, y, event) : mx;
+    if (!isNil(mm)) {
+        const [s1, r] = firstOf(callValue(st, mm, [x, y], line));
+        return [s1, truthy(r)] as const;
+    }
+    const tx = typeName(x);
+    const ty = typeName(y);
+    return [failAt(st, line, tx == ty ? `attempt to compare two ${tx} values` : `attempt to compare ${tx} with ${ty}`), false] as const;
+}
+
+function unaryOp(st: State, op: i64, x: Value, line: i64, a: Expr): [State, Value] {
+    if (op == UN_NOT) {
+        return [st, Bool(!truthy(x))] as const;
+    }
+    if (op == UN_NEG) {
+        return match (toNumber(x)) {
+            Int(i) => [st, Int(-i)] as const,
+            Num(f) => [st, Num(-f)] as const,
+            _ => {
+                const mm = metaField(st, x, "__unm");
+                if (isString(x)) {
+                    return [failAt(st, line, "attempt to unm a 'string' with a 'string'"), Nil] as const;
+                }
+                return isNil(mm) ? [failAt(st, line, `attempt to perform arithmetic on a ${typeName(x)} value${describe(st, a)}`), Nil] as const : firstOf(callValue(st, mm, [x, x], line));
+            },
+        };
+    }
+    return lengthOf(st, x, line, a);
+}
+
+function lengthOf(st: State, x: Value, line: i64, a: Expr): [State, Value] {
+    return match (x) {
+        Str(s) => [st, Int(s.length)] as const,
+        Tab(t) => {
+            const mm = metaField(st, x, "__len");
+            const n = st.tabs[t].len;
+            return isNil(mm) ? [st, Int(n)] as const : firstOf(callValue(st, mm, [x], line));
+        },
+        _ => [failAt(st, line, `attempt to get length of a ${typeName(x)} value${describe(st, a)}`), Nil] as const,
+    };
+}
+
+// a table constructor: its positional values (all those of a last call or
+// `...`), then its keys
+function evalTable(st: State, pos: Expr[n], keys: Expr[m], vals: Expr[m], multi: boolean, line: i64): [State, Value] {
+    const [s1, pv] = multi ? evalArgs(st, pos) : evalEach(st, pos, 0, []);
+    const [s2, t] = newTable(s1, pv.length, m);
+    const s3 = fold(iota(pv.length), s2, (acc, i) => isNil(pv[i]) ? acc : rawSet(acc, t, Int(i + 1), pv[i]));
+    return [keyed(s3, t, keys, vals, 0, line), Tab(t)] as const;
+}
+
+function evalEach(st: State, es: Expr[n], i: i64, acc: Value[]): [State, Value[]] {
+    if (i >= n) {
+        return [st, acc] as const;
+    }
+    const [s, v] = eval(st, es[i]);
+    return evalEach(s, es, i + 1, concat(acc, [v]));
+}
+
+function keyed(st: State, t: i64, keys: Expr[n], vals: Expr[n], i: i64, line: i64): State {
+    if (i >= n) {
+        return st;
+    }
+    const [s1, k] = eval(st, keys[i]);
+    const [s2, v] = eval(s1, vals[i]);
+    const s3 = s2.flow != FLOW_NORMAL ? s2 : (isNil(v) ? (isNil(k) ? failAt(s2, line, "table index is nil") : s2) : rawSetChecked(s2, t, k, v, line));
+    return keyed(s3, t, keys, vals, i + 1, line);
+}
+
+// ----- statements ----------------------------------------------------------
+
+function execBlock(st: State, ss: Stat[n], i: i64): State {
+    if (i >= n || st.flow != FLOW_NORMAL) {
+        return st;
+    }
+    return execBlock(exec(st, ss[i]), ss, i + 1);
+}
+
+function exec(st: State, s: Stat): State {
+    return match (s) {
+        SLocal(places, es, line) => {
+            const [s1, vs] = evalList(st, es, places.length);
+            return s1.flow != FLOW_NORMAL ? s1 : declareAll(s1, places, vs, 0);
+        },
+        SLocalFunc(pl, j, line) => {
+            const s1 = declarePlace(st, pl, Nil);
+            const [s2, f] = makeClosure(s1, j);
+            return writePlace(s2, pl, f);
+        },
+        SAssign(ts, es, line) => assign(st, ts, es, line),
+        SCall(e, line) => {
+            const [s1, vs] = evalCall(st, e);
+            return s1;
+        },
+        SIf(c, a, b, line) => {
+            const [s1, x] = eval(st, c);
+            return s1.flow != FLOW_NORMAL ? s1 : (truthy(x) ? execBlock(s1, a, 0) : execBlock(s1, b, 0));
+        },
+        SWhile(c, body, line) => whileLoop(st, c, body),
+        SRepeat(body, c, line) => repeatLoop(st, body, c),
+        SNumFor(pl, a, b, c, body, line) => numFor(st, pl, a, b, c, body, line),
+        SGenFor(places, es, body, line) => genFor(st, places, es, body, line),
+        SReturn(es, line) => {
+            const [s1, vs] = evalArgs(st, es);
+            return s1.flow != FLOW_NORMAL ? s1 : { ...s1, flow: FLOW_RETURN, ret: vs };
+        },
+        SBreak(line) => ({ ...st, flow: FLOW_BREAK }),
+        SDo(body, line) => execBlock(st, body, 0),
+    };
+}
+
+// a place assigned: a name, or a table and a key (evaluated first)
+type Target = TName(Place) | TIndex(Value, Value, i64);
+
+function assign(st: State, ts: Expr[n], es: Expr[m], line: i64): State {
+    if (n == 1 && m == 1) {
+        return match (ts[0]) {
+            EName(pl) => {
+                const [s1, v] = eval(st, es[0]);
+                return s1.flow != FLOW_NORMAL ? s1 : writePlace(s1, pl, v);
+            },
+            EIndex(o, k, l) => {
+                const [s1, ov] = eval(st, o);
+                const [s2, kv] = eval(s1, k);
+                const [s3, v] = eval(s2, es[0]);
+                return s3.flow != FLOW_NORMAL ? s3 : setIndex(s3, ov, kv, v, l, o);
+            },
+            _ => st,
+        };
+    }
+    const [s1, targets] = targetsOf(st, ts, 0, []);
+    const [s2, vs] = evalList(s1, es, n);
+    return s2.flow != FLOW_NORMAL ? s2 : assignAll(s2, targets, vs, n - 1);
+}
+
+function targetsOf(st: State, ts: Expr[n], i: i64, acc: Target[]): [State, Target[]] {
+    if (i >= n) {
+        return [st, acc] as const;
+    }
+    return match (ts[i]) {
+        EName(pl) => targetsOf(st, ts, i + 1, concat(acc, [TName(pl)])),
+        EIndex(o, k, l) => {
+            const [s1, ov] = eval(st, o);
+            const [s2, kv] = eval(s1, k);
+            return targetsOf(s2, ts, i + 1, concat(acc, [TIndex(ov, kv, l)]));
+        },
+        _ => targetsOf(st, ts, i + 1, acc),
+    };
+}
+
+// the targets set from the last (as Lua does)
+function assignAll(st: State, targets: Target[n], vs: Value[m], i: i64): State {
+    if (i < 0 || st.flow != FLOW_NORMAL) {
+        return st;
+    }
+    const s1 = match (targets[i]) {
+        TName(pl) => writePlace(st, pl, vs[i]),
+        TIndex(ov, kv, l) => setIndex(st, ov, kv, vs[i], l, ENil),
+    };
+    return assignAll(s1, targets, vs, i - 1);
+}
+
+// the flow after the body of a loop: a `break` ends it
+function afterBody(st: State): [State, boolean] {
+    return st.flow == FLOW_BREAK ? [{ ...st, flow: FLOW_NORMAL }, true] as const : [st, st.flow != FLOW_NORMAL] as const;
+}
+
+function whileLoop(st: State, c: Expr, body: Stat[n]): State {
+    const [s1, x] = eval(st, c);
+    if (s1.flow != FLOW_NORMAL || !truthy(x)) {
+        return s1;
+    }
+    const [s2, stop] = afterBody(execBlock(s1, body, 0));
+    return stop ? s2 : whileLoop(s2, c, body);
+}
+
+function repeatLoop(st: State, body: Stat[n], c: Expr): State {
+    const [s1, stop] = afterBody(execBlock(st, body, 0));
+    if (stop) {
+        return s1;
+    }
+    const [s2, x] = eval(s1, c);
+    return s2.flow != FLOW_NORMAL || truthy(x) ? s2 : repeatLoop(s2, body, c);
+}
+
+function numFor(st: State, pl: Place, a: Expr, b: Expr, c: Expr, body: Stat[n], line: i64): State {
+    const [s1, va] = eval(st, a);
+    const [s2, vb] = eval(s1, b);
+    const [s3, vc] = eval(s2, c);
+    if (s3.flow != FLOW_NORMAL) {
+        return s3;
+    }
+    const start = toNumber(va);
+    const limit = toNumber(vb);
+    const step = toNumber(vc);
+    if (isNil(start)) {
+        return failAt(s3, line, `bad 'for' initial value (number expected, got ${typeName(va)})`);
+    }
+    if (isNil(limit)) {
+        return failAt(s3, line, `bad 'for' limit (number expected, got ${typeName(vb)})`);
+    }
+    if (isNil(step)) {
+        return failAt(s3, line, `bad 'for' step (number expected, got ${typeName(vc)})`);
+    }
+    const ints = match (start) {
+        Int(i) => match (step) {
+            Int(k) => true,
+            _ => false,
+        },
+        _ => false,
+    };
+    if (ints) {
+        const i0 = match (start) {
+            Int(i) => i,
+            _ => 0,
+        };
+        const k = match (step) {
+            Int(v) => v,
+            _ => 0,
+        };
+        if (k == 0) {
+            return failAt(s3, line, "'for' step is zero");
+        }
+        // the limit an integer (a float limit floored or ceiled), then the
+        // number of turns counted without overflow
+        const lim = match (limit) {
+            Int(l) => l,
+            Num(x) => k > 0 ? (x >= 9.2233720368547758e18 ? 9223372036854775807 : i64(floor(x))) : (x <= -9.2233720368547758e18 ? -9223372036854775807 - 1 : i64(ceil(x))),
+            _ => 0,
+        };
+        if (k > 0 ? i0 > lim : i0 < lim) {
+            return s3;
+        }
+        const turns = k > 0 ? (u64(lim) - u64(i0)) / u64(k) : (u64(i0) - u64(lim)) / (u64(-(k + 1)) + 1u64);
+        return intFor(s3, pl, i0, k, turns, body);
+    }
+    const f0 = asFloat(start);
+    const fl = asFloat(limit);
+    const fk = asFloat(step);
+    if (fk == 0.0) {
+        return failAt(s3, line, "'for' step is zero");
+    }
+    return floatFor(s3, pl, f0, fl, fk, body);
+}
+
+function intFor(st: State, pl: Place, i: i64, k: i64, left: u64, body: Stat[n]): State {
+    const [s1, stop] = afterBody(execBlock(declarePlace(st, pl, Int(i)), body, 0));
+    return stop || left == 0u64 ? s1 : intFor(s1, pl, i + k, k, left - 1u64, body);
+}
+
+function floatFor(st: State, pl: Place, x: f64, lim: f64, k: f64, body: Stat[n]): State {
+    if (k > 0.0 ? x > lim : x < lim) {
+        return st;
+    }
+    const [s1, stop] = afterBody(execBlock(declarePlace(st, pl, Num(x)), body, 0));
+    return stop ? s1 : floatFor(s1, pl, x + k, lim, k, body);
+}
+
+function genFor(st: State, places: Place[n], es: Expr[m], body: Stat[k], line: i64): State {
+    const [s1, vs] = evalList(st, es, 3);
+    if (s1.flow != FLOW_NORMAL) {
+        return s1;
+    }
+    const f = vs[0];
+    const isNext = match (f) {
+        Fun(g) => g == -PRIM_NEXT - 1,
+        _ => false,
+    };
+    const tab = match (vs[1]) {
+        Tab(t) => t,
+        _ => -1,
+    };
+    if (isNext && tab >= 0 && isNil(vs[2])) {
+        return nextFor(s1, places, tab, 0, body);
+    }
+    return callFor(s1, places, f, vs[1], vs[2], body, line);
+}
+
+// `for k, v in pairs(t)`: the table walked without calls
+function nextFor(st: State, places: Place[n], t: i64, pos: i64, body: Stat[k]): State {
+    const [p, key, v] = walkFrom(st, t, pos);
+    if (isNil(key)) {
+        return st;
+    }
+    const s1 = declareAll(st, places, [key, v], 0);
+    const [s2, stop] = afterBody(execBlock(s1, body, 0));
+    return stop ? s2 : nextFor(s2, places, t, p, body);
+}
+
+function callFor(st: State, places: Place[n], f: Value, s: Value, ctl: Value, body: Stat[k], line: i64): State {
+    const [s1, rs] = callValue(st, f, [s, ctl], line);
+    if (s1.flow != FLOW_NORMAL) {
+        return s1;
+    }
+    const first = rs.length > 0 ? rs[0] : Nil;
+    if (isNil(first)) {
+        return s1;
+    }
+    const [s2, stop] = afterBody(execBlock(declareAll(s1, places, rs, 0), body, 0));
+    return stop ? s2 : callFor(s2, places, f, s, first, body, line);
+}
+
+// ----- the library ---------------------------------------------------------
+
+// the functions of the library, by their numbers
+const PRIM_NAMES: string[] = [
+    "print", "type", "tostring", "tonumber", "pairs", "ipairs", "next", "select", "error", "assert",
+    "pcall", "xpcall", "rawget", "rawset", "rawequal", "rawlen", "setmetatable", "getmetatable", "unpack", "ipairs step",
+    "len", "sub", "upper", "lower", "rep", "byte", "char", "format", "find", "match",
+    "gsub", "reverse", "gmatch step", "insert", "remove", "concat", "sort", "pack", "floor", "ceil",
+    "abs", "max", "min", "sqrt", "fmod", "tointeger", "type", "random", "randomseed", "sin",
+    "cos", "tan", "asin", "acos", "atan", "exp", "log", "modf", "ult",
+];
+
+const PRIM_PRINT: i64 = 0;
+const PRIM_NEXT: i64 = 6;
+const PRIM_IPAIRS_STEP: i64 = 19;
+const PRIM_GMATCH_STEP: i64 = 32;
+
+// the library of Lua written in Lua, run when a state is made (`...` its
+// functions written in Isocron that it wraps)
+const PRELUDE: string = "local gstep = ...\nfunction string.gmatch(s, p)\n  local state = {s, p, 0, -1}\n  return function() return gstep(state) end\nend\n";
+
+function arg(args: Value[n], i: i64): Value {
+    return i < n ? args[i] : Nil;
+}
+
+// (called by another function of the library, the function named by its
+// table, as Lua names it then)
+function argFault(st: State, line: i64, i: i64, name: string, msg: string): State {
+    const id = findIndex(PRIM_NAMES, (x) => x == name);
+    const table = id >= 20 && id < 33 ? "string." : (id >= 33 && id < 38 ? "table." : (id >= 38 ? "math." : ""));
+    return failAt(st, line, `bad argument #${i + 1} to '${line < 0 ? table : ""}${name}' (${msg})`);
+}
+
+function expected(what: string, v: Value): string {
+    return `${what} expected, got ${isNil(v) ? "no value" : typeName(v)}`;
+}
+
+// the argument `i` as an integer (the error of the function `name` when it
+// is not one)
+function intArg(st: State, args: Value[n], i: i64, name: string, line: i64): [State, i64] {
+    const v = arg(args, i);
+    const [ok, x] = toInteger(v);
+    if (ok) {
+        return [st, x] as const;
+    }
+    const msg = match (toNumber(v)) {
+        Num(f) => "number has no integer representation",
+        _ => expected("number", v),
+    };
+    return [argFault(st, line, i, name, msg), 0] as const;
+}
+
+function optInt(st: State, args: Value[n], i: i64, name: string, line: i64, d: i64): [State, i64] {
+    return isNil(arg(args, i)) ? [st, d] as const : intArg(st, args, i, name, line);
+}
+
+function numArg(st: State, args: Value[n], i: i64, name: string, line: i64): [State, Value] {
+    const v = toNumber(arg(args, i));
+    return isNil(v) ? [argFault(st, line, i, name, expected("number", arg(args, i))), Int(0)] as const : [st, v] as const;
+}
+
+function strArg(st: State, args: Value[n], i: i64, name: string, line: i64): [State, string] {
+    return match (arg(args, i)) {
+        Str(s) => [st, s] as const,
+        Int(x) => [st, `${x}`] as const,
+        Num(x) => [st, floatText(x)] as const,
+        other => [argFault(st, line, i, name, expected("string", other)), ""] as const,
+    };
+}
+
+function tabArg(st: State, args: Value[n], i: i64, name: string, line: i64): [State, i64] {
+    return match (arg(args, i)) {
+        Tab(t) => [st, t] as const,
+        other => [argFault(st, line, i, name, expected("table", other)), 0] as const,
+    };
+}
+
+// `tostring(v)`, with `__tostring`
+export function textOf(st: State, v: Value, line: i64): [State, string] {
+    const mm = metaField(st, v, "__tostring");
+    if (isNil(mm)) {
+        return [st, plainText(v)] as const;
+    }
+    const [s1, r] = firstOf(callValue(st, mm, [v], line));
+    return match (r) {
+        Str(s) => [s1, s] as const,
+        _ => [failAt(s1, line, "'__tostring' must return a string"), ""] as const,
+    };
+}
+
+function textsOf(st: State, args: Value[n], i: i64, acc: string[]): [State, string[]] {
+    if (i >= n) {
+        return [st, acc] as const;
+    }
+    const [s1, t] = textOf(st, args[i], 0);
+    return textsOf(s1, args, i + 1, concat(acc, [t]));
+}
+
+function one(st: State, v: Value): [State, Value[]] {
+    return [st, [v]] as const;
+}
+
+function none(st: State): [State, Value[]] {
+    return [st, []] as const;
+}
+
+// a string of Lua made of bytes (an error when they are not UTF-8)
+function bytesValue(st: State, b: u8[n], line: i64, name: string): [State, Value] {
+    return isUtf8(b) ? [st, Str(stringOf(b))] as const : [failAt(st, line, `'${name}' would cut a character of UTF-8 (the strings of this Lua are texts)`), Nil] as const;
+}
+
+function callPrim(st: State, id: i64, args: Value[n], line: i64): [State, Value[]] {
+    if (id < 20) {
+        return basePrim(st, id, args, line);
+    }
+    if (id < 33) {
+        return stringPrim(st, id, args, line);
+    }
+    if (id < 38) {
+        return tablePrim(st, id, args, line);
+    }
+    return mathPrim(st, id, args, line);
+}
+
+function basePrim(st: State, id: i64, args: Value[n], line: i64): [State, Value[]] {
+    const name = PRIM_NAMES[id];
+    if (id == PRIM_PRINT) {
+        const [s1, texts] = textsOf(st, args, 0, []);
+        return none({ ...s1, out: concat(s1.out, [join(texts, "\t")]) });
+    }
+    if (id == 1) {
+        return n == 0 ? none(argFault(st, line, 0, name, "value expected")) : one(st, Str(typeName(args[0])));
+    }
+    if (id == 2) {
+        const [s1, t] = textOf(st, arg(args, 0), line);
+        return one(s1, Str(t));
+    }
+    if (id == 3) {
+        return tonumberPrim(st, args, line);
+    }
+    if (id == 4) {
+        const mm = metaField(st, arg(args, 0), "__pairs");
+        if (!isNil(mm)) {
+            const [s1, rs] = callValue(st, mm, [arg(args, 0)], line);
+            return [s1, adjusted(rs, 3)] as const;
+        }
+        const [s1, t] = tabArg(st, args, 0, name, line);
+        return [s1, [Fun(-PRIM_NEXT - 1), Tab(t), Nil]] as const;
+    }
+    if (id == 5) {
+        return n == 0 ? none(argFault(st, line, 0, name, "table expected, got no value")) : [st, [Fun(-PRIM_IPAIRS_STEP - 1), args[0], Int(0)]] as const;
+    }
+    if (id == PRIM_NEXT) {
+        const [s1, t] = tabArg(st, args, 0, name, line);
+        if (s1.flow != FLOW_NORMAL) {
+            return none(s1);
+        }
+        const [ok, k, v] = nextOf(s1, t, arg(args, 1));
+        return !ok ? none(failAt(s1, line, "invalid key to 'next'")) : (isNil(k) ? one(s1, Nil) : [s1, [k, v]] as const);
+    }
+    if (id == 7) {
+        return match (arg(args, 0)) {
+            Str(s) => s == "#" ? one(st, Int(n - 1)) : selectFrom(st, args, line),
+            _ => selectFrom(st, args, line),
+        };
+    }
+    if (id == 8) {
+        // error(msg [, level]): a string given the place of the call
+        const [s1, level] = optInt(st, args, 1, name, line, 1);
+        const msg = arg(args, 0);
+        const chunk = s1.cl >= 0 ? s1.protoChunk[s1.cls[s1.cl].proto] : "?";
+        const err = match (msg) {
+            Str(s) => level > 0 && line >= 0 ? Str(`${chunk}:${line}: ${s}`) : msg,
+            _ => msg,
+        };
+        return none(s1.flow == FLOW_ERROR ? s1 : { ...s1, flow: FLOW_ERROR, err: err });
+    }
+    if (id == 9) {
+        if (n > 0 && truthy(args[0])) {
+            return [st, args] as const;
+        }
+        // (as `error(msg)`: a string given the place of the call)
+        const msg = n > 1 ? args[1] : Str("assertion failed!");
+        const chunk = st.cl >= 0 ? st.protoChunk[st.cls[st.cl].proto] : "?";
+        const err = match (msg) {
+            Str(s) => line >= 0 ? Str(`${chunk}:${line}: ${s}`) : msg,
+            _ => msg,
+        };
+        return none(n == 0 ? argFault(st, line, 0, name, "value expected") : { ...st, flow: FLOW_ERROR, err: err });
+    }
+    if (id == 10) {
+        if (n == 0) {
+            return none(argFault(st, line, 0, name, "value expected"));
+        }
+        const [s1, rs] = callValue(st, args[0], args.slice(1, n), -1);
+        return s1.flow == FLOW_ERROR ? [{ ...s1, flow: FLOW_NORMAL, err: Nil }, [Bool(false), s1.err]] as const : [s1, concat([Bool(true)], rs)] as const;
+    }
+    if (id == 11) {
+        const [s1, rs] = callValue(st, arg(args, 0), n > 2 ? args.slice(2, n) : [], -1);
+        if (s1.flow != FLOW_ERROR) {
+            return [s1, concat([Bool(true)], rs)] as const;
+        }
+        const e = s1.err;
+        const [s2, hs] = callValue({ ...s1, flow: FLOW_NORMAL, err: Nil }, arg(args, 1), [e], line);
+        return [s2, concat([Bool(false)], hs)] as const;
+    }
+    if (id == 12) {
+        const [s1, t] = tabArg(st, args, 0, name, line);
+        return s1.flow != FLOW_NORMAL ? none(s1) : one(s1, rawGet(s1, t, arg(args, 1)));
+    }
+    if (id == 13) {
+        const [s1, t] = tabArg(st, args, 0, name, line);
+        return s1.flow != FLOW_NORMAL ? none(s1) : one(rawSetChecked(s1, t, arg(args, 1), arg(args, 2), line), Tab(t));
+    }
+    if (id == 14) {
+        return one(st, Bool(rawEqual(arg(args, 0), arg(args, 1))));
+    }
+    if (id == 15) {
+        return match (arg(args, 0)) {
+            Tab(t) => one(st, Int(st.tabs[t].len)),
+            Str(s) => one(st, Int(s.length)),
+            other => none(argFault(st, line, 0, name, "table or string expected")),
+        };
+    }
+    if (id == 16) {
+        const [s1, t] = tabArg(st, args, 0, name, line);
+        if (s1.flow != FLOW_NORMAL) {
+            return none(s1);
+        }
+        const old = s1.tabs[t].meta;
+        if (old >= 0 && !isNil(rawGetStr(s1, old, "__metatable", hashString("__metatable")))) {
+            return none(failAt(s1, line, "cannot change a protected metatable"));
+        }
+        return match (arg(args, 1)) {
+            Tab(m) => one({ ...s1, tabs: s1.tabs.with(t, { ...s1.tabs[t], meta: m }) }, Tab(t)),
+            Nil => one({ ...s1, tabs: s1.tabs.with(t, { ...s1.tabs[t], meta: -1 }) }, Tab(t)),
+            other => none(argFault(s1, line, 1, name, "nil or table expected")),
+        };
+    }
+    if (id == 17) {
+        return match (arg(args, 0)) {
+            Tab(t) => {
+                const m = st.tabs[t].meta;
+                if (m < 0) {
+                    return one(st, Nil);
+                }
+                const protected = rawGetStr(st, m, "__metatable", hashString("__metatable"));
+                return one(st, isNil(protected) ? Tab(m) : protected);
+            },
+            Str(x) => one(st, Tab(st.stringMeta)),
+            _ => one(st, Nil),
+        };
+    }
+    if (id == 18) {
+        return unpackPrim(st, args, line, name);
+    }
+    // the iterator of `ipairs`
+    const [s1, i] = intArg(st, args, 1, "ipairs", line);
+    const [s2, v] = index(s1, arg(args, 0), Int(i + 1), line, ENil);
+    return isNil(v) ? one(s2, Nil) : [s2, [Int(i + 1), v]] as const;
+}
+
+function selectFrom(st: State, args: Value[n], line: i64): [State, Value[]] {
+    const [s1, k] = intArg(st, args, 0, "select", line);
+    if (s1.flow != FLOW_NORMAL) {
+        return none(s1);
+    }
+    const rest = n - 1;
+    if (k < 0) {
+        return -k > rest ? none(argFault(s1, line, 0, "select", "index out of range")) : [s1, args.slice(n + k, n)] as const;
+    }
+    if (k == 0) {
+        return none(argFault(s1, line, 0, "select", "index out of range"));
+    }
+    return [s1, k > rest ? [] : args.slice(k, n)] as const;
+}
+
+function tonumberPrim(st: State, args: Value[n], line: i64): [State, Value[]] {
+    if (n == 0) {
+        return none(argFault(st, line, 0, "tonumber", "value expected"));
+    }
+    if (n < 2 || isNil(args[1])) {
+        return one(st, toNumber(args[0]));
+    }
+    const [s1, base] = intArg(st, args, 1, "tonumber", line);
+    if (base < 2 || base > 36) {
+        return none(argFault(s1, line, 1, "tonumber", "base out of range"));
+    }
+    return match (args[0]) {
+        Str(s) => one(s1, inBase(s.trim().toLowerCase(), base)),
+        other => none(argFault(s1, line, 0, "tonumber", expected("string", other))),
+    };
+}
+
+// the integer the digits `s` write in `base` (nil when they do not)
+function inBase(s: string, base: i64): Value {
+    const neg = s.startsWith("-");
+    const b = bytes(neg ? s.slice(1, s.length) : s);
+    if (b.length == 0) {
+        return Nil;
+    }
+    const digit = (c: u8) => c >= 48u8 && c <= 57u8 ? i64(c) - 48 : (c >= 97u8 && c <= 122u8 ? i64(c) - 87 : 99);
+    if (count(b, (c) => digit(c) < base) != b.length) {
+        return Nil;
+    }
+    const v = fold(b, 0, (acc, c) => acc * base + digit(c));
+    return Int(neg ? -v : v);
+}
+
+function unpackPrim(st: State, args: Value[n], line: i64, name: string): [State, Value[]] {
+    const [s1, t] = tabArg(st, args, 0, name, line);
+    const [s2, i] = optInt(s1, args, 1, name, line, 1);
+    const [s3, j] = optInt(s2, args, 2, name, line, s2.flow == FLOW_NORMAL ? s2.tabs[t].len : 0);
+    if (s3.flow != FLOW_NORMAL) {
+        return none(s3);
+    }
+    if (j - i >= 1000000) {
+        return none(failAt(s3, line, "too many results to unpack"));
+    }
+    return [s3, i > j ? [] : map(iota(j - i + 1), (k) => rawGet(s3, t, Int(i + k)))] as const;
+}
+
+// ----- strings -------------------------------------------------------------
+
+// the place of the byte of an index of Lua (from 1, from the end when
+// negative) in a string of `len` bytes
+function startIndex(i: i64, len: i64): i64 {
+    return i > 0 ? i : (i == 0 ? 1 : (-i > len ? 1 : len + i + 1));
+}
+
+function endIndex(j: i64, len: i64): i64 {
+    return j > len ? len : (j >= 0 ? j : (-j > len ? 0 : len + j + 1));
+}
+
+function stringPrim(st: State, id: i64, args: Value[n], line: i64): [State, Value[]] {
+    const name = PRIM_NAMES[id];
+    if (id == PRIM_GMATCH_STEP) {
+        return gmatchStep(st, args, line);
+    }
+    if (id == 26) {
+        const codes = map(iota(n), (i) => {
+            const [ok, c] = toInteger(args[i]);
+            return ok && c >= 0 && c <= 255 ? c : -1;
+        });
+        const bad = findIndex(codes, (c) => c < 0);
+        if (bad >= 0) {
+            return none(argFault(st, line, bad, name, "value out of range"));
+        }
+        const [s1, v] = bytesValue(st, map(codes, (c) => u8(c)), line, "string.char");
+        return one(s1, v);
+    }
+    const [s1, s] = strArg(st, args, 0, name, line);
+    if (s1.flow != FLOW_NORMAL) {
+        return none(s1);
+    }
+    const len = s.length;
+    if (id == 20) {
+        return one(s1, Int(len));
+    }
+    if (id == 21) {
+        const [s2, i] = optInt(s1, args, 1, name, line, 1);
+        const [s3, j] = optInt(s2, args, 2, name, line, -1);
+        const a = startIndex(i, len);
+        const b = endIndex(j, len);
+        if (a > b) {
+            return one(s3, Str(""));
+        }
+        const [s4, v] = bytesValue(s3, bytes(s).slice(a - 1, b), line, "string.sub");
+        return one(s4, v);
+    }
+    if (id == 22) {
+        return one(s1, Str(s.toUpperCase()));
+    }
+    if (id == 23) {
+        return one(s1, Str(s.toLowerCase()));
+    }
+    if (id == 24) {
+        const [s2, k] = intArg(s1, args, 1, name, line);
+        const [s3, sep] = isNil(arg(args, 2)) ? [s2, ""] as const : strArg(s2, args, 2, name, line);
+        if (s3.flow != FLOW_NORMAL || k <= 0) {
+            return one(s3, Str(""));
+        }
+        if ((len + sep.length) * k > 100000000) {
+            return none(failAt(s3, line, "resulting string too large"));
+        }
+        return one(s3, Str(sep == "" ? s.repeat(k) : join(fill(k, s), sep)));
+    }
+    if (id == 25) {
+        const [s2, i] = optInt(s1, args, 1, name, line, 1);
+        const [s3, j] = optInt(s2, args, 2, name, line, i);
+        const a = startIndex(i, len);
+        const b = endIndex(j, len);
+        const bs = bytes(s);
+        return [s3, a > b ? [] : map(iota(b - a + 1), (k) => Int(i64(bs[a - 1 + k])))] as const;
+    }
+    if (id == 27) {
+        return formatPrim(s1, s, args, line);
+    }
+    if (id == 28 || id == 29) {
+        return findPrim(s1, s, args, line, id == 28);
+    }
+    if (id == 30) {
+        return gsubPrim(s1, s, args, line);
+    }
+    // reverse: by characters
+    const chars = utf8Chars(s);
+    return one(s1, Str(join(map(iota(chars.length), (k) => chars[chars.length - 1 - k]), "")));
+}
+
+// the characters of `s`, each a string
+function utf8Chars(s: string): string[] {
+    const b = bytes(s);
+    const starts = filter(iota(b.length), (i) => (b[i] & 192u8) != 128u8);
+    return map(iota(starts.length), (k) => s.slice(starts[k], k + 1 < starts.length ? starts[k + 1] : b.length));
+}
+
+// the values of the captures of a match from `start` (the whole match when
+// it has none)
+function capturesOf(st: State, b: u8[n], start: i64, m: Matched, whole: boolean, line: i64): [State, Value[]] {
+    const caps = m.caps;
+    if (caps.length == 0 || whole) {
+        const [s1, v] = bytesValue(st, b.slice(start, m.end), line, "a pattern");
+        return [s1, [v]] as const;
+    }
+    return capsFrom(st, b, caps, 0, [], line);
+}
+
+function capsFrom(st: State, b: u8[n], caps: Cap[m], i: i64, acc: Value[], line: i64): [State, Value[]] {
+    if (i >= m) {
+        return [st, acc] as const;
+    }
+    const c = caps[i];
+    if (c.len == -1) {
+        return [failAt(st, line, "unfinished capture"), acc] as const;
+    }
+    if (c.len == -2) {
+        return capsFrom(st, b, caps, i + 1, concat(acc, [Int(c.start + 1)]), line);
+    }
+    const [s1, v] = bytesValue(st, b.slice(c.start, c.start + c.len), line, "a pattern");
+    return capsFrom(s1, b, caps, i + 1, concat(acc, [v]), line);
+}
+
+// `string.find` (`find`) and `string.match`
+function findPrim(st: State, s: string, args: Value[n], line: i64, find: boolean): [State, Value[]] {
+    const name = find ? "find" : "match";
+    const [s1, p] = strArg(st, args, 1, name, line);
+    const [s2, i] = optInt(s1, args, 2, name, line, 1);
+    if (s2.flow != FLOW_NORMAL) {
+        return none(s2);
+    }
+    const len = s.length;
+    const init = startIndex(i, len);
+    if (init > len + 1) {
+        return one(s2, Nil);
+    }
+    const b = bytes(s);
+    if (find && (truthy(arg(args, 3)) || plainPattern(p))) {
+        const at = s.slice(0, 0) == "" ? plainFind(b, bytes(p), init - 1) : -1;
+        return at < 0 ? one(s2, Nil) : [s2, [Int(at + 1), Int(at + p.length)]] as const;
+    }
+    const [start, m] = findPattern(b, bytes(p), init - 1);
+    if (m.fault != "") {
+        return none(failAt(s2, line, m.fault));
+    }
+    if (m.end < 0) {
+        return one(s2, Nil);
+    }
+    if (!find) {
+        return capturesOf(s2, b, start, m, false, line);
+    }
+    const [s3, caps] = m.caps.length == 0 ? [s2, []] as const : capturesOf(s2, b, start, m, false, line);
+    return [s3, concat([Int(start + 1), Int(m.end)], caps)] as const;
+}
+
+function plainFind(b: u8[n], p: u8[m], at: i64): i64 {
+    if (at + m > n) {
+        return -1;
+    }
+    return count(iota(m), (k) => b[at + k] == p[k]) == m ? at : plainFind(b, p, at + 1);
+}
+
+// the iterator of `gmatch`: its state `{s, p, next place, end of the last
+// match}` advanced
+function gmatchStep(st: State, args: Value[n], line: i64): [State, Value[]] {
+    const t = match (arg(args, 0)) {
+        Tab(x) => x,
+        _ => -1,
+    };
+    if (t < 0) {
+        return one(st, Nil);
+    }
+    const s = plainText(rawGet(st, t, Int(1)));
+    const p = plainText(rawGet(st, t, Int(2)));
+    const [ok, pos] = toInteger(rawGet(st, t, Int(3)));
+    const [ok2, last] = toInteger(rawGet(st, t, Int(4)));
+    return gmatchFrom(st, t, bytes(s), bytes(p), pos, last, line);
+}
+
+function gmatchFrom(st: State, t: i64, b: u8[n], p: u8[m], pos: i64, last: i64, line: i64): [State, Value[]] {
+    if (pos > n) {
+        return one(st, Nil);
+    }
+    const [start, mt] = findPattern(b, p, pos);
+    if (mt.fault != "") {
+        return none(failAt(st, line, mt.fault));
+    }
+    if (mt.end < 0) {
+        return one(rawSet(st, t, Int(3), Int(n + 1)), Nil);
+    }
+    // (an empty match where the last one ended: one place further)
+    if (mt.end == start && mt.end == last) {
+        return gmatchFrom(st, t, b, p, start + 1, last, line);
+    }
+    const s1 = rawSet(rawSet(st, t, Int(3), Int(mt.end)), t, Int(4), Int(mt.end));
+    return capturesOf(s1, b, start, mt, false, line);
+}
+
+// `string.gsub(s, p, repl [, n])`
+function gsubPrim(st: State, s: string, args: Value[n], line: i64): [State, Value[]] {
+    const [s1, p] = strArg(st, args, 1, "gsub", line);
+    const repl = arg(args, 2);
+    const kind = match (repl) {
+        Str(r) => 0,
+        Int(r) => 0,
+        Num(r) => 0,
+        Tab(r) => 1,
+        Fun(r) => 2,
+        _ => -1,
+    };
+    if (kind < 0) {
+        return none(argFault(s1, line, 2, "gsub", expected("string/function/table", repl)));
+    }
+    const [s2, most] = optInt(s1, args, 3, "gsub", line, s.length + 1);
+    if (s2.flow != FLOW_NORMAL) {
+        return none(s2);
+    }
+    const pb = bytes(p);
+    const anchored = pb.length > 0 && pb[0] == 94u8;
+    const pat = anchored ? pb.slice(1, pb.length) : pb;
+    const b = bytes(s);
+    // the matches first (pairs of their start and end; a fault: -1 and its
+    // place), then their replacements, the state given from one to the next
+    const ms = gsubMatches(b, pat, anchored, most, 0, 0, []);
+    const k = ms.length / 2;
+    if (k > 0 && ms[2 * k - 2] < 0) {
+        const [start, mt] = findPattern(b, pat, ms[2 * k - 1]);
+        return none(failAt(s2, line, mt.fault));
+    }
+    // (the text before each match and its replacement, in their places)
+    const [s3, pieces] = fold(iota(k), [s2, fill(2 * k, "")] as const, (acc, j) => {
+        const [st1, ps] = acc;
+        const start = ms[2 * j];
+        const prev = j == 0 ? 0 : ms[2 * j - 1];
+        const mt = matchAt(b, pat, start);
+        const [st2, before] = bytesValue(st1, b.slice(min(prev, start), start), line, "gsub");
+        const [st3, piece] = replacement(st2, b, start, mt, repl, kind, line);
+        return [st3, ps.with(2 * j, plainText(before)).with(2 * j + 1, piece)] as const;
+    });
+    const last = k == 0 ? 0 : ms[2 * k - 1];
+    const [s4, rest] = bytesValue(s3, b.slice(min(last, b.length), b.length), line, "gsub");
+    return [s4, [Str(join(concat(pieces, [plainText(rest)]), "")), Int(k)]] as const;
+}
+
+// the places of the matches of `p` in `b` from `at`, at most `most` (pairs
+// of their start and end in `acc`; a fault: -1 and its place)
+function gsubMatches(b: u8[n], p: u8[m], anchored: boolean, most: i64, at: i64, done: i64, acc: i64[]): i64[] {
+    if (done >= most || at > n) {
+        return acc;
+    }
+    const [start, mt] = anchored ? [at, matchAt(b, p, at)] as const : findPattern(b, p, at);
+    if (mt.fault != "") {
+        return concat(acc, [-1, at]);
+    }
+    if (mt.end < 0) {
+        return acc;
+    }
+    const next = concat(acc, [start, mt.end]);
+    if (anchored) {
+        return next;
+    }
+    // (an empty match: the search one character on)
+    const after = mt.end == start ? (start >= n ? n + 1 : start + charLen(b[start])) : mt.end;
+    return gsubMatches(b, p, anchored, most, after, done + 1, next);
+}
+
+function charLen(c: u8): i64 {
+    return c < 128u8 ? 1 : (c >= 240u8 ? 4 : (c >= 224u8 ? 3 : 2));
+}
+
+function matchAt(b: u8[n], p: u8[m], at: i64): Matched {
+    const [start, mt] = findPattern(b, concat([94u8], p), at);
+    return mt;
+}
+
+
+// the text that replaces a match: the string with `%0` to `%9`, the value
+// of the table at the first capture, or the result of the function
+function replacement(st: State, b: u8[n], start: i64, mt: Matched, repl: Value, kind: i64, line: i64): [State, string] {
+    const [s1, whole] = bytesValue(st, b.slice(start, mt.end), line, "gsub");
+    const [s2, caps] = capturesOf(s1, b, start, mt, false, line);
+    if (kind == 0) {
+        return expandRepl(s2, plainText(repl), whole, caps, line);
+    }
+    const [s3, v] = kind == 1 ? index(s2, repl, caps[0], line, ENil) : firstOf(callValue(s2, repl, caps, line));
+    return match (v) {
+        Nil => [s3, plainText(whole)] as const,
+        Bool(x) => x ? [failAt(s3, line, "invalid replacement value (a boolean)"), ""] as const : [s3, plainText(whole)] as const,
+        Str(x) => [s3, x] as const,
+        Int(x) => [s3, `${x}`] as const,
+        Num(x) => [s3, floatText(x)] as const,
+        other => [failAt(s3, line, `invalid replacement value (a ${typeName(other)})`), ""] as const,
+    };
+}
+
+function expandRepl(st: State, r: string, whole: Value, caps: Value[n], line: i64): [State, string] {
+    const parts = split(r, "%");
+    if (parts.length == 1) {
+        return [st, r] as const;
+    }
+    return expandFrom(st, parts, 1, parts[0], whole, caps, line);
+}
+
+function expandFrom(st: State, parts: string[m], k: i64, acc: string, whole: Value, caps: Value[n], line: i64): [State, string] {
+    if (k >= m) {
+        return [st, acc] as const;
+    }
+    const p = parts[k];
+    if (p == "") {
+        // `%%`: a `%`, the part after the next `%` as it is
+        return k + 1 < m ? expandFrom(st, parts, k + 2, acc + "%" + parts[k + 1], whole, caps, line) : [failAt(st, line, "invalid use of '%' in replacement string"), ""] as const;
+    }
+    const c = bytes(p)[0];
+    if (c < 48u8 || c > 57u8) {
+        return [failAt(st, line, "invalid use of '%' in replacement string"), ""] as const;
+    }
+    const d = i64(c) - 48;
+    const v = d == 0 ? whole : (d - 1 < n ? caps[d - 1] : (d == 1 ? whole : Nil));
+    if (isNil(v)) {
+        return [failAt(st, line, `invalid capture index %${d} in replacement string`), ""] as const;
+    }
+    return expandFrom(st, parts, k + 1, acc + plainText(v) + p.slice(1, p.length), whole, caps, line);
+}
+
+// `string.format(fmt, ...)`
+function formatPrim(st: State, fmt: string, args: Value[n], line: i64): [State, Value[]] {
+    const f = bytes(fmt);
+    return formatFrom(st, f, 0, 1, args, [], line);
+}
+
+function formatFrom(st: State, f: u8[m], at: i64, k: i64, args: Value[n], acc: string[], line: i64): [State, Value[]] {
+    if (st.flow != FLOW_NORMAL) {
+        return none(st);
+    }
+    const pct = findPct(f, at);
+    const text = stringOf(f.slice(at, pct < 0 ? m : pct));
+    if (pct < 0) {
+        return one(st, Str(join(concat(acc, [text]), "")));
+    }
+    if (pct + 1 < m && f[pct + 1] == 37u8) {
+        return formatFrom(st, f, pct + 2, k, args, concat(acc, [text, "%"]), line);
+    }
+    const [sp, after] = readSpec(f, pct + 1);
+    if (after < 0) {
+        return none(failAt(st, line, `invalid conversion '%${stringOf(f.slice(pct + 1, min(m, pct + 3)))}' to 'format'`));
+    }
+    if (k >= n) {
+        return none(argFault(st, line, k, "format", "no value"));
+    }
+    const v = args[k];
+    const c = sp.conv;
+    if (c == 100u8 || c == 105u8 || c == 120u8 || c == 88u8 || c == 111u8 || c == 117u8) {
+        const [ok, x] = toInteger(v);
+        if (!ok) {
+            return none(argFault(st, line, k, "format", isNil(toNumber(v)) ? expected("number", v) : "number has no integer representation"));
+        }
+        return formatFrom(st, f, after, k + 1, args, concat(acc, [text, formatInt({ ...sp, conv: c == 117u8 ? 100u8 : c }, x)]), line);
+    }
+    if (c == 99u8) {
+        const [ok, x] = toInteger(v);
+        return ok && x >= 0 && x < 128 ? formatFrom(st, f, after, k + 1, args, concat(acc, [text, stringOf([u8(x)])]), line) : none(argFault(st, line, k, "format", "a code of ASCII expected"));
+    }
+    if (c == 115u8) {
+        const [s1, t] = textOf(st, v, line);
+        return formatFrom(s1, f, after, k + 1, args, concat(acc, [text, formatString(sp, t)]), line);
+    }
+    if (c == 113u8) {
+        const q = match (v) {
+            Str(x) => quotedString(x),
+            _ => plainText(v),
+        };
+        return formatFrom(st, f, after, k + 1, args, concat(acc, [text, q]), line);
+    }
+    const x = toNumber(v);
+    if (isNil(x)) {
+        return none(argFault(st, line, k, "format", expected("number", v)));
+    }
+    return formatFrom(st, f, after, k + 1, args, concat(acc, [text, formatFloat(sp, asFloat(x))]), line);
+}
+
+function findPct(f: u8[m], at: i64): i64 {
+    return at >= m ? -1 : (f[at] == 37u8 ? at : findPct(f, at + 1));
+}
+
+// ----- tables --------------------------------------------------------------
+
+function tablePrim(st: State, id: i64, args: Value[n], line: i64): [State, Value[]] {
+    const name = PRIM_NAMES[id];
+    if (id == 37) {
+        // table.pack
+        const [s1, t] = newTable(st, n, 1);
+        const s2 = fold(iota(n), s1, (acc, i) => isNil(args[i]) ? acc : rawSet(acc, t, Int(i + 1), args[i]));
+        return one(rawSet(s2, t, Str("n"), Int(n)), Tab(t));
+    }
+    const [s1, t] = tabArg(st, args, 0, name, line);
+    if (s1.flow != FLOW_NORMAL) {
+        return none(s1);
+    }
+    const len = s1.tabs[t].len;
+    if (id == 33) {
+        if (n == 2) {
+            return none(rawSet(s1, t, Int(len + 1), args[1]));
+        }
+        if (n != 3) {
+            return none(failAt(s1, line, "wrong number of arguments to 'insert'"));
+        }
+        const [s2, pos] = intArg(s1, args, 1, name, line);
+        if (pos < 1 || pos > len + 1) {
+            return none(argFault(s2, line, 1, name, "position out of bounds"));
+        }
+        // the values from `pos` one place up, from the last
+        const s3 = fold(iota(len - pos + 1), s2, (acc, k) => rawSet(acc, t, Int(len + 1 - k), rawGet(acc, t, Int(len - k))));
+        return none(rawSet(s3, t, Int(pos), args[2]));
+    }
+    if (id == 34) {
+        if (len == 0 && n < 2) {
+            return one(s1, Nil);
+        }
+        const [s2, pos] = optInt(s1, args, 1, name, line, len);
+        if (n >= 2 && len + 1 != pos && (pos < 1 || pos > len + 1)) {
+            return none(argFault(s2, line, 1, name, "position out of bounds"));
+        }
+        const v = rawGet(s2, t, Int(pos));
+        const s3 = fold(iota(max(0, len - pos)), s2, (acc, k) => rawSet(acc, t, Int(pos + k), rawGet(acc, t, Int(pos + k + 1))));
+        return one(pos <= len ? rawSet(s3, t, Int(len), Nil) : s3, v);
+    }
+    if (id == 35) {
+        const [s2, sep] = isNil(arg(args, 1)) ? [s1, ""] as const : strArg(s1, args, 1, name, line);
+        const [s3, i] = optInt(s2, args, 2, name, line, 1);
+        const [s4, j] = optInt(s3, args, 3, name, line, len);
+        if (s4.flow != FLOW_NORMAL || i > j) {
+            return one(s4, Str(""));
+        }
+        const vs = map(iota(j - i + 1), (k) => rawGet(s4, t, Int(i + k)));
+        const bad = findIndex(vs, (v) => match (v) {
+            Str(x) => false,
+            Int(x) => false,
+            Num(x) => false,
+            _ => true,
+        });
+        if (bad >= 0) {
+            return none(failAt(s4, line, `invalid value (at index ${i + bad}) in table for 'concat'`));
+        }
+        return one(s4, Str(join(map(vs, plainText), sep)));
+    }
+    if (id == 36) {
+        const vs = map(iota(len), (k) => rawGet(s1, t, Int(k + 1)));
+        const [s2, sorted] = mergeSort(s1, vs, arg(args, 1), line);
+        if (s2.flow != FLOW_NORMAL) {
+            return none(s2);
+        }
+        return none(fold(iota(len), s2, (acc, k) => rawSet(acc, t, Int(k + 1), sorted[k])));
+    }
+    return unpackPrim(s1, args, line, "unpack");
+}
+
+// `a` before `b` for `table.sort`: by `comp` when given, else `<`
+function before(st: State, a: Value, b: Value, comp: Value, line: i64): [State, boolean] {
+    if (isNil(comp)) {
+        return less(st, a, b, line, false);
+    }
+    const [s1, r] = firstOf(callValue(st, comp, [a, b], line));
+    return [s1, truthy(r)] as const;
+}
+
+function mergeSort(st: State, xs: Value[n], comp: Value, line: i64): [State, Value[]] {
+    if (n <= 1 || st.flow != FLOW_NORMAL) {
+        return [st, xs] as const;
+    }
+    const h = n / 2;
+    const [s1, a] = mergeSort(st, xs.slice(0, h), comp, line);
+    const [s2, b] = mergeSort(s1, xs.slice(h, n), comp, line);
+    return merged(s2, a, b, 0, 0, [], comp, line);
+}
+
+function merged(st: State, a: Value[n], b: Value[m], i: i64, j: i64, acc: Value[], comp: Value, line: i64): [State, Value[]] {
+    if (i >= n) {
+        return [st, concat(acc, b.slice(j, m))] as const;
+    }
+    if (j >= m || st.flow != FLOW_NORMAL) {
+        return [st, concat(acc, a.slice(i, n))] as const;
+    }
+    // (stable: the second taken only when strictly before)
+    const [s1, bFirst] = before(st, b[j], a[i], comp, line);
+    return bFirst ? merged(s1, a, b, i, j + 1, concat(acc, [b[j]]), comp, line) : merged(s1, a, b, i + 1, j, concat(acc, [a[i]]), comp, line);
+}
+
+// ----- math ----------------------------------------------------------------
+
+// a float of an integer value as an integer when it fits (`math.floor`)
+function intIfFits(x: f64): Value {
+    return x >= -9.2233720368547758e18 && x < 9.2233720368547758e18 ? Int(i64(x)) : Num(x);
+}
+
+function mathPrim(st: State, id: i64, args: Value[n], line: i64): [State, Value[]] {
+    const name = PRIM_NAMES[id];
+    if (id == 47) {
+        return randomPrim(st, args, line);
+    }
+    if (id == 48) {
+        const [s1, x] = optInt(st, args, 0, name, line, 0);
+        return none({ ...s1, seed: x == 0 ? 88172645463325252 : x });
+    }
+    if (id == 41 || id == 42) {
+        return extremum(st, args, line, id == 41);
+    }
+    if (id == 58) {
+        const [s1, a] = intArg(st, args, 0, name, line);
+        const [s2, b] = intArg(s1, args, 1, name, line);
+        return one(s2, Bool(u64(a) < u64(b)));
+    }
+    if (id == 45) {
+        const [ok, x] = toInteger(arg(args, 0));
+        return one(st, ok ? Int(x) : Nil);
+    }
+    if (id == 46) {
+        return one(st, match (arg(args, 0)) {
+            Int(i) => Str("integer"),
+            Num(x) => Str("float"),
+            _ => Nil,
+        });
+    }
+    const [s1, v] = numArg(st, args, 0, name, line);
+    if (s1.flow != FLOW_NORMAL) {
+        return none(s1);
+    }
+    const x = asFloat(v);
+    if (id == 38 || id == 39) {
+        return match (v) {
+            Int(i) => one(s1, v),
+            _ => one(s1, intIfFits(id == 38 ? floor(x) : ceil(x))),
+        };
+    }
+    if (id == 40) {
+        return match (v) {
+            Int(i) => one(s1, Int(i < 0 ? -i : i)),
+            _ => one(s1, Num(abs(x))),
+        };
+    }
+    if (id == 44) {
+        const [s2, w] = numArg(s1, args, 1, name, line);
+        const both = match (v) {
+            Int(a) => match (w) {
+                Int(b) => true,
+                _ => false,
+            },
+            _ => false,
+        };
+        if (both) {
+            const a = match (v) {
+                Int(i) => i,
+                _ => 0,
+            };
+            const b = match (w) {
+                Int(i) => i,
+                _ => 0,
+            };
+            return b == 0 ? none(argFault(s2, line, 1, name, "zero")) : one(s2, Int(a % b));
+        }
+        return one(s2, Num(x % asFloat(w)));
+    }
+    if (id == 57) {
+        const whole = x >= 0.0 ? floor(x) : ceil(x);
+        const frac = x == 1.0 / 0.0 || x == -1.0 / 0.0 ? 0.0 : x - whole;
+        return match (v) {
+            Int(i) => [s1, [v, Num(0.0)]] as const,
+            _ => [s1, [intIfFits(whole), Num(frac)]] as const,
+        };
+    }
+    if (id == 56 && n > 1) {
+        const [s2, b] = numArg(s1, args, 1, name, line);
+        const base = asFloat(b);
+        return one(s2, Num(log(x) / log(base)));
+    }
+    if (id == 54 && n > 1) {
+        const [s2, b] = numArg(s1, args, 1, name, line);
+        return one(s2, Num(atan2(x, asFloat(b))));
+    }
+    const r = id == 43 ? sqrt(x) : (id == 49 ? sin(x) : (id == 50 ? cos(x) : (id == 51 ? tan(x) : (id == 52 ? asin(x) : (id == 53 ? acos(x) : (id == 54 ? atan(x) : (id == 55 ? exp(x) : log(x))))))));
+    return one(s1, Num(r));
+}
+
+function extremum(st: State, args: Value[n], line: i64, most: boolean): [State, Value[]] {
+    const name = most ? "max" : "min";
+    if (n == 0) {
+        return none(argFault(st, line, 0, name, "number expected, got no value"));
+    }
+    const nums = map(args, toNumber);
+    const bad = findIndex(nums, isNil);
+    if (bad >= 0) {
+        return none(argFault(st, line, bad, name, expected("number", args[bad])));
+    }
+    const best = fold(iota(n - 1), nums[0], (acc, i) => {
+        const v = nums[i + 1];
+        const better = most ? asFloat(v) > asFloat(acc) : asFloat(v) < asFloat(acc);
+        return better ? v : acc;
+    });
+    return one(st, best);
+}
+
+// xorshift64*: the generator of `math.random`
+function randomPrim(st: State, args: Value[n], line: i64): [State, Value[]] {
+    const x0 = st.seed;
+    const x1 = x0 ^ (x0 >> 12);
+    const x2 = x1 ^ (x1 << 25);
+    const x3 = x2 ^ (x2 >> 27);
+    const r = x3 * 2685821657736338717;
+    const s1 = { ...st, seed: x3 };
+    const unit = f64(u64(r) >> 11u64) / 9007199254740992.0;
+    if (n == 0) {
+        return one(s1, Num(unit));
+    }
+    const [s2, lo] = n >= 2 ? intArg(s1, args, 0, "random", line) : [s1, 1] as const;
+    const [s3, hi] = intArg(s2, args, n >= 2 ? 1 : 0, "random", line);
+    if (lo > hi) {
+        return none(argFault(s3, line, n >= 2 ? 1 : 0, "random", "interval is empty"));
+    }
+    const span = u64(hi) - u64(lo) + 1u64;
+    const pick = span == 0u64 ? u64(r) : u64(r) % span;
+    return one(s3, Int(lo + i64(pick)));
+}
+
+// ----- states --------------------------------------------------------------
+
+// the names of the functions of the library in the tables of the globals,
+// `string`, `table` and `math`, and their numbers
+const BASE_NAMES: string[] = ["print", "type", "tostring", "tonumber", "pairs", "ipairs", "next", "select", "error", "assert", "pcall", "xpcall", "rawget", "rawset", "rawequal", "rawlen", "setmetatable", "getmetatable"];
+const STRING_NAMES: string[] = ["len", "sub", "upper", "lower", "rep", "byte", "char", "format", "find", "match", "gsub", "reverse"];
+const STRING_IDS: i64[] = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31];
+const TABLE_NAMES: string[] = ["insert", "remove", "concat", "sort", "unpack", "pack"];
+const TABLE_IDS: i64[] = [33, 34, 35, 36, 18, 37];
+const MATH_NAMES: string[] = ["floor", "ceil", "abs", "max", "min", "sqrt", "fmod", "tointeger", "type", "random", "randomseed", "sin", "cos", "tan", "asin", "acos", "atan", "exp", "log", "modf", "ult"];
+const MATH_IDS: i64[] = [38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58];
+
+function setStr(st: State, t: i64, name: string, v: Value): State {
+    return hashSet(st, t, Str(name), hashString(name), v);
+}
+
+function library(st: State, names: string[n], ids: i64[n]): [State, i64] {
+    const [s1, t] = newTable(st, 0, n);
+    return [fold(iota(n), s1, (acc, i) => setStr(acc, t, names[i], Fun(-ids[i] - 1))), t] as const;
+}
+
+// a new state: its globals, the library, the prelude run
+export function newState(): State {
+    const st0 = {
+        protos: [], protoBase: [], protoChunk: [],
+        tabs: [], ntab: 0, sk: [], sv: [], stop: 0,
+        cls: [], ncl: 0, ups: [], nup: 0, cells: [], ncell: 0,
+        stack: fill(256, Nil), base: 0, top: 0, cl: -1, va: [],
+        flow: FLOW_NORMAL, ret: [], err: Nil, depth: 0,
+        globals: 0, strings: 0, stringMeta: 0, out: [], seed: 88172645463325252,
+    };
+    const [s1, g] = newTable(st0, 0, 64);
+    const s2 = fold(iota(BASE_NAMES.length), { ...s1, globals: g }, (acc, i) => setStr(acc, g, BASE_NAMES[i], Fun(-i - 1)));
+    const [s3, strs] = library(s2, STRING_NAMES, STRING_IDS);
+    const [s4, tabs] = library(s3, TABLE_NAMES, TABLE_IDS);
+    const [s5, maths] = library(s4, MATH_NAMES, MATH_IDS);
+    const s6 = setStr(setStr(setStr(setStr({ ...s5, strings: strs }, g, "string", Tab(strs)), g, "table", Tab(tabs)), g, "math", Tab(maths)), g, "_G", Tab(g));
+    const s7 = setStr(setStr(setStr(setStr(setStr(s6, maths, "pi", Num(3.141592653589793)), maths, "huge", Num(1.0 / 0.0)), maths, "maxinteger", Int(9223372036854775807)), maths, "mininteger", Int(-9223372036854775807 - 1)), g, "unpack", Fun(-18 - 1));
+    const s8 = setStr(s7, g, "_VERSION", Str("Lua 5.4"));
+    const [s8b, sm] = newTable(s8, 0, 1);
+    const [s9, f] = load({ ...setStr(s8b, sm, "__index", Tab(strs)), stringMeta: sm }, PRELUDE, "prelude");
+    const [s10, rs] = call(s9, f, [Fun(-PRIM_GMATCH_STEP - 1)]);
+    return s10;
+}
+
+// the chunk `src` named `name` read: its function, or nil and the error of
+// reading (`failed`, `errorText`)
+export function load(st: State, src: string, name: string): [State, Value] {
+    return match (parseLua(src)) {
+        ParseFault(m, line) => [{ ...st, flow: FLOW_ERROR, err: Str(`${name}:${line}: ${m}`) }, Nil] as const,
+        Program(c) => {
+            const base = st.protos.length;
+            const n = c.protos.length;
+            const s1 = { ...st, protos: concat(st.protos, c.protos), protoBase: concat(st.protoBase, fill(n, base)), protoChunk: concat(st.protoChunk, fill(n, name)) };
+            const k = s1.ncl;
+            return [{ ...s1, cls: growC(s1.cls, k + 1).with(k, { proto: base + c.main, up: s1.nup }), ncl: k + 1 }, Fun(k)] as const;
+        },
+    };
+}
+
+// the values of the call of `f` with `args` (after an error: none, the
+// error kept until `recover`)
+export function call(st: State, f: Value, args: Value[n]): [State, Value[]] {
+    return callValue(st, f, args, 0);
+}
+
+// the state holds an error
+export function failed(st: State): boolean {
+    return st.flow == FLOW_ERROR;
+}
+
+// the text of the error of the state
+export function errorText(st: State): string {
+    return match (st.err) {
+        Str(s) => s,
+        Nil => "nil",
+        other => `(error object is a ${typeName(other)} value)`,
+    };
+}
+
+// the state without its error
+export function recover(st: State): State {
+    return { ...st, flow: FLOW_NORMAL, err: Nil, depth: 0, top: 0, base: 0, cl: -1, va: [] };
+}
+
+// the lines printed since the last time, taken
+export function takeOutput(st: State): [State, string[]] {
+    const out = st.out;
+    return [{ ...st, out: [] }, out] as const;
+}
+
+export function getGlobal(st: State, name: string): Value {
+    return rawGetStr(st, st.globals, name, hashString(name));
+}
+
+export function setGlobal(st: State, name: string, v: Value): State {
+    return setStr(st, st.globals, name, v);
+}
+
+// `v.name` with the metatables (nil for a value that is no table)
+export function field(st: State, v: Value, name: string): [State, Value] {
+    return match (v) {
+        Tab(t) => indexStr(st, v, name, hashString(name), 0, ENil),
+        _ => [st, Nil] as const,
+    };
+}
+
+// `v[i]` of a table (nil for another value)
+export function item(st: State, v: Value, i: i64): [State, Value] {
+    return match (v) {
+        Tab(t) => index(st, v, Int(i), 0, ENil),
+        _ => [st, Nil] as const,
+    };
+}
+
+// the length of a table (`#`, without `__len`; 0 for another value)
+export function lengthOfTable(st: State, v: Value): i64 {
+    return match (v) {
+        Tab(t) => st.tabs[t].len,
+        _ => 0,
+    };
+}
