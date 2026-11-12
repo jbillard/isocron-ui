@@ -869,7 +869,15 @@ function leave(vm: Vm, from: i64, n: i64): Vm {
 // given the machine: given the whole machine, each call copied it in and
 // out, and the loop that made them kept moving its fields. Any other case
 // leaves the instruction to `run` (the machine as it was, at it).
-function core(vm: Vm, stop: i64): Vm {
+// the part of the machine the fast core reads and writes: a state half as
+// large as the machine, carried by its loop (the rest waits in `run`)
+type Hot = {
+    code: i64[], consts: V[], protos: ProtoCode[], regs: V[], frames: Frame[], tabs: TabInfo[], keys: V[], vals: V[],
+    strs: string[], strH: i64[], clProto: i64[], clUp: i64[], ups: i64[], cells: V[],
+    base: i64, pc: i64, cl: i64, va: i64, vaN: i64, mtop: i64, depth: i64, vaTop: i64, globals: i64, kIndex: i64,
+};
+
+function core(vm: Hot, stop: i64): Hot {
     if (vm.depth < stop) {
         return vm;
     }
@@ -1251,9 +1259,19 @@ function run(vm0: Vm, stop: i64): Vm {
     if (vm0.err || vm0.depth < stop) {
         return vm0;
     }
-    // (the frequent cases in the fast core first; the instruction it
-    // leaves, here)
-    const vm = core(vm0, stop);
+    // (the frequent cases in the fast core first, on the part of the
+    // machine it reads; the instruction it leaves, here)
+    const h = core({
+        code: vm0.code, consts: vm0.consts, protos: vm0.protos, regs: vm0.regs, frames: vm0.frames, tabs: vm0.tabs, keys: vm0.keys, vals: vm0.vals,
+        strs: vm0.strs, strH: vm0.strH, clProto: vm0.clProto, clUp: vm0.clUp, ups: vm0.ups, cells: vm0.cells,
+        base: vm0.base, pc: vm0.pc, cl: vm0.cl, va: vm0.va, vaN: vm0.vaN, mtop: vm0.mtop, depth: vm0.depth, vaTop: vm0.vaTop, globals: vm0.globals, kIndex: vm0.kIndex,
+    }, stop);
+    const vm = {
+        ...vm0,
+        code: h.code, consts: h.consts, protos: h.protos, regs: h.regs, frames: h.frames, tabs: h.tabs, keys: h.keys, vals: h.vals,
+        strs: h.strs, strH: h.strH, clProto: h.clProto, clUp: h.clUp, ups: h.ups, cells: h.cells,
+        base: h.base, pc: h.pc, cl: h.cl, va: h.va, vaN: h.vaN, mtop: h.mtop, depth: h.depth, vaTop: h.vaTop, globals: h.globals, kIndex: h.kIndex,
+    };
     if (vm.depth < stop) {
         return vm;
     }
