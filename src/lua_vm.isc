@@ -13,7 +13,7 @@ import { encode, opOf, aOf, bOf, cOf, Code, emptyCode, compileChunk,
     I_NEWTABLE, I_SELF, I_ADD, I_SUB, I_MUL, I_DIV, I_IDIV, I_MOD, I_POW, I_CONCAT, I_UNM, I_NOT, I_LEN, I_JMP, I_EQ, I_LT, I_LE,
     I_TEST, I_CALL, I_RETURN, I_FORPREP, I_FORLOOP, I_TFORCALL, I_TFORLOOP, I_SETLIST, I_CLOSURE, I_VARARG, I_NEWCELL,
     I_GETCELL, I_SETCELL, I_SEQ, I_SLT, I_SLE, I_GETFIELD, I_SETFIELD, I_ADDI,
-    T_NIL, T_FALSE, T_TRUE, T_INT, T_NUM, T_STR, T_TAB, T_FUN, T_BUILTIN, T_CELL } from "./lua_code";
+    T_NIL, T_FALSE, T_TRUE, T_INT, T_NUM, T_STR, T_TAB, T_FUN, T_BUILTIN, T_CELL, ProtoCode, UpDesc } from "./lua_code";
 import { parseLua, Program, ParseFault, hashString } from "./lua_parse";
 import { floatText, readNumber, Number, NInt, NFloat, NNone, readSpec, formatInt, formatFloat, formatString, quotedString,
     findPattern, Matched, Cap, plainPattern, isUtf8 } from "./lua_text";
@@ -38,9 +38,7 @@ type TabInfo = { arr: i64, len: i64, acap: i64, hash: i64, cap: i64, used: i64, 
 // the strings (their hashes); the closures, their upvalues and the cells;
 // the error (a value), the lines printed, the seed of `math.random`
 export type Vm = {
-    code: i64[], lines: i64[], notes: string[], kT: i64[], kI: i64[], kF: f64[],
-    pStart: i64[], pNparams: i64[], pVararg: boolean[], pNregs: i64[], pUpBase: i64[], pNups: i64[], pName: string[], pLine: i64[], pChunk: string[],
-    upLocal: boolean[], upIdx: i64[],
+    code: i64[], lines: i64[], notes: string[], consts: V[], protos: ProtoCode[], upDescs: UpDesc[],
     regs: V[],
     base: i64, pc: i64, cl: i64, va: i64, vaN: i64, mtop: i64,
     frames: Frame[], depth: i64,
@@ -124,7 +122,7 @@ function setReg(vm: Vm, r: i64, v: V): Vm {
 function rkv(vm: Vm, x: i64): V {
     if (x < 0) {
         const k = -x - 1;
-        return { t: vm.kT[k], i: vm.kI[k], f: vm.kF[k] };
+        return { t: vm.consts[k].t, i: vm.consts[k].i, f: vm.consts[k].f };
     }
     const r = vm.base + x;
     return { t: vm.regs[r].t, i: vm.regs[r].i, f: vm.regs[r].f };
@@ -140,7 +138,7 @@ function roomRegs(vm: Vm, need: i64): Vm {
 
 // the first register above the frame running
 function frameTop(vm: Vm): i64 {
-    return vm.cl >= 0 ? vm.base + vm.pNregs[vm.clProto[vm.cl]] : vm.base;
+    return vm.cl >= 0 ? vm.base + vm.protos[vm.clProto[vm.cl]].nregs : vm.base;
 }
 
 // ----- strings ---------------------------------------------------------------
@@ -471,7 +469,7 @@ function fail(vm: Vm, msg: string): Vm {
     if (vm.err) {
         return vm;
     }
-    const where = vm.cl >= 0 && vm.pc > 0 ? `${vm.pChunk[vm.clProto[vm.cl]]}:${vm.lines[vm.pc - 1]}: ` : "";
+    const where = vm.cl >= 0 && vm.pc > 0 ? `${vm.protos[vm.clProto[vm.cl]].chunk}:${vm.lines[vm.pc - 1]}: ` : "";
     const [v1, k] = newStr(vm, where + msg);
     return { ...v1, err: true, errT: T_STR, errI: k, errF: 0.0 };
 }
@@ -824,11 +822,11 @@ function enterLua(vm: Vm, k: i64, a: i64, n: i64, want: i64, pc: i64): Vm {
         return fail(vm, "stack overflow");
     }
     const p = vm.clProto[k];
-    const nparams = vm.pNparams[p];
-    const nregs = vm.pNregs[p];
+    const nparams = vm.protos[p].nparams;
+    const nregs = vm.protos[p].nregs;
     const base = a + 1;
     // (the extra arguments of a function that takes `...` kept aside)
-    const extra = vm.pVararg[p] ? max(0, n - nparams) : 0;
+    const extra = vm.protos[p].vararg ? max(0, n - nparams) : 0;
     const v0 = roomRegs(vm, base + max(n, nregs) + 2);
     const vaAt = v0.vaTop;
     const v1 = extra > 0 ? keepVarargs(v0, base + nparams, extra) : v0;
@@ -837,7 +835,7 @@ function enterLua(vm: Vm, k: i64, a: i64, n: i64, want: i64, pc: i64): Vm {
     const d = v2.depth + 1;
     const fr = { base: v2.base, pc: v2.pc, cl: v2.cl, ret: a, want: want, va: v2.va, vaN: v2.vaN };
     const v4 = { ...v2, frames: growFr(v2.frames, d + 1).with(d, fr) };
-    return { ...v4, depth: d, base: base, pc: v4.pStart[p], cl: k, va: vaAt, vaN: extra };
+    return { ...v4, depth: d, base: base, pc: v4.protos[p].start, cl: k, va: vaAt, vaN: extra };
 }
 
 function keepVarargs(vm: Vm, from: i64, n: i64): Vm {
@@ -892,7 +890,7 @@ function core(vm: Vm, stop: i64): Vm {
             const v = vm.regs[r];
             return core({ ...vm, regs: vm.regs.with(ra, v), pc: next }, stop);
         },
-        1 => core({ ...vm, regs: vm.regs.with(ra, { t: vm.kT[b], i: vm.kI[b], f: vm.kF[b] }), pc: next }, stop),
+        1 => core({ ...vm, regs: vm.regs.with(ra, { t: vm.consts[b].t, i: vm.consts[b].i, f: vm.consts[b].f }), pc: next }, stop),
         3 => core({ ...vm, regs: vm.regs.with(ra, { t: b != 0 ? T_TRUE : T_FALSE, i: 0, f: 0.0 }), pc: next }, stop),
         4 => core({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: b, f: 0.0 }), pc: next }, stop),
         5 => {
@@ -905,7 +903,7 @@ function core(vm: Vm, stop: i64): Vm {
             return core({ ...vm, cells: vm.cells.with(cell, { t: v.t, i: v.i, f: v.f }), pc: next }, stop);
         },
         7 => {
-            const at = slotK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, vm.tabs[vm.globals], { t: T_STR, i: vm.kI[b], f: 0.0 });
+            const at = slotK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, vm.tabs[vm.globals], { t: T_STR, i: vm.consts[b].i, f: 0.0 });
             if (at < 0) {
                 return core({ ...vm, regs: vm.regs.with(ra, { t: T_NIL, i: 0, f: 0.0 }), pc: next }, stop);
             }
@@ -913,7 +911,7 @@ function core(vm: Vm, stop: i64): Vm {
         },
         9 => {
             const o = vm.regs[vm.base + b];
-            const k = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const k = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             if (o.t != T_TAB || k.t == T_NUM) {
                 return vm;
             }
@@ -928,8 +926,8 @@ function core(vm: Vm, stop: i64): Vm {
             return vm;
         },
         10 => {
-            const k = b < 0 ? { t: vm.kT[-b - 1], i: vm.kI[-b - 1], f: vm.kF[-b - 1] } : vm.regs[vm.base + b];
-            const v = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const k = b < 0 ? { t: vm.consts[-b - 1].t, i: vm.consts[-b - 1].i, f: vm.consts[-b - 1].f } : vm.regs[vm.base + b];
+            const v = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             const o = vm.regs[ra];
             if (o.t != T_TAB || v.t == T_NIL || k.t == T_NUM) {
                 return vm;
@@ -948,7 +946,7 @@ function core(vm: Vm, stop: i64): Vm {
         },
         12 => {
             const o = vm.regs[vm.base + b];
-            const k = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const k = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             if (o.t != T_TAB || k.t == T_NUM) {
                 return vm;
             }
@@ -963,8 +961,8 @@ function core(vm: Vm, stop: i64): Vm {
             return core({ ...vm, regs: vm.regs.with(ra + 1, o).with(ra, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
         },
         13 => {
-            const x = b < 0 ? { t: vm.kT[-b - 1], i: vm.kI[-b - 1], f: vm.kF[-b - 1] } : vm.regs[vm.base + b];
-            const y = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const x = b < 0 ? { t: vm.consts[-b - 1].t, i: vm.consts[-b - 1].i, f: vm.consts[-b - 1].f } : vm.regs[vm.base + b];
+            const y = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             if (x.t == T_INT && y.t == T_INT) {
                 return core({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: x.i + y.i, f: 0.0 }), pc: next }, stop);
             }
@@ -974,8 +972,8 @@ function core(vm: Vm, stop: i64): Vm {
             return vm;
         },
         14 => {
-            const x = b < 0 ? { t: vm.kT[-b - 1], i: vm.kI[-b - 1], f: vm.kF[-b - 1] } : vm.regs[vm.base + b];
-            const y = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const x = b < 0 ? { t: vm.consts[-b - 1].t, i: vm.consts[-b - 1].i, f: vm.consts[-b - 1].f } : vm.regs[vm.base + b];
+            const y = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             if (x.t == T_INT && y.t == T_INT) {
                 return core({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: x.i - y.i, f: 0.0 }), pc: next }, stop);
             }
@@ -985,8 +983,8 @@ function core(vm: Vm, stop: i64): Vm {
             return vm;
         },
         15 => {
-            const x = b < 0 ? { t: vm.kT[-b - 1], i: vm.kI[-b - 1], f: vm.kF[-b - 1] } : vm.regs[vm.base + b];
-            const y = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const x = b < 0 ? { t: vm.consts[-b - 1].t, i: vm.consts[-b - 1].i, f: vm.consts[-b - 1].f } : vm.regs[vm.base + b];
+            const y = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             if (x.t == T_INT && y.t == T_INT) {
                 return core({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: x.i * y.i, f: 0.0 }), pc: next }, stop);
             }
@@ -996,8 +994,8 @@ function core(vm: Vm, stop: i64): Vm {
             return vm;
         },
         16 => {
-            const x = b < 0 ? { t: vm.kT[-b - 1], i: vm.kI[-b - 1], f: vm.kF[-b - 1] } : vm.regs[vm.base + b];
-            const y = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const x = b < 0 ? { t: vm.consts[-b - 1].t, i: vm.consts[-b - 1].i, f: vm.consts[-b - 1].f } : vm.regs[vm.base + b];
+            const y = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             if ((x.t == T_INT || x.t == T_NUM) && (y.t == T_INT || y.t == T_NUM)) {
                 const f = x.t == T_INT ? f64(x.i) : x.f;
                 const g = y.t == T_INT ? f64(y.i) : y.f;
@@ -1006,8 +1004,8 @@ function core(vm: Vm, stop: i64): Vm {
             return vm;
         },
         18 => {
-            const x = b < 0 ? { t: vm.kT[-b - 1], i: vm.kI[-b - 1], f: vm.kF[-b - 1] } : vm.regs[vm.base + b];
-            const y = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const x = b < 0 ? { t: vm.consts[-b - 1].t, i: vm.consts[-b - 1].i, f: vm.consts[-b - 1].f } : vm.regs[vm.base + b];
+            const y = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             if (x.t == T_INT && y.t == T_INT && y.i != 0) {
                 return core({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: luaMod(x.i, y.i), f: 0.0 }), pc: next }, stop);
             }
@@ -1028,8 +1026,8 @@ function core(vm: Vm, stop: i64): Vm {
         },
         24 => core({ ...vm, pc: next + b }, stop),
         25 => {
-            const x = b < 0 ? { t: vm.kT[-b - 1], i: vm.kI[-b - 1], f: vm.kF[-b - 1] } : vm.regs[vm.base + b];
-            const y = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const x = b < 0 ? { t: vm.consts[-b - 1].t, i: vm.consts[-b - 1].i, f: vm.consts[-b - 1].f } : vm.regs[vm.base + b];
+            const y = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             const want = ra - vm.base != 0;
             if (x.t == y.t && x.t <= T_TRUE) {
                 return core({ ...vm, pc: want ? next : next + 1 }, stop);
@@ -1043,8 +1041,8 @@ function core(vm: Vm, stop: i64): Vm {
             return vm;
         },
         26 => {
-            const x = b < 0 ? { t: vm.kT[-b - 1], i: vm.kI[-b - 1], f: vm.kF[-b - 1] } : vm.regs[vm.base + b];
-            const y = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const x = b < 0 ? { t: vm.consts[-b - 1].t, i: vm.consts[-b - 1].i, f: vm.consts[-b - 1].f } : vm.regs[vm.base + b];
+            const y = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             const want = ra - vm.base != 0;
             if (x.t == T_INT && y.t == T_INT) {
                 return core({ ...vm, pc: (x.i < y.i) != want ? next + 1 : next }, stop);
@@ -1055,8 +1053,8 @@ function core(vm: Vm, stop: i64): Vm {
             return vm;
         },
         27 => {
-            const x = b < 0 ? { t: vm.kT[-b - 1], i: vm.kI[-b - 1], f: vm.kF[-b - 1] } : vm.regs[vm.base + b];
-            const y = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const x = b < 0 ? { t: vm.consts[-b - 1].t, i: vm.consts[-b - 1].i, f: vm.consts[-b - 1].f } : vm.regs[vm.base + b];
+            const y = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             const want = ra - vm.base != 0;
             if (x.t == T_INT && y.t == T_INT) {
                 return core({ ...vm, pc: (x.i <= y.i) != want ? next + 1 : next }, stop);
@@ -1075,10 +1073,10 @@ function core(vm: Vm, stop: i64): Vm {
             const k = vm.regs[ra].i;
             const p = vm.clProto[k];
             const d = vm.depth + 1;
-            if (n != vm.pNparams[p] || vm.pVararg[p] || d >= vm.frames.length || ra + 1 + max(n, vm.pNregs[p]) + 2 > vm.regs.length || d >= 200000) {
+            if (n != vm.protos[p].nparams || vm.protos[p].vararg || d >= vm.frames.length || ra + 1 + max(n, vm.protos[p].nregs) + 2 > vm.regs.length || d >= 200000) {
                 return vm;
             }
-            const entry = vm.pStart[p];
+            const entry = vm.protos[p].start;
             const base = vm.base;
             const cl = vm.cl;
             const va = vm.va;
@@ -1134,8 +1132,8 @@ function core(vm: Vm, stop: i64): Vm {
             return core({ ...vm, cells: vm.cells.with(cell, { t: v.t, i: v.i, f: v.f }), pc: next }, stop);
         },
         42 => {
-            const x = b < 0 ? { t: vm.kT[-b - 1], i: vm.kI[-b - 1], f: vm.kF[-b - 1] } : vm.regs[vm.base + b];
-            const y = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const x = b < 0 ? { t: vm.consts[-b - 1].t, i: vm.consts[-b - 1].i, f: vm.consts[-b - 1].f } : vm.regs[vm.base + b];
+            const y = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             if (x.t == T_INT && y.t == T_INT) {
                 return core({ ...vm, regs: vm.regs.with(ra, { t: x.i < y.i ? T_TRUE : T_FALSE, i: 0, f: 0.0 }), pc: next }, stop);
             }
@@ -1145,8 +1143,8 @@ function core(vm: Vm, stop: i64): Vm {
             return vm;
         },
         43 => {
-            const x = b < 0 ? { t: vm.kT[-b - 1], i: vm.kI[-b - 1], f: vm.kF[-b - 1] } : vm.regs[vm.base + b];
-            const y = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const x = b < 0 ? { t: vm.consts[-b - 1].t, i: vm.consts[-b - 1].i, f: vm.consts[-b - 1].f } : vm.regs[vm.base + b];
+            const y = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             if (x.t == T_INT && y.t == T_INT) {
                 return core({ ...vm, regs: vm.regs.with(ra, { t: x.i <= y.i ? T_TRUE : T_FALSE, i: 0, f: 0.0 }), pc: next }, stop);
             }
@@ -1161,7 +1159,7 @@ function core(vm: Vm, stop: i64): Vm {
                 return vm;
             }
             const info = vm.tabs[o.i];
-            const at = slotK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, info, { t: T_STR, i: vm.kI[c], f: 0.0 });
+            const at = slotK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, info, { t: T_STR, i: vm.consts[c].i, f: 0.0 });
             if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
                 return core({ ...vm, regs: vm.regs.with(ra, { t: vm.svT[at], i: vm.svI[at], f: vm.svF[at] }), pc: next }, stop);
             }
@@ -1171,14 +1169,14 @@ function core(vm: Vm, stop: i64): Vm {
             return vm;
         },
         45 => {
-            const v = c < 0 ? { t: vm.kT[-c - 1], i: vm.kI[-c - 1], f: vm.kF[-c - 1] } : vm.regs[vm.base + c];
+            const v = c < 0 ? { t: vm.consts[-c - 1].t, i: vm.consts[-c - 1].i, f: vm.consts[-c - 1].f } : vm.regs[vm.base + c];
             const o = vm.regs[ra];
             if (o.t != T_TAB || v.t == T_NIL) {
                 return vm;
             }
             const t = o.i;
             const info = vm.tabs[t];
-            const key = { t: T_STR, i: vm.kI[b], f: 0.0 };
+            const key = { t: T_STR, i: vm.consts[b].i, f: 0.0 };
             const at = slotK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, info, key);
             if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
                 return core({ ...vm, svT: vm.svT.with(at, v.t), svI: vm.svI.with(at, v.i), svF: vm.svF.with(at, v.f), pc: next }, stop);
@@ -1275,7 +1273,7 @@ function run(vm0: Vm, stop: i64): Vm {
             const r = vm.base + b;
             return run({ ...vm, regs: vm.regs.with(ra, { t: vm.regs[r].t, i: vm.regs[r].i, f: vm.regs[r].f }), pc: next }, stop);
         },
-        1 => run({ ...vm, regs: vm.regs.with(ra, { t: vm.kT[b], i: vm.kI[b], f: vm.kF[b] }), pc: next }, stop),
+        1 => run({ ...vm, regs: vm.regs.with(ra, { t: vm.consts[b].t, i: vm.consts[b].i, f: vm.consts[b].f }), pc: next }, stop),
         2 => run({ ...fold(iota(b + 1), vm, (acc, i) => ({ ...acc, regs: acc.regs.with(ra + i, { t: T_NIL, i: 0, f: 0.0 }) })), pc: next }, stop),
         3 => run({ ...vm, regs: vm.regs.with(ra, { t: b != 0 ? T_TRUE : T_FALSE, i: 0, f: 0.0 }), pc: next }, stop),
         4 => run({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: b, f: 0.0 }), pc: next }, stop),
@@ -1288,7 +1286,7 @@ function run(vm0: Vm, stop: i64): Vm {
             return run({ ...vm, cells: vm.cells.with(cell, { t: vm.regs[ra].t, i: vm.regs[ra].i, f: vm.regs[ra].f }), pc: next }, stop);
         },
         7 => {
-            const at = slotIn(vm, vm.tabs[vm.globals], { t: T_STR, i: vm.kI[b], f: 0.0 });
+            const at = slotIn(vm, vm.tabs[vm.globals], { t: T_STR, i: vm.consts[b].i, f: 0.0 });
             if (at < 0) {
                 return run({ ...vm, regs: vm.regs.with(ra, { t: T_NIL, i: 0, f: 0.0 }), pc: next }, stop);
             }
@@ -1296,7 +1294,7 @@ function run(vm0: Vm, stop: i64): Vm {
         },
         8 => {
             const g = vm.globals;
-            const key = { t: T_STR, i: vm.kI[b], f: 0.0 };
+            const key = { t: T_STR, i: vm.consts[b].i, f: 0.0 };
             const at = slotIn(vm, vm.tabs[g], key);
             // (a global that has a value: written in place)
             if (at >= 0 && vm.svT[at] != T_NIL && vm.regs[ra].t != T_NIL) {
@@ -1521,8 +1519,8 @@ function run(vm0: Vm, stop: i64): Vm {
                 const k = vm.regs[ra].i;
                 const p = vm.clProto[k];
                 const d = vm.depth + 1;
-                if (n == vm.pNparams[p] && !vm.pVararg[p] && d < vm.frames.length && ra + 1 + max(n, vm.pNregs[p]) + 2 <= vm.regs.length && d < 200000) {
-                    const entry = vm.pStart[p];
+                if (n == vm.protos[p].nparams && !vm.protos[p].vararg && d < vm.frames.length && ra + 1 + max(n, vm.protos[p].nregs) + 2 <= vm.regs.length && d < 200000) {
+                    const entry = vm.protos[p].start;
                     const base = vm.base;
                     const cl = vm.cl;
                     const va = vm.va;
@@ -1670,7 +1668,7 @@ function run(vm0: Vm, stop: i64): Vm {
         },
         44 => {
             const r = vm.base + b;
-            const key = { t: T_STR, i: vm.kI[c], f: 0.0 };
+            const key = { t: T_STR, i: vm.consts[c].i, f: 0.0 };
             if (vm.regs[r].t == T_TAB) {
                 const info = vm.tabs[vm.regs[r].i];
                 const at = slotIn(vm, info, key);
@@ -1685,7 +1683,7 @@ function run(vm0: Vm, stop: i64): Vm {
             return run(index({ ...vm, pc: next }, o, key, ra, 0), stop);
         },
         45 => {
-            const key = { t: T_STR, i: vm.kI[b], f: 0.0 };
+            const key = { t: T_STR, i: vm.consts[b].i, f: 0.0 };
             const v = rkv(vm, c);
             if (vm.regs[ra].t == T_TAB && v.t != T_NIL) {
                 const t = vm.regs[ra].i;
@@ -1882,13 +1880,13 @@ function tforCall(vm: Vm, a: i64, nvars: i64): Vm {
 // CLOSURE: the closure of the function `p` into `a`, its upvalues the cells
 // of the frame or of the closure running
 function closure(vm: Vm, a: i64, p: i64): Vm {
-    const nu = vm.pNups[p];
-    const ub = vm.pUpBase[p];
+    const nu = vm.protos[p].nups;
+    const ub = vm.protos[p].upBase;
     const myUp = vm.cl >= 0 ? vm.clUp[vm.cl] : 0;
     const at = vm.nup;
     // (the cells read first: a fold that read `vm.ups` while it writes it
     // would copy it at each closure made)
-    const cells = map(iota(nu), (i) => vm.upLocal[ub + i] ? vm.regs[vm.base + vm.upIdx[ub + i]].i : vm.ups[myUp + vm.upIdx[ub + i]]);
+    const cells = map(iota(nu), (i) => vm.upDescs[ub + i].fromLocal ? vm.regs[vm.base + vm.upDescs[ub + i].idx].i : vm.ups[myUp + vm.upDescs[ub + i].idx]);
     const ups = fold(iota(nu), growI(vm.ups, at + nu), (acc, i) => acc.with(at + i, cells[i]));
     const k = vm.ncl;
     const v1 = { ...vm, ups: ups, nup: at + nu, clProto: growI(vm.clProto, k + 1).with(k, p), clUp: growI(vm.clUp, k + 1).with(k, at), ncl: k + 1 };
@@ -2237,7 +2235,7 @@ function libCall(vm: Vm, id: i64, a: i64, n: i64, line: i64): [Vm, i64] {
 
 // the name of the chunk running
 function chunkOf(vm: Vm): string {
-    return vm.cl >= 0 ? vm.pChunk[vm.clProto[vm.cl]] : "?";
+    return vm.cl >= 0 ? vm.protos[vm.clProto[vm.cl]].chunk : "?";
 }
 
 // the error `msg` (at `line` of the chunk running; below 0: no place)
@@ -3434,9 +3432,7 @@ function library(vm: Vm, names: string[n], ids: i64[n]): [Vm, i64] {
 export function newVm(): Vm {
     const k = emptyCode();
     const vm0 = {
-        code: k.code, lines: k.lines, notes: k.notes, kT: k.kT, kI: k.kI, kF: k.kF,
-        pStart: k.pStart, pNparams: k.pNparams, pVararg: k.pVararg, pNregs: k.pNregs, pUpBase: k.pUpBase, pNups: k.pNups, pName: k.pName, pLine: k.pLine, pChunk: k.pChunk,
-        upLocal: k.upLocal, upIdx: k.upIdx,
+        code: k.code, lines: k.lines, notes: k.notes, consts: k.consts, protos: k.protos, upDescs: k.upDescs,
         regs: fill(256, { t: T_NIL, i: 0, f: 0.0 }),
         base: 0, pc: 0, cl: -1, va: 0, vaN: 0, mtop: 0,
         frames: fill(16, { base: 0, pc: 0, cl: 0, ret: 0, want: 0, va: 0, vaN: 0 }), depth: 0,
@@ -3467,7 +3463,7 @@ export function newVm(): Vm {
     // (the function made by `string.gmatch`: the closure its code makes)
     const gm = rawGetStr(v14, strs, "gmatch");
     const gp = gm.t == T_FUN ? v14.clProto[gm.i] : -1;
-    const start = gp >= 0 ? v14.pStart[gp] : 0;
+    const start = gp >= 0 ? v14.protos[gp].start : 0;
     const at = gp >= 0 ? findIndex(v14.code.slice(start, v14.code.length), (w) => opOf(w) == I_CLOSURE) : -1;
     return { ...v14, gmProto: at >= 0 ? bOf(v14.code[start + at]) : -1 };
 }
@@ -3481,13 +3477,13 @@ export function load(vm: Vm, src: string, name: string): [Vm, V] {
             return [{ ...v1, err: true, errT: T_STR, errI: k, errF: 0.0 }, nilV()] as const;
         },
         Program(c) => {
-            const code0 = { code: vm.code, lines: vm.lines, notes: vm.notes, kT: vm.kT, kI: vm.kI, kF: vm.kF, kS: [], pStart: vm.pStart, pNparams: vm.pNparams, pVararg: vm.pVararg, pNregs: vm.pNregs, pUpBase: vm.pUpBase, pNups: vm.pNups, pName: vm.pName, pLine: vm.pLine, pChunk: vm.pChunk, upLocal: vm.upLocal, upIdx: vm.upIdx };
-            const kFirst = code0.kT.length;
+            const code0 = { code: vm.code, lines: vm.lines, notes: vm.notes, consts: vm.consts, kS: [], protos: vm.protos, upDescs: vm.upDescs };
+            const kFirst = code0.consts.length;
             const [k1, main] = compileChunk(code0, c, name);
             // (the strings of the new constants made strings of the machine)
-            const v0 = { ...vm, code: k1.code, lines: k1.lines, notes: k1.notes, kT: k1.kT, kF: k1.kF, pStart: k1.pStart, pNparams: k1.pNparams, pVararg: k1.pVararg, pNregs: k1.pNregs, pUpBase: k1.pUpBase, pNups: k1.pNups, pName: k1.pName, pLine: k1.pLine, pChunk: k1.pChunk, upLocal: k1.upLocal, upIdx: k1.upIdx };
-            const [v1, kI] = internConsts(v0, k1.kT, k1.kI, k1.kS, kFirst, k1.kI);
-            const v2 = { ...v1, kI: kI };
+            const v0 = { ...vm, code: k1.code, lines: k1.lines, notes: k1.notes, protos: k1.protos, upDescs: k1.upDescs };
+            const [v1, ks] = internConsts(v0, k1.kS, kFirst, k1.consts);
+            const v2 = { ...v1, consts: ks };
             const cl = v2.ncl;
             const v3 = { ...v2, clProto: growI(v2.clProto, cl + 1).with(cl, main), clUp: growI(v2.clUp, cl + 1).with(cl, v2.nup), ncl: cl + 1 };
             return [v3, { t: T_FUN, i: cl, f: 0.0 }] as const;
@@ -3495,19 +3491,17 @@ export function load(vm: Vm, src: string, name: string): [Vm, V] {
     };
 }
 
-function internConsts(vm: Vm, kT: i64[n], kI0: i64[n], kS: string[m], from: i64, acc: i64[n]): [Vm, i64[]] {
-    return internFrom(vm, kT, kS, from, acc);
-}
-
-function internFrom(vm: Vm, kT: i64[n], kS: string[m], i: i64, acc: i64[n]): [Vm, i64[]] {
-    if (i >= n) {
-        return [vm, acc] as const;
+// the constants from `from` that are strings made strings of the machine
+// (their indices among the strings of the chunk become theirs)
+function internConsts(vm: Vm, kS: string[m], from: i64, ks: V[n]): [Vm, V[]] {
+    if (from >= n) {
+        return [vm, ks] as const;
     }
-    if (kT[i] != T_STR) {
-        return internFrom(vm, kT, kS, i + 1, acc);
+    if (ks[from].t != T_STR) {
+        return internConsts(vm, kS, from + 1, ks);
     }
-    const [v1, s] = newStr(vm, kS[acc[i]]);
-    return internFrom(v1, kT, kS, i + 1, acc.with(i, s));
+    const [v1, s] = newStr(vm, kS[ks[from].i]);
+    return internConsts(v1, kS, from + 1, ks.with(from, { t: T_STR, i: s, f: 0.0 }));
 }
 
 // the call of `f` with `args` from outside the machine: its results
@@ -3677,7 +3671,7 @@ function gcEmpty(g: Gc, base: i64, mask: i64, i: i64): i64 {
 // the old closure `c` into the new one `k`: its upvalues' cells
 function copyClosure(vm: Vm, g: Gc, c: i64, k: i64): Gc {
     const p = vm.clProto[c];
-    const nu = vm.pNups[p];
+    const nu = vm.protos[p].nups;
     const at = g.nup;
     const g1 = { ...g, ups: growI(g.ups, at + nu), nup: at + nu, clUp: g.clUp.with(k, at) };
     return copyUps(vm, g1, vm.clUp[c], at, nu, 0);
@@ -3692,15 +3686,15 @@ function copyUps(vm: Vm, g: Gc, from: i64, to: i64, n: i64, i: i64): Gc {
 }
 
 // the constants that are strings moved (their places among the new strings)
-function moveConsts(vm: Vm, g: Gc, i: i64, kI: i64[n]): [Gc, i64[]] {
+function moveConsts(vm: Vm, g: Gc, i: i64, ks: V[n]): [Gc, V[]] {
     if (i >= n) {
-        return [g, kI] as const;
+        return [g, ks] as const;
     }
-    if (vm.kT[i] != T_STR) {
-        return moveConsts(vm, g, i + 1, kI);
+    if (ks[i].t != T_STR) {
+        return moveConsts(vm, g, i + 1, ks);
     }
-    const [g1, v] = moved(vm, g, { t: T_STR, i: kI[i], f: 0.0 });
-    return moveConsts(vm, g1, i + 1, kI.with(i, v.i));
+    const [g1, v] = moved(vm, g, ks[i]);
+    return moveConsts(vm, g1, i + 1, ks.with(i, v));
 }
 
 function moveRoots(vm: Vm, g: Gc, roots: V[n], i: i64, acc: V[]): [Gc, V[]] {
@@ -3766,12 +3760,12 @@ function collectCore(vm: Vm, roots: V[n]): [Vm, V[]] {
     const [g2, st] = moved(vm, g1, { t: T_TAB, i: vm.strings, f: 0.0 });
     const [g3a, sm] = moved(vm, g2, { t: T_TAB, i: vm.stringMeta, f: 0.0 });
     const [g3, ki] = moved(vm, g3a, { t: T_STR, i: vm.kIndex, f: 0.0 });
-    const [g4, kI] = moveConsts(vm, g3, 0, vm.kI);
+    const [g4, ks] = moveConsts(vm, g3, 0, vm.consts);
     const [g5, rs] = moveRoots(vm, g4, roots, 0, []);
     const g = drain(vm, g5, 0, 0, 0);
     const out = {
         ...vm,
-        kI: kI, tabs: g.tabs, ntab: g.ntab, skT: g.skT, skI: g.skI, skF: g.skF, svT: g.svT, svI: g.svI, svF: g.svF, stop: g.stop,
+        consts: ks, tabs: g.tabs, ntab: g.ntab, skT: g.skT, skI: g.skI, skF: g.skF, svT: g.svT, svI: g.svI, svF: g.svF, stop: g.stop,
         strs: g.strs, strH: g.strH, nstr: g.nstr, clProto: g.clProto, clUp: g.clUp, ncl: g.ncl, ups: g.ups, nup: g.nup,
         cells: g.cells, ncell: g.ncell, globals: gl.i, strings: st.i, stringMeta: sm.i, kIndex: ki.i,
     };

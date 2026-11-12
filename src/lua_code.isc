@@ -120,17 +120,28 @@ export const T_CELL: i64 = 9;
 // and chunk
 // (`notes`: what an instruction that indexes or calls reads, named in its
 // errors as Lua names it: `local 't'`, `global 'f'`, `field 'a'`, ...)
+// a value of the machine (its kind, its integer or the index of what it
+// names, its float): the constants of the code too
+export type KV = { t: i64, i: i64, f: f64 };
+
+// a function compiled: its first instruction, its parameters, whether it
+// takes `...`, its registers, its first upvalue and their number, its name,
+// line and chunk
+export type ProtoCode = { start: i64, nparams: i64, vararg: boolean, nregs: i64, upBase: i64, nups: i64, name: string, line: i64, chunk: string };
+
+// an upvalue of a closure made: a register of the frame that makes it, or
+// an upvalue of the closure running
+export type UpDesc = { fromLocal: boolean, idx: i64 };
+
 export type Code = {
-    code: i64[], lines: i64[], notes: string[], kT: i64[], kI: i64[], kF: f64[], kS: string[],
-    pStart: i64[], pNparams: i64[], pVararg: boolean[], pNregs: i64[], pUpBase: i64[], pNups: i64[], pName: string[], pLine: i64[], pChunk: string[],
-    upLocal: boolean[], upIdx: i64[],
+    code: i64[], lines: i64[], notes: string[], consts: KV[], kS: string[],
+    protos: ProtoCode[], upDescs: UpDesc[],
 };
 
 export function emptyCode(): Code {
     return {
-        code: [], lines: [], notes: [], kT: [], kI: [], kF: [], kS: [],
-        pStart: [], pNparams: [], pVararg: [], pNregs: [], pUpBase: [], pNups: [], pName: [], pLine: [], pChunk: [],
-        upLocal: [], upIdx: [],
+        code: [], lines: [], notes: [], consts: [], kS: [],
+        protos: [], upDescs: [],
     };
 }
 
@@ -207,8 +218,8 @@ function freeTo(cg: Cg, mark: i64): Cg {
 
 // a constant (its index)
 function constant(cg: Cg, t: i64, i: i64, f: f64): [Cg, i64] {
-    const at = cg.k.kT.length;
-    return [{ ...cg, k: { ...cg.k, kT: concat(cg.k.kT, [t]), kI: concat(cg.k.kI, [i]), kF: concat(cg.k.kF, [f]) } }, at] as const;
+    const at = cg.k.consts.length;
+    return [{ ...cg, k: { ...cg.k, consts: concat(cg.k.consts, [{ t: t, i: i, f: f }]) } }, at] as const;
 }
 
 function strConst(cg: Cg, s: string): [Cg, i64] {
@@ -843,7 +854,7 @@ function genFor(cg: Cg, places: Place[n], es: Expr[m], body: Stat[k], line: i64)
 // the functions of a chunk (`c`) compiled, named `chunk`: the code with
 // them, and the global number of the chunk's own function
 export function compileChunk(k0: Code, c: Chunk, chunk: string): [Code, i64] {
-    const pbase = k0.pStart.length;
+    const pbase = k0.protos.length;
     const k1 = fold(iota(c.protos.length), k0, (acc, j) => compileProto(acc, c.protos[j], pbase, chunk));
     return [k1, pbase + c.main] as const;
 }
@@ -854,7 +865,7 @@ function startCg(k: Code, pbase: i64, slots: i64, line: i64, names: string[], up
 
 function compileProto(k: Code, p: Proto, pbase: i64, chunk: string): Code {
     const start = k.code.length;
-    const upBase = k.upLocal.length;
+    const upBase = k.upDescs.length;
     const cg0 = startCg(k, pbase, p.slots, p.line, p.slotNames, p.upNames);
     // (the parameters captured in cells first)
     const cg1 = fold(iota(p.nparams), cg0, (acc, i) => p.paramCell[i] ? emit0(acc, I_NEWCELL, i, i, 0) : acc);
@@ -862,26 +873,15 @@ function compileProto(k: Code, p: Proto, pbase: i64, chunk: string): Code {
     // (a function that ends without `return` returns nothing)
     const cg3 = emit0(cg2, I_RETURN, 0, 1, 0);
     const k3 = cg3.k;
-    return {
-        ...k3,
-        pStart: concat(k3.pStart, [start]),
-        pNparams: concat(k3.pNparams, [p.nparams]),
-        pVararg: concat(k3.pVararg, [p.vararg]),
-        pNregs: concat(k3.pNregs, [cg3.maxreg + 1]),
-        pUpBase: concat(k3.pUpBase, [upBase]),
-        pNups: concat(k3.pNups, [p.upIndex.length]),
-        pName: concat(k3.pName, [p.name]),
-        pLine: concat(k3.pLine, [p.line]),
-        pChunk: concat(k3.pChunk, [chunk]),
-        upLocal: concat(k3.upLocal, p.upFromLocal),
-        upIdx: concat(k3.upIdx, p.upIndex),
-    };
+    const pc = { start: start, nparams: p.nparams, vararg: p.vararg, nregs: cg3.maxreg + 1, upBase: upBase, nups: p.upIndex.length, name: p.name, line: p.line, chunk: chunk };
+    const ud = map(iota(p.upIndex.length), (i) => ({ fromLocal: p.upFromLocal[i], idx: p.upIndex[i] }));
+    return { ...k3, protos: concat(k3.protos, [pc]), upDescs: concat(k3.upDescs, ud) };
 }
 
 // a listing of the code of the function `f` (for the tests)
 export function listing(k: Code, f: i64): string[] {
-    const start = k.pStart[f];
-    const end = f + 1 < k.pStart.length ? k.pStart[f + 1] : k.code.length;
+    const start = k.protos[f].start;
+    const end = f + 1 < k.protos.length ? k.protos[f + 1].start : k.code.length;
     return map(iota(end - start), (i) => {
         const ins = k.code[start + i];
         return `${start + i} ${I_NAMES[opOf(ins)]} ${aOf(ins)} ${bOf(ins)} ${cOf(ins)}`;
