@@ -21,6 +21,10 @@ import { floatText, readNumber, Number, NInt, NFloat, NNone, readSpec, formatInt
 // a value read: its tag, its integer, its float
 export type V = { t: i64, i: i64, f: f64 };
 
+// a frame of a call: the registers, the place and the closure of the caller
+// to come back to, where the results go and how many, its `...`
+type Frame = { base: i64, pc: i64, cl: i64, ret: i64, want: i64, va: i64, vaN: i64 };
+
 // a table: its array part (first slot, length, room), its part of hashes
 // (first slot, room: a power of two, slots taken), its metatable (-1: none)
 type TabInfo = { arr: i64, len: i64, acap: i64, hash: i64, cap: i64, used: i64, meta: i64 };
@@ -39,12 +43,12 @@ export type Vm = {
     upLocal: boolean[], upIdx: i64[],
     regs: V[],
     base: i64, pc: i64, cl: i64, va: i64, vaN: i64, mtop: i64,
-    fBase: i64[], fPc: i64[], fCl: i64[], fRet: i64[], fWant: i64[], fVa: i64[], fVaN: i64[], depth: i64,
-    vaT: i64[], vaI: i64[], vaF: f64[], vaTop: i64,
+    frames: Frame[], depth: i64,
+    vas: V[], vaTop: i64,
     tabs: TabInfo[], ntab: i64, skT: i64[], skI: i64[], skF: f64[], svT: i64[], svI: i64[], svF: f64[], stop: i64,
     strs: string[], strH: i64[], nstr: i64,
     clProto: i64[], clUp: i64[], ncl: i64, ups: i64[], nup: i64,
-    cT: i64[], cI: i64[], cF: f64[], ncell: i64,
+    cells: V[], ncell: i64,
     globals: i64, strings: i64, stringMeta: i64,
     err: boolean, errT: i64, errI: i64, errF: f64,
     out: string[], seed: i64, ltop: i64,
@@ -95,6 +99,10 @@ function growS(xs: string[n], need: i64): string[] {
 
 function growV(xs: V[n], need: i64): V[] {
     return need <= n ? xs : concat(xs, fill(max(max(n, need - n), 16), { t: T_NIL, i: 0, f: 0.0 }));
+}
+
+function growFr(xs: Frame[n], need: i64): Frame[] {
+    return need <= n ? xs : concat(xs, fill(max(max(n, need - n), 16), { base: 0, pc: 0, cl: 0, ret: 0, want: 0, va: 0, vaN: 0 }));
 }
 
 function growT(xs: TabInfo[n], need: i64): TabInfo[] {
@@ -827,26 +835,15 @@ function enterLua(vm: Vm, k: i64, a: i64, n: i64, want: i64, pc: i64): Vm {
     // (the parameters not given nil)
     const v2 = n < nparams ? fold(iota(nparams - n), v1, (acc, i) => ({ ...acc, regs: acc.regs.with(base + n + i, { t: T_NIL, i: 0, f: 0.0 }) })) : v1;
     const d = v2.depth + 1;
-    const v3 = {
-        ...v2,
-        fBase: growI(v2.fBase, d + 1).with(d, v2.base),
-        fPc: growI(v2.fPc, d + 1).with(d, v2.pc),
-        fCl: growI(v2.fCl, d + 1).with(d, v2.cl),
-        fRet: growI(v2.fRet, d + 1).with(d, a),
-    };
-    const v4 = {
-        ...v3,
-        fWant: growI(v3.fWant, d + 1).with(d, want),
-        fVa: growI(v3.fVa, d + 1).with(d, v3.va),
-        fVaN: growI(v3.fVaN, d + 1).with(d, v3.vaN),
-    };
+    const fr = { base: v2.base, pc: v2.pc, cl: v2.cl, ret: a, want: want, va: v2.va, vaN: v2.vaN };
+    const v4 = { ...v2, frames: growFr(v2.frames, d + 1).with(d, fr) };
     return { ...v4, depth: d, base: base, pc: v4.pStart[p], cl: k, va: vaAt, vaN: extra };
 }
 
 function keepVarargs(vm: Vm, from: i64, n: i64): Vm {
     const at = vm.vaTop;
-    const v1 = { ...vm, vaT: growI(vm.vaT, at + n), vaI: growI(vm.vaI, at + n), vaF: growF(vm.vaF, at + n) };
-    const v2 = fold(iota(n), v1, (acc, i) => ({ ...acc, vaT: acc.vaT.with(at + i, acc.regs[from + i].t), vaI: acc.vaI.with(at + i, acc.regs[from + i].i), vaF: acc.vaF.with(at + i, acc.regs[from + i].f) }));
+    const v1 = { ...vm, vas: growV(vm.vas, at + n) };
+    const v2 = fold(iota(n), v1, (acc, i) => ({ ...acc, vas: acc.vas.with(at + i, { t: acc.regs[from + i].t, i: acc.regs[from + i].i, f: acc.regs[from + i].f }) }));
     return { ...v2, vaTop: at + n };
 }
 
@@ -863,10 +860,10 @@ function results(vm: Vm, from: i64, to: i64, nres: i64, want: i64): Vm {
 // the frame running returns the `n` values from `from`
 function leave(vm: Vm, from: i64, n: i64): Vm {
     const d = vm.depth;
-    const to = vm.fRet[d];
-    const want = vm.fWant[d];
+    const to = vm.frames[d].ret;
+    const want = vm.frames[d].want;
     const v1 = results(vm, from, to, n, want);
-    return { ...v1, depth: d - 1, base: v1.fBase[d], pc: v1.fPc[d], cl: v1.fCl[d], va: v1.fVa[d], vaN: v1.fVaN[d], vaTop: v1.va };
+    return { ...v1, depth: d - 1, base: v1.frames[d].base, pc: v1.frames[d].pc, cl: v1.frames[d].cl, va: v1.frames[d].va, vaN: v1.frames[d].vaN, vaTop: v1.va };
 }
 
 // ----- the fast core --------------------------------------------------------------
@@ -900,12 +897,12 @@ function core(vm: Vm, stop: i64): Vm {
         4 => core({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: b, f: 0.0 }), pc: next }, stop),
         5 => {
             const cell = vm.ups[vm.clUp[vm.cl] + b];
-            return core({ ...vm, regs: vm.regs.with(ra, { t: vm.cT[cell], i: vm.cI[cell], f: vm.cF[cell] }), pc: next }, stop);
+            return core({ ...vm, regs: vm.regs.with(ra, { t: vm.cells[cell].t, i: vm.cells[cell].i, f: vm.cells[cell].f }), pc: next }, stop);
         },
         6 => {
             const cell = vm.ups[vm.clUp[vm.cl] + b];
             const v = vm.regs[ra];
-            return core({ ...vm, cT: vm.cT.with(cell, v.t), cI: vm.cI.with(cell, v.i), cF: vm.cF.with(cell, v.f), pc: next }, stop);
+            return core({ ...vm, cells: vm.cells.with(cell, { t: v.t, i: v.i, f: v.f }), pc: next }, stop);
         },
         7 => {
             const at = slotK(vm.skT, vm.skI, vm.skF, vm.strH, vm.strs, vm.tabs[vm.globals], { t: T_STR, i: vm.kI[b], f: 0.0 });
@@ -1078,7 +1075,7 @@ function core(vm: Vm, stop: i64): Vm {
             const k = vm.regs[ra].i;
             const p = vm.clProto[k];
             const d = vm.depth + 1;
-            if (n != vm.pNparams[p] || vm.pVararg[p] || d >= vm.fBase.length || ra + 1 + max(n, vm.pNregs[p]) + 2 > vm.regs.length || d >= 200000) {
+            if (n != vm.pNparams[p] || vm.pVararg[p] || d >= vm.frames.length || ra + 1 + max(n, vm.pNregs[p]) + 2 > vm.regs.length || d >= 200000) {
                 return vm;
             }
             const entry = vm.pStart[p];
@@ -1089,24 +1086,23 @@ function core(vm: Vm, stop: i64): Vm {
             const vaTop = vm.vaTop;
             return core({
                 ...vm,
-                fBase: vm.fBase.with(d, base), fPc: vm.fPc.with(d, next), fCl: vm.fCl.with(d, cl), fRet: vm.fRet.with(d, ra),
-                fWant: vm.fWant.with(d, c - 1), fVa: vm.fVa.with(d, va), fVaN: vm.fVaN.with(d, vaN),
+                frames: vm.frames.with(d, { base: base, pc: next, cl: cl, ret: ra, want: c - 1, va: va, vaN: vaN }),
                 depth: d, base: ra + 1, pc: entry, cl: k, va: vaTop, vaN: 0,
             }, stop);
         },
         30 => {
             const n = b == 0 ? vm.mtop - ra : b - 1;
             const d = vm.depth;
-            if (n != 1 || d <= 0 || vm.fWant[d] != 1) {
+            if (n != 1 || d <= 0 || vm.frames[d].want != 1) {
                 return vm;
             }
-            const to = vm.fRet[d];
+            const to = vm.frames[d].ret;
             const v = vm.regs[ra];
-            const base = vm.fBase[d];
-            const back = vm.fPc[d];
-            const cl = vm.fCl[d];
-            const va = vm.fVa[d];
-            const vaN = vm.fVaN[d];
+            const base = vm.frames[d].base;
+            const back = vm.frames[d].pc;
+            const cl = vm.frames[d].cl;
+            const va = vm.frames[d].va;
+            const vaN = vm.frames[d].vaN;
             const top = vm.va;
             return core({ ...vm, regs: vm.regs.with(to, v), depth: d - 1, base: base, pc: back, cl: cl, va: va, vaN: vaN, vaTop: top }, stop);
         },
@@ -1130,12 +1126,12 @@ function core(vm: Vm, stop: i64): Vm {
         },
         39 => {
             const cell = vm.regs[vm.base + b].i;
-            return core({ ...vm, regs: vm.regs.with(ra, { t: vm.cT[cell], i: vm.cI[cell], f: vm.cF[cell] }), pc: next }, stop);
+            return core({ ...vm, regs: vm.regs.with(ra, { t: vm.cells[cell].t, i: vm.cells[cell].i, f: vm.cells[cell].f }), pc: next }, stop);
         },
         40 => {
             const cell = vm.regs[ra].i;
             const v = vm.regs[vm.base + b];
-            return core({ ...vm, cT: vm.cT.with(cell, v.t), cI: vm.cI.with(cell, v.i), cF: vm.cF.with(cell, v.f), pc: next }, stop);
+            return core({ ...vm, cells: vm.cells.with(cell, { t: v.t, i: v.i, f: v.f }), pc: next }, stop);
         },
         42 => {
             const x = b < 0 ? { t: vm.kT[-b - 1], i: vm.kI[-b - 1], f: vm.kF[-b - 1] } : vm.regs[vm.base + b];
@@ -1285,11 +1281,11 @@ function run(vm0: Vm, stop: i64): Vm {
         4 => run({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: b, f: 0.0 }), pc: next }, stop),
         5 => {
             const cell = vm.ups[vm.clUp[vm.cl] + b];
-            return run({ ...vm, regs: vm.regs.with(ra, { t: vm.cT[cell], i: vm.cI[cell], f: vm.cF[cell] }), pc: next }, stop);
+            return run({ ...vm, regs: vm.regs.with(ra, { t: vm.cells[cell].t, i: vm.cells[cell].i, f: vm.cells[cell].f }), pc: next }, stop);
         },
         6 => {
             const cell = vm.ups[vm.clUp[vm.cl] + b];
-            return run({ ...vm, cT: vm.cT.with(cell, vm.regs[ra].t), cI: vm.cI.with(cell, vm.regs[ra].i), cF: vm.cF.with(cell, vm.regs[ra].f), pc: next }, stop);
+            return run({ ...vm, cells: vm.cells.with(cell, { t: vm.regs[ra].t, i: vm.regs[ra].i, f: vm.regs[ra].f }), pc: next }, stop);
         },
         7 => {
             const at = slotIn(vm, vm.tabs[vm.globals], { t: T_STR, i: vm.kI[b], f: 0.0 });
@@ -1525,7 +1521,7 @@ function run(vm0: Vm, stop: i64): Vm {
                 const k = vm.regs[ra].i;
                 const p = vm.clProto[k];
                 const d = vm.depth + 1;
-                if (n == vm.pNparams[p] && !vm.pVararg[p] && d < vm.fBase.length && ra + 1 + max(n, vm.pNregs[p]) + 2 <= vm.regs.length && d < 200000) {
+                if (n == vm.pNparams[p] && !vm.pVararg[p] && d < vm.frames.length && ra + 1 + max(n, vm.pNregs[p]) + 2 <= vm.regs.length && d < 200000) {
                     const entry = vm.pStart[p];
                     const base = vm.base;
                     const cl = vm.cl;
@@ -1534,8 +1530,7 @@ function run(vm0: Vm, stop: i64): Vm {
                     const vaTop = vm.vaTop;
                     return run({
                         ...vm,
-                        fBase: vm.fBase.with(d, base), fPc: vm.fPc.with(d, next), fCl: vm.fCl.with(d, cl), fRet: vm.fRet.with(d, ra),
-                        fWant: vm.fWant.with(d, c - 1), fVa: vm.fVa.with(d, va), fVaN: vm.fVaN.with(d, vaN),
+                        frames: vm.frames.with(d, { base: base, pc: next, cl: cl, ret: ra, want: c - 1, va: va, vaN: vaN }),
                         depth: d, base: ra + 1, pc: entry, cl: k, va: vaTop, vaN: 0,
                     }, stop);
                 }
@@ -1554,16 +1549,16 @@ function run(vm0: Vm, stop: i64): Vm {
             const n = b == 0 ? vm.mtop - ra : b - 1;
             const d = vm.depth;
             // (one value to a caller that wants one: given back here)
-            if (n == 1 && d > 0 && vm.fWant[d] == 1) {
-                const to = vm.fRet[d];
+            if (n == 1 && d > 0 && vm.frames[d].want == 1) {
+                const to = vm.frames[d].ret;
                 const t = vm.regs[ra].t;
                 const i = vm.regs[ra].i;
                 const f = vm.regs[ra].f;
-                const base = vm.fBase[d];
-                const back = vm.fPc[d];
-                const cl = vm.fCl[d];
-                const va = vm.fVa[d];
-                const vaN = vm.fVaN[d];
+                const base = vm.frames[d].base;
+                const back = vm.frames[d].pc;
+                const cl = vm.frames[d].cl;
+                const va = vm.frames[d].va;
+                const vaN = vm.frames[d].vaN;
                 const top = vm.va;
                 return run({ ...vm, regs: vm.regs.with(to, { t: t, i: i, f: f }), depth: d - 1, base: base, pc: back, cl: cl, va: va, vaN: vaN, vaTop: top }, stop);
             }
@@ -1631,17 +1626,17 @@ function run(vm0: Vm, stop: i64): Vm {
             const r = vm.base + b;
             const v0 = gcMaybe(vm);
             const k = v0.ncell;
-            const v1 = { ...v0, cT: growI(v0.cT, k + 1).with(k, v0.regs[r].t), cI: growI(v0.cI, k + 1).with(k, v0.regs[r].i), cF: growF(v0.cF, k + 1).with(k, v0.regs[r].f), ncell: k + 1 };
+            const v1 = { ...v0, cells: growV(v0.cells, k + 1).with(k, v0.regs[r]), ncell: k + 1 };
             return run({ ...v1, regs: v1.regs.with(ra, { t: T_CELL, i: k, f: 0.0 }), pc: next }, stop);
         },
         39 => {
             const cell = vm.regs[vm.base + b].i;
-            return run({ ...vm, regs: vm.regs.with(ra, { t: vm.cT[cell], i: vm.cI[cell], f: vm.cF[cell] }), pc: next }, stop);
+            return run({ ...vm, regs: vm.regs.with(ra, { t: vm.cells[cell].t, i: vm.cells[cell].i, f: vm.cells[cell].f }), pc: next }, stop);
         },
         40 => {
             const cell = vm.regs[ra].i;
             const r = vm.base + b;
-            return run({ ...vm, cT: vm.cT.with(cell, vm.regs[r].t), cI: vm.cI.with(cell, vm.regs[r].i), cF: vm.cF.with(cell, vm.regs[r].f), pc: next }, stop);
+            return run({ ...vm, cells: vm.cells.with(cell, { t: vm.regs[r].t, i: vm.regs[r].i, f: vm.regs[r].f }), pc: next }, stop);
         },
         41 => {
             const x = rkv(vm, b);
@@ -1854,7 +1849,7 @@ function tforCall(vm: Vm, a: i64, nvars: i64): Vm {
         const k = vm.regs[a].i;
         const u0 = vm.ups[vm.clUp[k]];
         const u1 = vm.ups[vm.clUp[k] + 1];
-        const st = vm.cT[u1] == T_TAB ? vm.cI[u1] : (vm.cT[u0] == T_TAB ? vm.cI[u0] : -1);
+        const st = vm.cells[u1].t == T_TAB ? vm.cells[u1].i : (vm.cells[u0].t == T_TAB ? vm.cells[u0].i : -1);
         // (its four values in the array part of its state, read there)
         const info = st >= 0 ? vm.tabs[st] : vm.tabs[0];
         if (st >= 0 && info.len == 4) {
@@ -1904,7 +1899,7 @@ function closure(vm: Vm, a: i64, p: i64): Vm {
 function varargs(vm: Vm, a: i64, n: i64): Vm {
     const want = n < 0 ? vm.vaN : n;
     const v1 = roomRegs(vm, a + want + 1);
-    const v2 = fold(iota(want), v1, (acc, i) => i < acc.vaN ? setReg(acc, a + i, { t: acc.vaT[acc.va + i], i: acc.vaI[acc.va + i], f: acc.vaF[acc.va + i] }) : { ...acc, regs: acc.regs.with(a + i, { t: T_NIL, i: 0, f: 0.0 }) });
+    const v2 = fold(iota(want), v1, (acc, i) => i < acc.vaN ? setReg(acc, a + i, { t: acc.vas[acc.va + i].t, i: acc.vas[acc.va + i].i, f: acc.vas[acc.va + i].f }) : { ...acc, regs: acc.regs.with(a + i, { t: T_NIL, i: 0, f: 0.0 }) });
     return n < 0 ? { ...v2, mtop: a + want } : v2;
 }
 
@@ -3444,12 +3439,12 @@ export function newVm(): Vm {
         upLocal: k.upLocal, upIdx: k.upIdx,
         regs: fill(256, { t: T_NIL, i: 0, f: 0.0 }),
         base: 0, pc: 0, cl: -1, va: 0, vaN: 0, mtop: 0,
-        fBase: fill(16, 0), fPc: fill(16, 0), fCl: fill(16, 0), fRet: fill(16, 0), fWant: fill(16, 0), fVa: fill(16, 0), fVaN: fill(16, 0), depth: 0,
-        vaT: fill(16, 0), vaI: fill(16, 0), vaF: fill(16, 0.0), vaTop: 0,
+        frames: fill(16, { base: 0, pc: 0, cl: 0, ret: 0, want: 0, va: 0, vaN: 0 }), depth: 0,
+        vas: fill(16, { t: T_NIL, i: 0, f: 0.0 }), vaTop: 0,
         tabs: [], ntab: 0, skT: [], skI: [], skF: [], svT: [], svI: [], svF: [], stop: 0,
         strs: [], strH: [], nstr: 0,
         clProto: [], clUp: [], ncl: 0, ups: [], nup: 0,
-        cT: [], cI: [], cF: [], ncell: 0,
+        cells: [], ncell: 0,
         globals: 0, strings: 0, stringMeta: 0,
         err: false, errT: T_NIL, errI: 0, errF: 0.0,
         out: [], seed: 88172645463325252, ltop: 0, kIndex: 0, gcAt: GC_MIN, pinned: 0, gmProto: -1,
@@ -3557,7 +3552,7 @@ type Gc = {
     tabs: TabInfo[], ntab: i64, skT: i64[], skI: i64[], skF: f64[], svT: i64[], svI: i64[], svF: f64[], stop: i64,
     strs: string[], strH: i64[], nstr: i64,
     clProto: i64[], clUp: i64[], ncl: i64, ups: i64[], nup: i64,
-    cT: i64[], cI: i64[], cF: f64[], ncell: i64,
+    cells: V[], ncell: i64,
     fwdT: i64[], fwdS: i64[], fwdC: i64[], fwdCell: i64[],
     qT: i64[], qC: i64[], qCell: i64[],
 };
@@ -3604,7 +3599,7 @@ function movedCell(vm: Vm, g: Gc, c: i64): [Gc, i64] {
         return [g, f] as const;
     }
     const k = g.ncell;
-    const g1 = { ...g, cT: growI(g.cT, k + 1), cI: growI(g.cI, k + 1), cF: growF(g.cF, k + 1), ncell: k + 1, qCell: concat(g.qCell, [c]) };
+    const g1 = { ...g, cells: growV(g.cells, k + 1), ncell: k + 1, qCell: concat(g.qCell, [c]) };
     return [{ ...g1, fwdCell: g1.fwdCell.with(c, k) }, k] as const;
 }
 
@@ -3627,8 +3622,8 @@ function drain(vm: Vm, g: Gc, it: i64, ic: i64, icell: i64): Gc {
     }
     if (icell < g.qCell.length) {
         const old = g.qCell[icell];
-        const [g1, v] = moved(vm, g, { t: vm.cT[old], i: vm.cI[old], f: vm.cF[old] });
-        return drain(vm, { ...g1, cT: g1.cT.with(icell, v.t), cI: g1.cI.with(icell, v.i), cF: g1.cF.with(icell, v.f) }, it, ic, icell + 1);
+        const [g1, v] = moved(vm, g, { t: vm.cells[old].t, i: vm.cells[old].i, f: vm.cells[old].f });
+        return drain(vm, { ...g1, cells: g1.cells.with(icell, { t: v.t, i: v.i, f: v.f }) }, it, ic, icell + 1);
     }
     return g;
 }
@@ -3734,12 +3729,15 @@ function collectLive(vm: Vm): Vm {
     const d = vm.depth;
     const nva = vm.vaTop;
     const regs = map(iota(top), (r) => ({ t: vm.regs[r].t, i: vm.regs[r].i, f: vm.regs[r].f }));
-    const vas = map(iota(nva), (k) => ({ t: vm.vaT[k], i: vm.vaI[k], f: vm.vaF[k] }));
-    const fcls = map(iota(d + 1), (k) => ({ t: k == d ? (vm.cl >= 0 ? T_FUN : T_NIL) : (vm.fCl[k + 1] >= 0 ? T_FUN : T_NIL), i: k == d ? vm.cl : vm.fCl[k + 1], f: 0.0 }));
+    const vas = map(iota(nva), (k) => ({ t: vm.vas[k].t, i: vm.vas[k].i, f: vm.vas[k].f }));
+    const fcls = map(iota(d + 1), (k) => ({ t: k == d ? (vm.cl >= 0 ? T_FUN : T_NIL) : (vm.frames[k + 1].cl >= 0 ? T_FUN : T_NIL), i: k == d ? vm.cl : vm.frames[k + 1].cl, f: 0.0 }));
     const [v1, rs] = collectCore(vm, concat(concat(regs, vas), fcls));
     const v2 = fold(iota(top), v1, (acc, r) => ({ ...acc, regs: acc.regs.with(r, { t: rs[r].t, i: rs[r].i, f: rs[r].f }) }));
-    const v3 = fold(iota(nva), v2, (acc, k) => ({ ...acc, vaI: acc.vaI.with(k, rs[top + k].i) }));
-    const v4 = fold(iota(d), v3, (acc, k) => ({ ...acc, fCl: acc.fCl.with(k + 1, rs[top + nva + k].t == T_FUN ? rs[top + nva + k].i : acc.fCl[k + 1]) }));
+    const v3 = fold(iota(nva), v2, (acc, k) => ({ ...acc, vas: acc.vas.with(k, rs[top + k]) }));
+    const v4 = fold(iota(d), v3, (acc, k) => {
+        const fr = acc.frames[k + 1];
+        return { ...acc, frames: acc.frames.with(k + 1, { ...fr, cl: rs[top + nva + k].t == T_FUN ? rs[top + nva + k].i : fr.cl }) };
+    });
     const c = rs[top + nva + d];
     const v5 = { ...v4, cl: c.t == T_FUN ? c.i : v4.cl };
     // (the next collection when the memory has doubled)
@@ -3760,7 +3758,7 @@ function collectCore(vm: Vm, roots: V[n]): [Vm, V[]] {
         tabs: [], ntab: 0, skT: [], skI: [], skF: [], svT: [], svI: [], svF: [], stop: 0,
         strs: [], strH: [], nstr: 0,
         clProto: [], clUp: [], ncl: 0, ups: [], nup: 0,
-        cT: [], cI: [], cF: [], ncell: 0,
+        cells: [], ncell: 0,
         fwdT: fill(vm.ntab, -1), fwdS: fill(vm.nstr, -1), fwdC: fill(vm.ncl, -1), fwdCell: fill(vm.ncell, -1),
         qT: [], qC: [], qCell: [],
     };
@@ -3775,7 +3773,7 @@ function collectCore(vm: Vm, roots: V[n]): [Vm, V[]] {
         ...vm,
         kI: kI, tabs: g.tabs, ntab: g.ntab, skT: g.skT, skI: g.skI, skF: g.skF, svT: g.svT, svI: g.svI, svF: g.svF, stop: g.stop,
         strs: g.strs, strH: g.strH, nstr: g.nstr, clProto: g.clProto, clUp: g.clUp, ncl: g.ncl, ups: g.ups, nup: g.nup,
-        cT: g.cT, cI: g.cI, cF: g.cF, ncell: g.ncell, globals: gl.i, strings: st.i, stringMeta: sm.i, kIndex: ki.i,
+        cells: g.cells, ncell: g.ncell, globals: gl.i, strings: st.i, stringMeta: sm.i, kIndex: ki.i,
     };
     return [out, rs] as const;
 }
