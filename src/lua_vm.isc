@@ -48,6 +48,12 @@ export type Vm = {
     globals: i64, strings: i64, stringMeta: i64,
     err: boolean, errT: i64, errI: i64, errF: f64,
     out: string[], seed: i64, ltop: i64,
+    // (the string `__index`, for the methods read in the loop)
+    kIndex: i64,
+    // (the size of the memory past which it is collected; the functions of
+    // the library running that keep values of the machine out of it, which
+    // a collection would move: none collects while one runs)
+    gcAt: i64, pinned: i64,
 };
 
 const BIAS: i64 = 524288;
@@ -305,7 +311,31 @@ function place(vm: Vm, t: i64, k: V, v: V): Vm {
 }
 
 function emptySlot(vm: Vm, base: i64, mask: i64, i: i64): i64 {
-    return vm.skT[base + i] == T_NIL ? base + i : emptySlot(vm, base, mask, (i + 1) & mask);
+    return emptyIn(vm.skT, base, mask, i);
+}
+
+// (the array of the kinds of the keys alone given)
+function emptyIn(skT: i64[], base: i64, mask: i64, i: i64): i64 {
+    return skT[base + i] == T_NIL ? base + i : emptyIn(skT, base, mask, (i + 1) & mask);
+}
+
+// the value of the method `k` of the table `info`: its own, or that of the
+// table `__index` of its metatable (-1: none of those, the general way)
+function methodSlot(vm: Vm, info: TabInfo, k: V): i64 {
+    const at = placeOf(vm, info, k);
+    if (at >= 0 && vm.svT[at] != T_NIL) {
+        return at;
+    }
+    if (info.meta < 0) {
+        return -1;
+    }
+    const h = slotIn(vm, vm.tabs[info.meta], { t: T_STR, i: vm.kIndex, f: 0.0 });
+    if (h < 0 || vm.svT[h] != T_TAB) {
+        return -1;
+    }
+    const hi = vm.tabs[vm.svI[h]];
+    const at2 = placeOf(vm, hi, k);
+    return at2 >= 0 && vm.svT[at2] != T_NIL ? at2 : -1;
 }
 
 function rehash(vm: Vm, t: i64): Vm {
@@ -876,12 +906,23 @@ function run(vm: Vm, stop: i64): Vm {
             return run(setIndex({ ...vm, pc: next }, o, k, v, 0), stop);
         },
         11 => {
-            const [v1, t] = newTable(vm, b, c);
+            const [v1, t] = newTable(gcMaybe(vm), b, c);
             return run({ ...v1, rT: v1.rT.with(ra, T_TAB), rI: v1.rI.with(ra, t), pc: next }, stop);
         },
         12 => {
             const o = reg(vm, vm.base + b);
             const k = rkv(vm, c);
+            // (a method of the table or of the table `__index` of its
+            // metatable: read here)
+            if (o.t == T_TAB) {
+                const at = methodSlot(vm, vm.tabs[o.i], k);
+                if (at >= 0) {
+                    const mt = vm.svT[at];
+                    const mi = vm.svI[at];
+                    const mf = vm.svF[at];
+                    return run({ ...vm, rT: vm.rT.with(ra + 1, T_TAB).with(ra, mt), rI: vm.rI.with(ra + 1, o.i).with(ra, mi), rF: vm.rF.with(ra, mf), pc: next }, stop);
+                }
+            }
             const v1 = setReg({ ...vm, pc: next }, ra + 1, o);
             return run(index(v1, o, k, ra, 0), stop);
         },
@@ -950,9 +991,12 @@ function run(vm: Vm, stop: i64): Vm {
             return run(arith({ ...vm, pc: next }, 6, x, y, ra), stop);
         },
         20 => {
-            const x = rkv(vm, b);
-            const y = rkv(vm, c);
-            return run(concatTo({ ...vm, pc: next }, x, y, ra), stop);
+            // (collected before its operands are read: they would be of
+            // the memory before)
+            const v0 = gcMaybe({ ...vm, pc: next });
+            const x = rkv(v0, b);
+            const y = rkv(v0, c);
+            return run(concatTo(v0, x, y, ra), stop);
         },
         21 => {
             const x = reg(vm, vm.base + b);
@@ -1013,6 +1057,15 @@ function run(vm: Vm, stop: i64): Vm {
         28 => run({ ...vm, pc: truthyT(vm.rT[ra]) != (c != 0) ? next + 1 : next }, stop),
         29 => {
             const n = b == 0 ? vm.mtop - ra - 1 : b - 1;
+            // (`setmetatable(t, m)`, `t` of no metatable yet: here, without
+            // the library)
+            if (vm.rT[ra] == T_BUILTIN && vm.rI[ra] == 16 && n == 2 && vm.rT[ra + 1] == T_TAB && vm.rT[ra + 2] == T_TAB && vm.tabs[vm.rI[ra + 1]].meta < 0 && c <= 2) {
+                const t = vm.rI[ra + 1];
+                const m = vm.rI[ra + 2];
+                const info = vm.tabs[t];
+                const top = c == 0 ? ra + 1 : vm.mtop;
+                return run({ ...vm, tabs: vm.tabs.with(t, { ...info, meta: m }), rT: vm.rT.with(ra, T_TAB), rI: vm.rI.with(ra, t), mtop: top, pc: next }, stop);
+            }
             // (a function of Lua given as many arguments as it has
             // parameters, the frames and the registers room enough: its
             // frame entered here, without a call)
@@ -1070,12 +1123,13 @@ function run(vm: Vm, stop: i64): Vm {
             const t = vm.rI[ra];
             return run({ ...fold(iota(n), vm, (acc, i) => rawSet(acc, t, intV(c + 1 + i), reg(acc, ra + 1 + i))), pc: next }, stop);
         },
-        36 => run(closure({ ...vm, pc: next }, ra, b), stop),
+        36 => run(closure(gcMaybe({ ...vm, pc: next }), ra, b), stop),
         37 => run({ ...varargs(vm, ra, b - 1), pc: next }, stop),
         38 => {
             const r = vm.base + b;
-            const k = vm.ncell;
-            const v1 = { ...vm, cT: growI(vm.cT, k + 1).with(k, vm.rT[r]), cI: growI(vm.cI, k + 1).with(k, vm.rI[r]), cF: growF(vm.cF, k + 1).with(k, vm.rF[r]), ncell: k + 1 };
+            const v0 = gcMaybe(vm);
+            const k = v0.ncell;
+            const v1 = { ...v0, cT: growI(v0.cT, k + 1).with(k, v0.rT[r]), cI: growI(v0.cI, k + 1).with(k, v0.rI[r]), cF: growF(v0.cF, k + 1).with(k, v0.rF[r]), ncell: k + 1 };
             return run({ ...v1, rT: v1.rT.with(ra, T_CELL), rI: v1.rI.with(ra, k), pc: next }, stop);
         },
         39 => {
@@ -1137,10 +1191,22 @@ function run(vm: Vm, stop: i64): Vm {
             const key = { t: T_STR, i: vm.kI[b], f: 0.0 };
             const v = rkv(vm, c);
             if (vm.rT[ra] == T_TAB && v.t != T_NIL) {
-                const info = vm.tabs[vm.rI[ra]];
+                const t = vm.rI[ra];
+                const info = vm.tabs[t];
                 const at = slotIn(vm, info, key);
                 if (at >= 0 && (vm.svT[at] != T_NIL || info.meta < 0)) {
                     return run({ ...vm, svT: vm.svT.with(at, v.t), svI: vm.svI.with(at, v.i), svF: vm.svF.with(at, v.f), pc: next }, stop);
+                }
+                // (a new key in a table of no metatable whose hashes have
+                // room: placed here)
+                if (at < 0 && info.meta < 0 && info.cap > 0 && (info.used + 1) * 4 <= info.cap * 3) {
+                    const e = emptyIn(vm.skT, info.hash, info.cap - 1, keyHash(vm, key) & (info.cap - 1));
+                    return run({
+                        ...vm,
+                        skT: vm.skT.with(e, T_STR), skI: vm.skI.with(e, key.i), skF: vm.skF.with(e, 0.0),
+                        svT: vm.svT.with(e, v.t), svI: vm.svI.with(e, v.i), svF: vm.svF.with(e, v.f),
+                        tabs: vm.tabs.with(t, { ...info, used: info.used + 1 }), pc: next,
+                    }, stop);
                 }
             }
             const o = reg(vm, ra);
@@ -1611,14 +1677,17 @@ function libCall(vm: Vm, id: i64, a: i64, n: i64, line: i64): [Vm, i64] {
         }
     }
     const args = map(iota(n), (i) => toValue(vm, reg(vm, a + 1 + i)));
-    // (the registers of the library's own calls above those of the call)
+    // (the registers of the library's own calls above those of the call;
+    // its values out of the machine kept from a collection while it runs,
+    // but those of `pcall`, which reads none after its call)
     const saved = vm.ltop;
-    const [v1, rs] = callPrim({ ...vm, ltop: max(vm.ltop, a + n + 1) }, id, args, line);
+    const pins = vm.pinned;
+    const [v1, rs] = callPrim({ ...vm, ltop: max(vm.ltop, a + n + 1), pinned: id == 10 ? pins : pins + 1 }, id, args, line);
     if (v1.err) {
-        return [{ ...v1, ltop: saved }, 0] as const;
+        return [{ ...v1, ltop: saved, pinned: pins }, 0] as const;
     }
     const v2 = roomRegs(v1, a + rs.length + 1);
-    return [{ ...writeValues(v2, a, rs, 0), ltop: saved }, rs.length] as const;
+    return [{ ...writeValues(v2, a, rs, 0), ltop: saved, pinned: pins }, rs.length] as const;
 }
 
 // the name of the chunk running
@@ -2833,7 +2902,7 @@ export function newVm(): Vm {
         cT: [], cI: [], cF: [], ncell: 0,
         globals: 0, strings: 0, stringMeta: 0,
         err: false, errT: T_NIL, errI: 0, errF: 0.0,
-        out: [], seed: 88172645463325252, ltop: 0,
+        out: [], seed: 88172645463325252, ltop: 0, kIndex: 0, gcAt: GC_MIN, pinned: 0,
     };
     const [v1, g] = newTable(vm0, 0, 64);
     const v2 = fold(iota(BASE_NAMES.length), { ...v1, globals: g }, (acc, i) => setName(acc, g, BASE_NAMES[i], { t: T_BUILTIN, i: i, f: 0.0 }));
@@ -2846,7 +2915,8 @@ export function newVm(): Vm {
     const [v9, ver] = strV(v8, "Lua 5.4");
     const v10 = setName(v9, g, "_VERSION", ver);
     const [v11, sm] = newTable(v10, 0, 1);
-    const v12 = { ...setName(v11, sm, "__index", { t: T_TAB, i: strs, f: 0.0 }), strings: strs, stringMeta: sm };
+    const [v11b, ki] = newStr(v11, "__index");
+    const v12 = { ...setName(v11b, sm, "__index", { t: T_TAB, i: strs, f: 0.0 }), strings: strs, stringMeta: sm, kIndex: ki };
     const [v13, f] = load(v12, PRELUDE, "prelude");
     const [v14, rs] = call(v13, f, [{ t: T_BUILTIN, i: PRIM_GMATCH_STEP, f: 0.0 }]);
     return v14;
@@ -3012,13 +3082,15 @@ function drain(vm: Vm, g: Gc, it: i64, ic: i64, icell: i64): Gc {
 // a part of hashes twice their number, its metatable
 function copyTable(vm: Vm, g: Gc, t: i64, k: i64): Gc {
     const info = vm.tabs[t];
-    const [g1, arr] = gcAlloc(g, info.len);
+    // (its room kept: copied to its length, the next value added at its
+    // end would grow it again, enough to collect again, at each one)
+    const [g1, arr] = gcAlloc(g, info.acap);
     const g2 = copyArr(vm, g1, info.arr, arr, info.len, 0);
     const live = info.cap == 0 ? 0 : count(iota(info.cap), (i) => vm.skT[info.hash + i] != T_NIL && vm.svT[info.hash + i] != T_NIL);
     const cap = live == 0 ? 0 : pow2From(4, live * 2);
     const [g3, hash] = cap > 0 ? gcAlloc(g2, cap) : [g2, 0] as const;
     const [g4, meta] = info.meta >= 0 ? moved(vm, g3, { t: T_TAB, i: info.meta, f: 0.0 }) : [g3, { t: T_NIL, i: -1, f: 0.0 }] as const;
-    const g5 = { ...g4, tabs: g4.tabs.with(k, { arr: arr, len: info.len, acap: info.len, hash: hash, cap: cap, used: 0, meta: meta.i }) };
+    const g5 = { ...g4, tabs: g4.tabs.with(k, { arr: arr, len: info.len, acap: info.acap, hash: hash, cap: cap, used: 0, meta: meta.i }) };
     return copyHash(vm, g5, k, info.hash, info.cap, 0);
 }
 
@@ -3094,6 +3166,41 @@ function moveRoots(vm: Vm, g: Gc, roots: V[n], i: i64, acc: V[]): [Gc, V[]] {
 // values `roots` reach copied, the rest dropped; the roots as they are in
 // the new machine
 export function collect(vm: Vm, roots: V[n]): [Vm, V[]] {
+    const [v1, rs] = collectCore(vm, roots);
+    return [{ ...v1, rT: fill(vm.rT.length, T_NIL), rI: fill(vm.rI.length, 0), rF: fill(vm.rF.length, 0.0), depth: 0, base: 0, cl: -1, va: 0, vaN: 0, vaTop: 0, ltop: 0, mtop: 0 }, rs] as const;
+}
+
+// the memory taken back while the machine runs, at an instruction that
+// makes a value (no function of the library running, no error): the roots
+// the registers of the frames, the values kept by the calls of `...`, the
+// closures of the frames; each written back where it was
+function collectLive(vm: Vm): Vm {
+    const top = frameTop(vm);
+    const d = vm.depth;
+    const nva = vm.vaTop;
+    const regs = map(iota(top), (r) => ({ t: vm.rT[r], i: vm.rI[r], f: vm.rF[r] }));
+    const vas = map(iota(nva), (k) => ({ t: vm.vaT[k], i: vm.vaI[k], f: vm.vaF[k] }));
+    const fcls = map(iota(d + 1), (k) => ({ t: k == d ? (vm.cl >= 0 ? T_FUN : T_NIL) : (vm.fCl[k + 1] >= 0 ? T_FUN : T_NIL), i: k == d ? vm.cl : vm.fCl[k + 1], f: 0.0 }));
+    const [v1, rs] = collectCore(vm, concat(concat(regs, vas), fcls));
+    const v2 = fold(iota(top), v1, (acc, r) => ({ ...acc, rT: acc.rT.with(r, rs[r].t), rI: acc.rI.with(r, rs[r].i), rF: acc.rF.with(r, rs[r].f) }));
+    const v3 = fold(iota(nva), v2, (acc, k) => ({ ...acc, vaI: acc.vaI.with(k, rs[top + k].i) }));
+    const v4 = fold(iota(d), v3, (acc, k) => ({ ...acc, fCl: acc.fCl.with(k + 1, rs[top + nva + k].t == T_FUN ? rs[top + nva + k].i : acc.fCl[k + 1]) }));
+    const c = rs[top + nva + d];
+    const v5 = { ...v4, cl: c.t == T_FUN ? c.i : v4.cl };
+    // (the next collection when the memory has doubled)
+    return { ...v5, gcAt: max(GC_MIN, memorySize(v5) * 2) };
+}
+
+// the memory below which the machine collects nothing
+const GC_MIN: i64 = 262144;
+
+// the memory taken back when it has grown past its bound (no function of
+// the library running: their values out of the machine would move)
+function gcMaybe(vm: Vm): Vm {
+    return vm.pinned == 0 && !vm.err && memorySize(vm) >= vm.gcAt ? collectLive(vm) : vm;
+}
+
+function collectCore(vm: Vm, roots: V[n]): [Vm, V[]] {
     const g0 = {
         tabs: [], ntab: 0, skT: [], skI: [], skF: [], svT: [], svI: [], svF: [], stop: 0,
         strs: [], strH: [], nstr: 0,
@@ -3104,7 +3211,8 @@ export function collect(vm: Vm, roots: V[n]): [Vm, V[]] {
     };
     const [g1, gl] = moved(vm, gcStart(g0), { t: T_TAB, i: vm.globals, f: 0.0 });
     const [g2, st] = moved(vm, g1, { t: T_TAB, i: vm.strings, f: 0.0 });
-    const [g3, sm] = moved(vm, g2, { t: T_TAB, i: vm.stringMeta, f: 0.0 });
+    const [g3a, sm] = moved(vm, g2, { t: T_TAB, i: vm.stringMeta, f: 0.0 });
+    const [g3, ki] = moved(vm, g3a, { t: T_STR, i: vm.kIndex, f: 0.0 });
     const [g4, kI] = moveConsts(vm, g3, 0, vm.kI);
     const [g5, rs] = moveRoots(vm, g4, roots, 0, []);
     const g = drain(vm, g5, 0, 0, 0);
@@ -3112,8 +3220,7 @@ export function collect(vm: Vm, roots: V[n]): [Vm, V[]] {
         ...vm,
         kI: kI, tabs: g.tabs, ntab: g.ntab, skT: g.skT, skI: g.skI, skF: g.skF, svT: g.svT, svI: g.svI, svF: g.svF, stop: g.stop,
         strs: g.strs, strH: g.strH, nstr: g.nstr, clProto: g.clProto, clUp: g.clUp, ncl: g.ncl, ups: g.ups, nup: g.nup,
-        cT: g.cT, cI: g.cI, cF: g.cF, ncell: g.ncell, globals: gl.i, strings: st.i, stringMeta: sm.i,
-        rT: fill(vm.rT.length, T_NIL), rI: fill(vm.rI.length, 0), rF: fill(vm.rF.length, 0.0), depth: 0, base: 0, cl: -1, va: 0, vaN: 0, vaTop: 0, ltop: 0, mtop: 0,
+        cT: g.cT, cI: g.cI, cF: g.cF, ncell: g.ncell, globals: gl.i, strings: st.i, stringMeta: sm.i, kIndex: ki.i,
     };
     return [out, rs] as const;
 }
