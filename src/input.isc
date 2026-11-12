@@ -83,8 +83,12 @@ export function spacingAccent(k: i64): i64 {
 //   changes, and for every such box when the window changes its size or
 //   its density (a long list builds the rows in sight alone with it:
 //   `uniformList` of widgets.isc)
-export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i64) | Release(i64) | Hover(i64) | Text(i64) | Key(i64, i64) | Paste(string) | Focus(i64) | Viewport(i64, f32, f32);
+// - `Tick(ms)`: the time of a frame (milliseconds of the clock of the
+//   system), after `Animate`
+export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i64) | Release(i64) | Hover(i64) | Text(i64) | Key(i64, i64) | Paste(string) | Focus(i64) | Viewport(i64, f32, f32) | Tick(i64);
 
 // what an application asks after an input: a text copied to the clipboard,
-// the text of the clipboard (it comes as `Paste`)
-export type Effect = Copy(string) | AskPaste;
+// the text of the clipboard (it comes as `Paste`), the next frame of an
+// animation (it comes as `Tick`, about 16 ms later: asked again at each
+// `Tick` while the animation lasts, the window drawn again each time)
+export type Effect = Copy(string) | AskPaste | Animate;

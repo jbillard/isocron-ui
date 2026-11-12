@@ -66,7 +66,7 @@ action main(args: string[k]): i32 {
             scene(args[0], "scrolled", 520, 420, white, sp);
             // the menu of the field open over the list, its second entry
             // under the pointer, the field holding a selection
-            const sel = { ...todo.initial(), field: { text: "Pain de mie", caret: 11, anchor: 5 }, focused: true };
+            const sel = { ...todo.initial(), field: { ...editing("Pain de mie"), caret: 11, anchor: 5 }, focused: true };
             const ui0 = { ...interface(520, 420, 0u64), menu: true, menuX: 150.0f32, menuY: 128.0f32, menuHover: 1, menuCut: true, labels: ["Couper", "Copier", "Coller", "Tout sélectionner"] };
             const [mp, mu] = laidOut(ui0, f, sel, todo.view, 0u64);
             scene(args[0], "menu", 520, 420, white, mp);

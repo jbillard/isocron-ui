@@ -8,11 +8,41 @@
 // clipboard (`Copy` and `AskPaste` asked, `Paste` received).
 import { Input, Effect, Click, Drag, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, BACKSPACE, DELETE, LEFT, RIGHT, HOME, END, UP, DOWN } from "./input";
 
-export type Editing = { text: string, caret: i64, anchor: i64 };
+// (`unit`: what the last click took, 0 a place between characters, 1 a
+// word, 2 the whole text; `from` and `to`: what it took, the bounds a drag
+// after it keeps: a drag after a double click takes whole words, after a
+// triple click the whole text)
+export type Editing = { text: string, caret: i64, anchor: i64, unit: i64, from: i64, to: i64 };
 
 // a field holding `text`, its caret at its end
 export function editing(text: string): Editing {
-    return { text: text, caret: text.length, anchor: text.length };
+    return { text: text, caret: text.length, anchor: text.length, unit: 0, from: text.length, to: text.length };
+}
+
+// the field `e` after a drag of the pointer to the boundary `at`: its caret
+// there after a click; after a double click, the words from the one
+// clicked to the one under the pointer, whole (the pointer moving inside
+// the word clicked keeps it whole); after a triple click, the whole text
+function dragged(e: Editing, at: i64): Editing {
+    if (e.unit == 2) {
+        return { ...e, caret: e.text.length, anchor: 0 };
+    }
+    if (e.unit == 1) {
+        // (a boundary within the word clicked, or at its ends, keeps it as
+        // it is; past it, the word of the character before the boundary on
+        // the right, after it on the left: a space next to the word is not
+        // taken while the pointer stays on it)
+        if (at >= e.from && at <= e.to) {
+            return { ...e, anchor: e.from, caret: e.to };
+        }
+        if (at > e.to) {
+            const [l, r] = wordAt(e, at - 1);
+            return { ...e, anchor: e.from, caret: max(r, e.to) };
+        }
+        const [l, r] = wordAt(e, at);
+        return { ...e, anchor: e.to, caret: l };
+    }
+    return { ...e, caret: at };
 }
 
 // the bytes of UTF-8 of the character `c`
@@ -93,7 +123,7 @@ export function wordAt(e: Editing, i: i64): [i64, i64] {
 export function replaced(e: Editing, s: string): Editing {
     const [a, b] = selection(e);
     const put = s.replace(/[\r\n]+/g, " ");
-    return { text: e.text.slice(0, a) + put + e.text.slice(b, e.text.length), caret: a + put.length, anchor: a + put.length };
+    return { ...e, text: e.text.slice(0, a) + put + e.text.slice(b, e.text.length), caret: a + put.length, anchor: a + put.length };
 }
 
 // the caret moved to `i`, the selection kept from the anchor when `extend`
@@ -152,14 +182,15 @@ export function edited(e: Editing, i: Input, place: i64): [Editing, Effect[], bo
             }
             if (clicks == 2) {
                 const [l, r] = wordAt(e, at);
-                return [{ ...e, caret: r, anchor: l }, [], true] as const;
+                return [{ ...e, caret: r, anchor: l, unit: 1, from: l, to: r }, [], true] as const;
             }
             if (clicks >= 3) {
-                return [{ ...e, caret: e.text.length, anchor: 0 }, [], true] as const;
+                return [{ ...e, caret: e.text.length, anchor: 0, unit: 2, from: 0, to: e.text.length }, [], true] as const;
             }
-            return [moved(e, at, (mods & WITH_SHIFT) != 0), [], true] as const;
+            const m = moved(e, at, (mods & WITH_SHIFT) != 0);
+            return [{ ...m, unit: 0, from: m.caret, to: m.caret }, [], true] as const;
         },
-        Drag(p, x, y, at) => p == place && at >= 0 ? [{ ...e, caret: at }, [], true] as const : [e, [], false] as const,
+        Drag(p, x, y, at) => p == place && at >= 0 ? [dragged(e, at), [], true] as const : [e, [], false] as const,
         Text(c) => [replaced(e, stringOf(utf8(c))), [], true] as const,
         Key(k, m) => {
             const [ne, fx] = keyed(e, k, m);

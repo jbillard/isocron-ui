@@ -3,7 +3,7 @@
 // End with and without Shift, a selection replaced, Ctrl+A, C, X and V, a
 // click, a Shift+click, a drag, a double and a triple click.
 import { Editing, editing, edited, keyed, selected, replaced, wordAt } from "../src/edit";
-import { Input, Effect, Click, Drag, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, BACKSPACE, DELETE, LEFT, RIGHT, HOME, END } from "../src/input";
+import { Input, Effect, Click, Drag, Text, Key, Paste, Copy, AskPaste, Animate, WITH_SHIFT, WITH_CTRL, BACKSPACE, DELETE, LEFT, RIGHT, HOME, END } from "../src/input";
 
 function show(e: Editing): string {
     return `${e.text}|${e.caret},${e.anchor}`;
@@ -13,6 +13,7 @@ function asked(fx: Effect[n]): string {
     return map(fx, (f) => match (f) {
         Copy(s) => `copy:${s}`,
         AskPaste => "paste?",
+        Animate => "frame?",
     }).join(" ");
 }
 
@@ -66,5 +67,19 @@ action main(args: string[k]): i32 {
     print(show(play(w, [Click(1, 0.0f32, 0.0f32, 6, 2, 0)], 0, 0)));
     print(show(play(w, [Click(1, 0.0f32, 0.0f32, 4, 3, 0)], 0, 0)));
     print(wordAt(editing(""), 0));
+    // a double click then drags: the pointer moving inside the word clicked
+    // keeps it whole (the bug found on Windows: the part before the pointer
+    // alone was kept), to a word after it, to a word before it; a triple
+    // click then a drag: the whole text
+    const two = (at: i64) => Click(1, 0.0f32, 0.0f32, at, 2, 0);
+    print(show(play(w, [two(4), Drag(1, 0.0f32, 0.0f32, 5), Drag(1, 0.0f32, 0.0f32, 4)], 0, 0)));
+    // (the boundary after the word, where the pointer is over its last
+    // letter's right half: the word alone, not the space after it, found
+    // under Windows; and that before it)
+    print(show(play(w, [two(4), Drag(1, 0.0f32, 0.0f32, 7)], 0, 0)));
+    print(show(play(w, [two(4), Drag(1, 0.0f32, 0.0f32, 3)], 0, 0)));
+    print(show(play(w, [two(4), Drag(1, 0.0f32, 0.0f32, 11)], 0, 0)));
+    print(show(play(w, [two(4), Drag(1, 0.0f32, 0.0f32, 1)], 0, 0)));
+    print(show(play(w, [Click(1, 0.0f32, 0.0f32, 4, 3, 0), Drag(1, 0.0f32, 0.0f32, 1)], 0, 0)));
     return 0;
 }

@@ -1,0 +1,22 @@
+// The gallery as an application of the library (gallery_live.isc): the
+// plate under a band of live components (tooltips, animations), in a
+// window of Windows, of Wayland or of X11. Prints the state of its
+// animations when its window is closed.
+// usage: gallery_app [--font=file]
+import { runWith, loadFont, fail } from "../src/app";
+import { initial, update, view, valueAt } from "./gallery_live";
+import { plate } from "./gallery_plate";
+
+action main(args: string[k]): i32 {
+    return match (loadFont(args)) {
+        Ok(f) => {
+            const end = runWith("isocron-ui : la galerie", 1280, 800, ["Couper", "Copier", "Coller", "Tout sélectionner"], f, initial(plate(f)), view, update);
+            print([valueAt(end.fill, end.now), valueAt(end.knob, end.now), end.on] as const);
+            return 0;
+        },
+        Err(e) => {
+            fail("isocron-ui : la galerie", e);
+            return 1;
+        },
+    };
+}

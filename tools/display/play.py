@@ -15,6 +15,10 @@ The actions, in their order:
   clickat:X,Y  the same at a point of the window
   dblclickat:X,Y  two clicks there, 80 ms apart
   rclickat:X,Y the right button there
+  dblmoveat:X,Y  a double click there, the pointer moving 3 pixels right
+               while the button of the second is held (tplmoveat: a triple)
+  drag:X1,Y1,X2,Y2  the button pressed at the first point, the pointer
+               moved to the second in 5 steps, released there
   type:TEXT    the keys of TEXT typed (xdotool type)
   wheel:X,Y,N  the pointer moved to a point of the window, the wheel turned
                by N notches (down when positive, up when negative)
@@ -170,6 +174,31 @@ def main():
                 xdo("mousemove", x, y)
                 time.sleep(0.15)
                 xdo("click", "--repeat", "2", "--delay", "80", "1")
+            elif kind in ("dblmoveat", "tplmoveat"):
+                # two (three) clicks, the pointer moving 3 pixels right while
+                # the button of the last is held, as a hand does
+                x, y = arg.split(",")
+                xdo("mousemove", x, y)
+                time.sleep(0.15)
+                xdo("click", "--repeat", "1" if kind == "dblmoveat" else "2", "--delay", "80", "1")
+                time.sleep(0.08)
+                xdo("mousedown", "1")
+                time.sleep(0.03)
+                xdo("mousemove", str(int(x) + 3), y)
+                time.sleep(0.03)
+                xdo("mouseup", "1")
+            elif kind == "drag":
+                # the button pressed at (x1, y1), the pointer moved to (x2,
+                # y2) in 5 steps, released there
+                x1, y1, x2, y2 = map(int, arg.split(","))
+                xdo("mousemove", str(x1), str(y1))
+                time.sleep(0.15)
+                xdo("mousedown", "1")
+                for k in range(1, 6):
+                    time.sleep(0.04)
+                    xdo("mousemove", str(x1 + (x2 - x1) * k // 5), str(y1 + (y2 - y1) * k // 5))
+                time.sleep(0.04)
+                xdo("mouseup", "1")
             elif kind == "type":
                 xdo("type", "--delay", "60", arg)
             elif kind == "key":

@@ -1,0 +1,153 @@
+// The images of the glyphs kept from one frame to the next (the atlas of
+// GPUI): a frame laid out with its glyphs `Pending` (their glyph, size,
+// quarter of a pixel and place) takes the images it has already drawn from
+// here, and draws the others once, at the same time, keeping them. The
+// image of a glyph depends on its glyph, its size and its quarter of a
+// pixel alone: the one kept is the one it would draw.
+import { Font } from "./font";
+import { rasterize } from "./text";
+import { Primitive, Glyph, Pending, GlyphKey } from "./paint";
+
+// the images kept: a table of SLOTS places (open addressing: the place of
+// the hash of a key, else the next ones) giving the entry of each key, and
+// for each entry its key, the corner of its image from its pen (left, top),
+// its size, the start of its pixels in `pixels`
+export type Atlas = { slots: i64[], keys: i64[], lefts: i64[], tops: i64[], ws: i64[], hs: i64[], starts: i64[], pixels: f32[] };
+
+const SLOTS: i64 = 8192;
+
+// the most pixels kept: past them, or past half the slots, the atlas is
+// emptied before a frame
+const MOST: i64 = 4194304;
+
+export function emptyAtlas(): Atlas {
+    return { slots: fill(SLOTS, -1), keys: [], lefts: [], tops: [], ws: [], hs: [], starts: [], pixels: [] };
+}
+
+// the key of a glyph: its glyph, its size in 64ths of a pixel, its quarter
+function keyOf(g: GlyphKey): i64 {
+    return (g.glyph << 24) | (i64(g.em * 64.0f32 + 0.5f32) << 2) | g.quarter;
+}
+
+// the first slot of the key `k` (positive, below 2^62)
+function hashOf(k: i64): i64 {
+    return (k + (k >> 11) * 31 + (k >> 24) * 131) % SLOTS;
+}
+
+// the entry of the key `k` from the slot `h` (-1: none)
+function find(a: Atlas, k: i64, h: i64, tries: i64): i64 {
+    const e = a.slots[h];
+    if (e < 0 || tries >= SLOTS) {
+        return -1;
+    }
+    return a.keys[e] == k ? e : find(a, k, (h + 1) % SLOTS, tries + 1);
+}
+
+// the first free slot from `h`
+function freeSlot(slots: i64[n], h: i64): i64 {
+    return slots[h] < 0 ? h : freeSlot(slots, (h + 1) % SLOTS);
+}
+
+// the slots with the entries `from` to `from + count - 1` of the keys
+// `keys` placed
+function slotted(slots: i64[n], keys: i64[m], from: i64, count: i64, k: i64): i64[n] {
+    if (k >= count) {
+        return slots;
+    }
+    const e = from + k;
+    return slotted(slots.with(freeSlot(slots, hashOf(keys[e])), e), keys, from, count, k + 1);
+}
+
+// the last `k` with `starts[k] <= p` (`starts` rising, `starts[0] <= p`)
+function lastAtMost(starts: i64[n], p: i64, lo: i64, hi: i64): i64 {
+    if (hi - lo <= 1) {
+        return lo;
+    }
+    const mid = (lo + hi) / 2;
+    return starts[mid] <= p ? lastAtMost(starts, p, mid, hi) : lastAtMost(starts, p, lo, mid);
+}
+
+// the pending glyph of `p` (none: a glyph of size 0)
+function pendingOf(p: Primitive): GlyphKey {
+    return match (p) {
+        Pending(g) => g,
+        _ => ({ glyph: -1, em: 0.0f32, quarter: 0, x: 0, base: 0, color: { r: 0.0f32, g: 0.0f32, b: 0.0f32, a: 0.0f32 } }),
+    };
+}
+
+function isPending(p: Primitive): boolean {
+    return match (p) {
+        Pending(g) => true,
+        _ => false,
+    };
+}
+
+// the primitives `ps` with their glyphs `Pending` made `Glyph`s: the images
+// the atlas `a0` keeps taken from it, the others drawn (each once, all at
+// the same time) and kept; the atlas after them (emptied first when it
+// holds more than MOST pixels or half its slots)
+export function resolved(f: Font, a0: Atlas, ps: Primitive[n]): [Primitive[n], Atlas] {
+    const pend = filter(iota(n), (i) => isPending(ps[i]));
+    if (pend.length == 0) {
+        return [ps, a0] as const;
+    }
+    const keys = map(pend, (i) => keyOf(pendingOf(ps[i])));
+    const a = a0.keys.length * 2 > SLOTS || a0.pixels.length > MOST ? emptyAtlas() : a0;
+    const found = map(keys, (k) => find(a, k, hashOf(k), 0));
+    // the keys not kept, each once, drawn
+    const firsts = filter(iota(keys.length), (j) => found[j] < 0 && findIndex(keys, (k) => k == keys[j]) == j);
+    const made = map(firsts, (j) => {
+        const g = pendingOf(ps[pend[j]]);
+        return rasterize(f, g.glyph, g.em, f32(g.quarter) * 0.25f32);
+    });
+    const sizes = map(made, (r) => {
+        const [l, t, w, h, mask] = r;
+        return w * h;
+    });
+    const at = scan(sizes, (x, y) => x + y, 0);
+    const total = sum(sizes);
+    const offsets = map(iota(made.length), (k) => at[k] - sizes[k]);
+    const fresh = map(iota(total), (p) => {
+        const k = lastAtMost(offsets, p, 0, made.length);
+        const [l, t, w, h, mask] = made[k];
+        return mask[p - offsets[k]];
+    });
+    const base = a.keys.length;
+    const newKeys = map(firsts, (j) => keys[j]);
+    const allKeys = concat(a.keys, newKeys);
+    const a2 = {
+        slots: slotted(a.slots, allKeys, base, newKeys.length, 0),
+        keys: allKeys,
+        lefts: concat(a.lefts, map(made, (r) => {
+            const [l, t, w, h, mask] = r;
+            return l;
+        })),
+        tops: concat(a.tops, map(made, (r) => {
+            const [l, t, w, h, mask] = r;
+            return t;
+        })),
+        ws: concat(a.ws, map(made, (r) => {
+            const [l, t, w, h, mask] = r;
+            return w;
+        })),
+        hs: concat(a.hs, map(made, (r) => {
+            const [l, t, w, h, mask] = r;
+            return h;
+        })),
+        starts: concat(a.starts, map(offsets, (o) => o + a.pixels.length)),
+        pixels: concat(a.pixels, fresh),
+    };
+    // each pending glyph made from its image kept
+    const out = map(iota(n), (i) => match (ps[i]) {
+        Pending(g) => {
+            const k = keyOf(g);
+            const e = find(a2, k, hashOf(k), 0);
+            const w = a2.ws[e];
+            const h = a2.hs[e];
+            const s = a2.starts[e];
+            return Glyph({ x: g.x + a2.lefts[e], y: g.base + a2.tops[e], w: w, h: h, color: g.color, mask: a2.pixels.slice(s, s + w * h) });
+        },
+        p => p,
+    });
+    return [out, a2] as const;
+}

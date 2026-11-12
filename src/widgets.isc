@@ -187,6 +187,38 @@ export function toggle(on: boolean, id: i64): Element {
     }, [knob()]);
 }
 
+// a switch whose knob is at `at` (0: off, 1: on; between: sliding, an
+// animation drawing it at each frame), its colour from grey to green
+export function toggleAt(at: f32, id: i64): Element {
+    const t = min(1.0f32, max(0.0f32, at));
+    const a = rgb(LINE);
+    const b = rgb(GREEN);
+    const c = { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: 1.0f32 };
+    return Div({
+        ...style(),
+        width: Px(64.0f32),
+        height: Px(32.0f32),
+        direction: Row,
+        padding: 3.0f32,
+        justify: Packed(Start),
+        align: Center,
+        stretch: false,
+        background: c,
+        radius: 16.0f32,
+        onClick: id,
+        focusable: true,
+    }, [Div({ ...style(), width: Px(32.0f32 * t), height: Px(26.0f32) }, []), knob()]);
+}
+
+// the element `e` (a box: a component) with the tooltip `text`, shown by
+// the pointer resting over it
+export function withTip(e: Element, text: string): Element {
+    return match (e) {
+        Div(st, cs) => Div({ ...st, tip: text }, cs),
+        other => other,
+    };
+}
+
 // a slider of `width` pixels at `value` (0 to 1): its track of 6 pixels,
 // the accent before its knob, grey after it
 export function slider(value: f32, id: i64, width: f32): Element {

@@ -42,7 +42,14 @@ export type Bitmap = { x: f32, y: f32, w: f32, h: f32, iw: i64, ih: i64, pixels:
 // `Unclip`: the primitives between them drawn only on the pixels whose
 // centre is inside the rectangle (and inside those of the `Clip`s around
 // them)
-export type Primitive = Box(Quad) | Blur(Shadow) | Glyph(Sprite) | Raster(Bitmap) | Clip(f32, f32, f32, f32) | Unclip;
+// a glyph whose image is not made yet: the glyph `glyph` of the font at
+// `em` pixels a em, its pen at `x` and `quarter` quarters of a pixel (0 to
+// 3), on the baseline `base`, in the colour `color` (`resolved` of
+// atlas.isc makes it a `Glyph`, from the images kept: it draws nothing
+// itself)
+export type GlyphKey = { glyph: i64, em: f32, quarter: i64, x: i64, base: i64, color: Color };
+
+export type Primitive = Box(Quad) | Blur(Shadow) | Glyph(Sprite) | Raster(Bitmap) | Pending(GlyphKey) | Clip(f32, f32, f32, f32) | Unclip;
 
 export function rgba(r: f32, g: f32, b: f32, a: f32): Color {
     return { r: r, g: g, b: b, a: a };
@@ -196,6 +203,22 @@ const NONE: [f32, f32, f32, f32] = [0.0f32, 0.0f32, 0.0f32, 0.0f32] as const;
 // a channel in [0, 1] as a byte
 function byte(v: f32): u32 {
     return u32(clamp01(v) * 255.0f32 + 0.5f32);
+}
+
+// the primitive `p` moved by (dx, dy) pixels (a glyph by whole pixels: dx
+// and dy rounded)
+export function movedBy(p: Primitive, dx: f32, dy: f32): Primitive {
+    const ix = i64(floor(dx + 0.5f32));
+    const iy = i64(floor(dy + 0.5f32));
+    return match (p) {
+        Box(q) => Box({ ...q, x: q.x + dx, y: q.y + dy }),
+        Blur(s) => Blur({ ...s, x: s.x + dx, y: s.y + dy }),
+        Glyph(g) => Glyph({ ...g, x: g.x + ix, y: g.y + iy }),
+        Raster(b) => Raster({ ...b, x: b.x + dx, y: b.y + dy }),
+        Pending(g) => Pending({ ...g, x: g.x + ix, base: g.base + iy }),
+        Clip(a, b, c, d) => Clip(a + dx, b + dy, c + dx, d + dy),
+        Unclip => Unclip,
+    };
 }
 
 // the box of a primitive outside of which it colours no pixel whose

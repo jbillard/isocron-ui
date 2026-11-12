@@ -1,0 +1,98 @@
+// The gallery as an application (gallery_app.isc): the plate of
+// gallery_plate.isc drawn by a `Canvas`, under a band of live components:
+// buttons with tooltips (the pointer resting half a second), a switch whose
+// knob slides in 200 ms and a bar filled in a second, both animated (the
+// model asks frames by `Animate` and is told their time by `Tick`). The
+// column scrolls. Its model, its view and its update.
+import { Primitive, rgb } from "../src/paint";
+import { Element, Div, Label, Canvas, Px, Fill, Row, Column, Packed, style, textStyle, ARROW } from "../src/ui";
+import { Center } from "../src/text";
+import { Input as HandInput, Effect, Click, Release, Hover, Tick, Animate } from "../src/input";
+import { button, iconButton, progress, toggleAt, withTip, Hand, INK, MUTED } from "../src/widgets";
+
+// a value moving from `from` to `to` from the time `start` (milliseconds;
+// -1: from the next frame; -2: still, at `to`) for `length` milliseconds
+export type Motion = { from: f32, to: f32, start: i64, length: i64 };
+
+export type Model = { hover: i64, pressed: i64, on: boolean, knob: Motion, fill: Motion, now: i64, plate: Primitive[] };
+
+export const ANIMATE: i64 = 1;
+export const TOGGLE: i64 = 2;
+export const HELP: i64 = 3;
+
+export function still(v: f32): Motion {
+    return { from: v, to: v, start: -2, length: 1 };
+}
+
+export function initial(plate: Primitive[]): Model {
+    return { hover: -1, pressed: -1, on: false, knob: still(0.0f32), fill: still(0.0f32), now: 0, plate: plate };
+}
+
+// the value of `mo` at the time `t`: eased (slow at both ends)
+export function valueAt(mo: Motion, t: i64): f32 {
+    if (mo.start == -2) {
+        return mo.to;
+    }
+    if (mo.start == -1) {
+        return mo.from;
+    }
+    const p = min(1.0f32, max(0.0f32, f32(t - mo.start) / f32(mo.length)));
+    const eased = p * p * (3.0f32 - 2.0f32 * p);
+    return mo.from + (mo.to - mo.from) * eased;
+}
+
+// `mo` at the time `t`: started at its first frame, still once ended
+function advanced(mo: Motion, t: i64): Motion {
+    if (mo.start == -1) {
+        return { ...mo, start: t };
+    }
+    return mo.start >= 0 && t >= mo.start + mo.length ? still(mo.to) : mo;
+}
+
+function moving(mo: Motion): boolean {
+    return mo.start != -2;
+}
+
+export function update(m: Model, i: HandInput): [Model, Effect[]] {
+    return match (i) {
+        Hover(p) => [{ ...m, hover: p }, []] as const,
+        Click(p, x, y, at, clicks, mods) => {
+            if (p == ANIMATE) {
+                return [{ ...m, pressed: p, fill: { from: 0.0f32, to: 1.0f32, start: -1, length: 1000 } }, [Animate]] as const;
+            }
+            if (p == TOGGLE) {
+                const here = valueAt(m.knob, m.now);
+                return [{ ...m, pressed: p, on: !m.on, knob: { from: here, to: m.on ? 0.0f32 : 1.0f32, start: -1, length: 200 } }, [Animate]] as const;
+            }
+            return [{ ...m, pressed: p }, []] as const;
+        },
+        Release(p) => [{ ...m, pressed: -1 }, []] as const,
+        // a frame: the motions advanced, another asked while one moves
+        Tick(t) => {
+            const next = { ...m, now: t, knob: advanced(m.knob, t), fill: advanced(m.fill, t) };
+            return [next, moving(next.knob) || moving(next.fill) ? [Animate] : []] as const;
+        },
+        _ => [m, []] as const,
+    };
+}
+
+function hand(m: Model, id: i64): Hand {
+    return { hovered: m.hover == id, pressed: m.pressed == id };
+}
+
+export function view(m: Model): Element {
+    const fill = valueAt(m.fill, m.now);
+    const band = Div({ ...style(), direction: Row, gap: 20.0f32, align: Center, stretch: false, padding: 24.0f32, height: Px(96.0f32) }, [
+        withTip(button("Animer", ANIMATE, true, Px(120.0f32), hand(m, ANIMATE)), "Remplit la barre en une seconde"),
+        progress(fill, 240.0f32),
+        // (its width fixed: the components after it do not move with it)
+        Div({ ...style(), width: Px(44.0f32) }, [Label(textStyle(14.0f32, rgb(MUTED)), `${i64(fill * 100.0f32 + 0.5f32)} %`)]),
+        withTip(toggleAt(valueAt(m.knob, m.now), TOGGLE), "Le bouton glisse en 200 ms"),
+        withTip(iconButton("?", HELP, false, hand(m, HELP)), "Une infobulle : le pointeur immobile une demi-seconde"),
+        Label(textStyle(14.0f32, rgb(INK)), "Survolez un bouton, cliquez « Animer » et l'interrupteur"),
+    ]);
+    return Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), scroll: 0, background: rgb(0xF3F4F6u32), cursor: ARROW }, [
+        band,
+        Canvas(1280.0f32, 1040.0f32, m.plate),
+    ]);
+}

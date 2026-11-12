@@ -83,4 +83,27 @@ longwl="$(cd "$out" && python3 "$here/../tools/display/play.py" 520 420 wheel:26
 [ "$longwl" = "[47]" ] || { echo "FAILED: the long list under Wayland: $longwl"; exit 1; }
 longx="$(cd "$out" && PLAY_X11=1 python3 "$here/../tools/display/play.py" 520 420 wheel:260,250,50 clickat:62,200 endserver -- "$out/long" | tail -1)"
 [ "$longx" = "[47]" ] || { echo "FAILED: the long list under X11: $longx"; exit 1; }
-echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx; the keyboard: $tabwl, $tabx; the long list: $longwl, $longx"
+# selections made by a hand: a double click in "deux" whose pointer moves
+# while its button is held (the whole word kept: before, the part before
+# the pointer alone), a drag across words, Shift+Left three times, a triple
+# click whose pointer moves (the whole text); each replaced by a word typed;
+# under Wayland and under X11
+selections="clickat:211,124 type:un\ deux\ trois dblmoveat:108,124 type:DEUX key:Return type:un\ deux\ trois drag:93,124,150,124 type:X key:Return type:un\ deux\ trois key:shift+Left key:shift+Left key:shift+Left type:a key:Return type:abc\ def tplmoveat:100,124 type:Tout key:Return endserver"
+want="[[x] Écrire la bibliothèque, [ ] Taper du texte dans un champ, [ ] un DEUX trois, [ ] unXois, [ ] un deux tra, [ ] Tout]"
+selwl="$(cd "$out" && eval python3 "$here/../tools/display/play.py" 520 420 $selections -- "$out/todo" | tail -1)"
+[ "$selwl" = "$want" ] || { echo "FAILED: selections under Wayland: $selwl"; exit 1; }
+selx="$(cd "$out" && eval PLAY_X11=1 python3 "$here/../tools/display/play.py" 520 420 $selections -- "$out/todo" | tail -1)"
+[ "$selx" = "$want" ] || { echo "FAILED: selections under X11: $selx"; exit 1; }
+# the live gallery: the pointer resting over "?" (its tooltip drawn after
+# half a second: its colour read in the screenshot), "Animer" clicked (the
+# bar filled in a second by the frames of the loop), the switch clicked
+# (its knob slid); under Wayland and under X11
+"$iscc" build examples/gallery_app.isc -o "$out/gallery"
+for mode in wayland x11; do
+    x=""; [ "$mode" = x11 ] && x=1
+    live="$(cd "$out" && PLAY_X11=$x python3 "$here/../tools/display/play.py" 1280 800 move:586,48 wait:0.8 "shot:$out/tip-$mode.png" clickat:84,48 wait:1.3 clickat:520,48 wait:0.5 endserver -- "$out/gallery" | tail -1)"
+    [ "$live" = "(1, 1, true)" ] || { echo "FAILED: the animations under $mode: $live"; exit 1; }
+    tip="$(python3 "$here/../tools/display/pixel.py" "$out/tip-$mode.png" 612 82)"
+    [ "$tip" = "17 24 39" ] || { echo "FAILED: the tooltip under $mode: $tip"; exit 1; }
+done
+echo "ok: a window of Wayland, the counter played by a hand: $played; the tasks typed: $tasks; scrolled: $scrolled; edited: $edited; the clipboard shared: $shared; X11: $x11tasks, $x11shared, $x11dpi; dead keys: $deadwl, $deadx; the keyboard: $tabwl, $tabx; the long list: $longwl, $longx; selections: $selwl, $selx; the live gallery: tooltips and animations"

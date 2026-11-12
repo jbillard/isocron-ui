@@ -20,12 +20,14 @@ import * as x11 from "./x11";
 import { IoError, ioError } from "sys";
 import { rgb, rgba, render, Primitive, Box, quad, rounded, bordered, transparent } from "./paint";
 import { Font, parse } from "./font";
-import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU, FOCUS, WHEEL } from "./ui";
+import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU, FOCUS, WHEEL, tipOf } from "./ui";
 import { POINTER as POINTER_SHAPE, TEXT as TEXT_SHAPE } from "./ui";
-import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Focus, Viewport, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./input";
+import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Focus, Viewport, Tick, Copy, AskPaste, Animate, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./input";
 import { DEAD, DEAD_ACCENTS, composed, spacingAccent } from "./input";
 import { Keymap, parseKeymap, charOf } from "./xkb";
 import * as cursors from "./cursors";
+import { Atlas, emptyAtlas, resolved } from "./atlas";
+import { lineWidth } from "./text";
 
 // the half period of the caret's blinking, in nanoseconds
 const BLINK: u64 = 530000000u64;
@@ -40,7 +42,8 @@ const NEAR: f32 = 4.0f32;
 // wheel (pixels, down: positive), a character typed, a key that edits or a
 // shortcut, the modifiers held, the size of the window, its closing, the
 // text of the clipboard
-export type Ev = Moved(f32, f32) | Down(i64) | Up(i64) | Scroll(f32) | Typed(i64) | Pressed(i64) | Mods(i64) | Resized(i64, i64) | Scaled(f32) | Closed | Pasted(string);
+// (`Elapsed`: time passed, a frame of an animation due)
+export type Ev = Moved(f32, f32) | Down(i64) | Up(i64) | Scroll(f32) | Typed(i64) | Pressed(i64) | Mods(i64) | Resized(i64, i64) | Scaled(f32) | Closed | Pasted(string) | Elapsed;
 
 // what the library keeps of the interface: the size of the window, the
 // places of the frame shown and the offsets of its boxes that scroll, the
@@ -92,6 +95,12 @@ export type Ui = {
     dead: i64,
     focus: i64,
     ring: boolean,
+    atlas: Atlas,
+    animating: boolean,
+    tickAt: u64,
+    hoverSince: u64,
+    tipDue: boolean,
+    tipOff: boolean,
     redraw: boolean,
     closed: boolean,
 };
@@ -110,7 +119,7 @@ export function interface(w: i64, h: i64, now: u64): Ui {
         w: w, h: h, hits: [], offsets: fill(16, 0.0f32), x: -1.0f32, y: -1.0f32, hover: -1, cursor: ARROW, mods: 0,
         pressed: -1, field: -1, px: 0.0f32, py: 0.0f32, bar: -1, grab: 0.0f32, hotBar: -1,
         clickTime: 0u64, clicks: 0, cx: 0.0f32, cy: 0.0f32, since: now, caret: false, caretOn: true,
-        clipboard: "", asked: [], menu: false, menuX: 0.0f32, menuY: 0.0f32, menuHover: -1, menuCut: false, labels: englishMenu(), scale: 1.0f32, dead: -1, focus: -1, ring: false,
+        clipboard: "", asked: [], menu: false, menuX: 0.0f32, menuY: 0.0f32, menuHover: -1, menuCut: false, labels: englishMenu(), scale: 1.0f32, dead: -1, focus: -1, ring: false, atlas: emptyAtlas(), animating: false, tickAt: 0u64, hoverSince: now, tipDue: false, tipOff: false,
         redraw: true, closed: false,
     };
 }
@@ -126,9 +135,18 @@ function told<M>(ui: Ui, m: M, i: Input, update: (M, Input) => [M, Effect[]]): [
     const [nm, fx] = update(m, i);
     const copied = fold(fx, ui.clipboard, (c, e) => match (e) {
         Copy(s) => s,
-        AskPaste => c,
+        _ => c,
     });
-    return [{ ...ui, clipboard: copied, asked: concat(ui.asked, fx), redraw: true }, nm] as const;
+    const animates = count(fx, (e) => e == Animate) > 0;
+    return [{ ...ui, clipboard: copied, asked: concat(ui.asked, fx), redraw: true, animating: ui.animating || animates }, nm] as const;
+}
+
+// an effect that copies a text
+function isCopy(e: Effect): boolean {
+    return match (e) {
+        Copy(s) => true,
+        _ => false,
+    };
 }
 
 // the place the keyboard reaches whose message is `id` (-1: none)
@@ -220,7 +238,7 @@ function barOf(hits: Hit[n], id: i64): i64 {
 // the interface and the model after the pointer moved to (x, y): a
 // scrollbar dragged, the place pressed dragged, the place under the
 // pointer, the scrollbar under it, its shape
-function movedTo<M>(ui: Ui, m: M, x: f32, y: f32, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+function movedTo<M>(ui: Ui, m: M, x: f32, y: f32, t: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
     const at = { ...ui, x: x, y: y };
     // a menu open: its entry under the pointer lit, nothing else
     if (ui.menu) {
@@ -241,8 +259,10 @@ function movedTo<M>(ui: Ui, m: M, x: f32, y: f32, update: (M, Input) => [M, Effe
     const [u1, m1] = ui.pressed >= 0
         ? told(at, m, Drag(ui.pressed, x - ui.px, y - ui.py, ui.field >= 0 && ui.field < ui.hits.length ? offsetAt(ui.hits[ui.field], x) : -1), update)
         : [at, m] as const;
-    const now = hitTest(u1.hits, x, y);
-    const [u2, m2] = ui.pressed < 0 && now != u1.hover ? told({ ...u1, hover: now }, m1, Hover(now), update) : [u1, m1] as const;
+    const place = hitTest(u1.hits, x, y);
+    // (the place under the pointer since `t`: its tooltip shown half a
+    // second later)
+    const [u2, m2] = ui.pressed < 0 && place != u1.hover ? told({ ...u1, hover: place, hoverSince: t, tipOff: false }, m1, Hover(place), update) : [u1, m1] as const;
     const b = barAt(u2.hits, x, y);
     const hot = b >= 0 ? u2.hits[b].id : -1;
     // (the shape kept while a place is pressed: a selection dragged out of
@@ -281,7 +301,8 @@ function pressedAt<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect[]
     // (the focus of the keyboard follows the click, its ring hidden: it
     // shows only when the keyboard moves it)
     const reached = count(ui.hits, (h) => h.kind == FOCUS && h.id == p.id) > 0;
-    const pressed = { ...ui, pressed: p.id, field: fi, px: p.x, py: p.y, clickTime: now, clicks: clicks, cx: ui.x, cy: ui.y, since: now, focus: reached ? p.id : -1, ring: false, redraw: true };
+    // (a press hides the tooltip until the pointer comes to another place)
+    const pressed = { ...ui, pressed: p.id, field: fi, px: p.x, py: p.y, clickTime: now, clicks: clicks, cx: ui.x, cy: ui.y, since: now, focus: reached ? p.id : -1, ring: false, tipOff: true, redraw: true };
     return told(pressed, m, Click(p.id, ui.x - p.x, ui.y - p.y, at, clicks, ui.mods), update);
 }
 
@@ -317,6 +338,20 @@ function menuPressed<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect
 // the menu of a field drawn at its corner, within the window: what draws
 // it and its places (its entries, those that can be chosen with a `range`
 // of 1), over the view
+// the tooltip `text` below and right of the pointer, within the window: a
+// dark box of a line of 13 units
+function tipLaidOut(ui: Ui, f: Font, text: string): Primitive[] {
+    const k = ui.scale;
+    const w = lineWidth(f, 13.0f32 * k, text) + 22.0f32 * k;
+    const h = (13.0f32 * 1.4f32 + 12.0f32) * k;
+    const x = max(0.0f32, min(ui.x + 12.0f32 * k, f32(ui.w) - w - 2.0f32));
+    const below = ui.y + 22.0f32 * k;
+    const y = below + h < f32(ui.h) ? below : max(0.0f32, ui.y - h - 6.0f32 * k);
+    const box = Div({ ...style(), padX: 11.0f32, padY: 6.0f32, background: rgb(0x111827u32), radius: 6.0f32, shadowBlur: 8.0f32, shadowY: 3.0f32, shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.2f32) }, [Label(textStyle(13.0f32, rgb(0xFFFFFFu32)), text)]);
+    const [ps, hits] = placeFrame(f, scaledElement(box, k), x, y, w, h, { offsets: [], caretOn: false, hotBar: -1, scale: k, deferred: true });
+    return ps;
+}
+
 function menuLaidOut(ui: Ui, f: Font): [Primitive[], Hit[]] {
     const n = min(4, ui.labels.length);
     const enabled = (k: i64) => k >= 2 || ui.menuCut;
@@ -346,7 +381,7 @@ function menuLaidOut(ui: Ui, f: Font): [Primitive[], Hit[]] {
         shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.18f32),
         cursor: ARROW,
     }, entries);
-    const [ps, hits] = placeFrame(f, scaledElement(box, ui.scale), x, y, w, h, { offsets: [], caretOn: false, hotBar: -1, scale: ui.scale });
+    const [ps, hits] = placeFrame(f, scaledElement(box, ui.scale), x, y, w, h, { offsets: [], caretOn: false, hotBar: -1, scale: ui.scale, deferred: true });
     // (its entries as entries of a menu; its box a place of its own, which
     // a click closes the menu on)
     const own = map(hits, (p) => p.kind == CLICK ? { ...p, kind: MENU, range: enabled(p.id) ? 1.0f32 : 0.0f32 } : p);
@@ -386,7 +421,10 @@ function viewports<M>(ui: Ui, m: M, before: f32[n], all: boolean, k: i64, update
 // after it)
 function stepOnce<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
     return match (ev) {
-        Moved(x, y) => movedTo(ui, m, x, y, update),
+        Moved(x, y) => movedTo(ui, m, x, y, now, update),
+        // the model told the time of a frame while it animates (it asks the
+        // next one again by `Animate`)
+        Elapsed => ui.animating ? told({ ...ui, animating: false, tickAt: now }, m, Tick(i64(now / 1000000u64)), update) : [ui, m] as const,
         Down(b) => ui.menu ? menuPressed(ui, m, now, update) : (b == 0 ? pressedAt(ui, m, now, update) : (b == 1 ? menuOpened(ui, m, now, update) : [ui, m] as const)),
         Up(b) => {
             if (b != 0) {
@@ -439,11 +477,33 @@ export function caretShown(ui: Ui, now: u64): boolean {
 
 // the milliseconds until the caret blinks (-1: no caret, no limit)
 export function wakeIn(ui: Ui, now: u64): i64 {
-    if (!ui.caret) {
-        return -1;
-    }
     const k = (now - ui.since) / BLINK;
-    return max(1, i64((ui.since + (k + 1u64) * BLINK - now) / 1000000u64) + 1);
+    const blink = ui.caret ? max(1, i64((ui.since + (k + 1u64) * BLINK - now) / 1000000u64) + 1) : -1;
+    // the next frame of an animation, the tooltip of the place under the
+    // pointer
+    const frame = ui.animating ? (now >= ui.tickAt + FRAME ? 1 : max(1, i64((ui.tickAt + FRAME - now) / 1000000u64) + 1)) : -1;
+    const tip = ui.tipDue ? (now >= ui.hoverSince + TIP_DELAY ? 1 : max(1, i64((ui.hoverSince + TIP_DELAY - now) / 1000000u64) + 1)) : -1;
+    return soonest(soonest(blink, frame), tip);
+}
+
+// the sooner of two waits in milliseconds (-1: none)
+function soonest(a: i64, b: i64): i64 {
+    return a < 0 ? b : (b < 0 ? a : min(a, b));
+}
+
+// the time between two frames of an animation, and before a tooltip shows,
+// in nanoseconds
+const FRAME: u64 = 16000000u64;
+const TIP_DELAY: u64 = 500000000u64;
+
+// what time asks at `now`: a frame of an animation (the model told the
+// time), and whether the window must be drawn again (the caret blinked, a
+// tooltip is due, a frame of an animation)
+export function timed<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M, boolean] {
+    const [u1, m1] = ui.animating && now >= ui.tickAt + FRAME ? step(ui, m, Elapsed, now, update) : [ui, m] as const;
+    const blink = u1.caret && caretShown(u1, now) != u1.caretOn;
+    const tip = u1.tipDue && now >= u1.hoverSince + TIP_DELAY;
+    return [u1, m1, blink || tip || u1.redraw] as const;
 }
 
 // the ring of the focus around the place `h`: 2 units wide, 2 units away,
@@ -457,20 +517,29 @@ function ringOf(h: Hit, k: f32): Primitive {
 // the view of `m` laid out at the size of the window at the time `now`:
 // what draws it, and the interface with its places (whether a field holds
 // the focus: a caret to blink)
+@noInline
 export function laidOut<M>(ui: Ui, f: Font, m: M, view: (M) => Element, now: u64): [Primitive[], Ui] {
     const shown = caretShown(ui, now);
-    const [vps, vhits] = placeFrame(f, scaledElement(view(m), ui.scale), 0.0f32, 0.0f32, f32(ui.w), f32(ui.h), { offsets: ui.offsets, caretOn: shown, hotBar: ui.hotBar, scale: ui.scale });
+    // (its glyphs `Pending`: their images those the atlas keeps, the others
+    // drawn once and kept)
+    const e = view(m);
+    const [vps, vhits] = placeFrame(f, scaledElement(e, ui.scale), 0.0f32, 0.0f32, f32(ui.w), f32(ui.h), { offsets: ui.offsets, caretOn: shown, hotBar: ui.hotBar, scale: ui.scale, deferred: true });
     const caret = count(vhits, (h) => h.kind == FIELD && h.id == 1) > 0;
     // the ring of the focus of the keyboard around its place, then the menu,
     // over the view
     const fk = focusIndex(vhits, ui.focus);
     const ring = ui.ring && fk >= 0 ? [ringOf(vhits[fk], ui.scale)] : [];
     const [mps, mhits] = ui.menu ? menuLaidOut(ui, f) : [[], []] as const;
-    const ps = concat(concat(vps, ring), mps);
+    // the tooltip of the place under the pointer, half a second after it
+    // came there (none while a button is held or the menu is open)
+    const tip = ui.hover >= 0 && ui.pressed < 0 && !ui.menu && !ui.tipOff ? tipOf(e, ui.hover) : "";
+    const due = tip != "" && now >= ui.hoverSince + TIP_DELAY;
+    const tps = due ? tipLaidOut(ui, f, tip) : [];
+    const [ps, atlas] = resolved(f, ui.atlas, concat(concat(concat(vps, ring), tps), mps));
     const hits = concat(vhits, mhits);
     // the place under the pointer, its shape, as the new places have them
     const hover = ui.pressed >= 0 ? ui.cursor : cursorAt(hits, ui.x, ui.y);
-    return [ps, { ...ui, hits: hits, caret: caret, caretOn: shown, cursor: hover, redraw: false }] as const;
+    return [ps, { ...ui, hits: hits, caret: caret, caretOn: shown, cursor: hover, redraw: false, atlas: atlas, tipDue: tip != "" && !due }] as const;
 }
 
 // the font of the file `paths[i]`, or of the first after it that is one;
@@ -649,6 +718,7 @@ action feedWindows<M>(w: win.Window, ui: Ui, m: M, evs: Ev[n], i: i64, now: u64,
 }
 
 // what the model asked (`fx` from the `k`-th), done
+@noInline
 action askedWindows<M>(w: win.Window, ui: Ui, m: M, fx: Effect[n], k: i64, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
     if (k >= n) {
         return [ui, m] as const;
@@ -666,6 +736,8 @@ action askedWindows<M>(w: win.Window, ui: Ui, m: M, fx: Effect[n], k: i64, now: 
             const [u1, m1] = step(ui, m, Pasted(text), now, update);
             return askedWindows(w, { ...u1, asked: [] }, m1, fx, k + 1, now, update);
         },
+        // (the frames of an animation: the loop asks them)
+        Animate => askedWindows(w, ui, m, fx, k + 1, now, update),
     };
 }
 
@@ -676,13 +748,14 @@ action loopWindows<M>(w: win.Window, f: Font, m: M, ui: Ui, high: i64, shape: i6
         Ok(evs) => {
             const now = clock();
             const [ins, mods, nh] = fromWindows(evs, ui.mods, high);
-            const [u1, m1] = feedWindows(w, ui, m, ins, 0, now, update);
-            if (u1.closed) {
-                return m1;
+            const [u0, m0] = feedWindows(w, ui, m, ins, 0, now, update);
+            if (u0.closed) {
+                return m0;
             }
-            // the caret blinked: drawn again
-            const blink = u1.caret && caretShown(u1, now) != u1.caretOn;
-            const next = (u1.redraw || blink) && u1.w > 0 && u1.h > 0 ? frame(w, f, m1, view, u1) : u1;
+            // what time asks: the caret blinked, a frame of an animation, a
+            // tooltip due; drawn again
+            const [u1, m1, due] = timed(u0, m0, now, update);
+            const next = due && u1.w > 0 && u1.h > 0 ? frame(w, f, m1, view, u1) : u1;
             if (next.cursor != shape) {
                 win.setCursor(w, next.cursor);
             }
@@ -769,6 +842,7 @@ action readAll(b: net.Conn, acc: u8[]): u8[] {
 // type `mime`): a pair of sockets made (a name of the abstract space, one
 // end accepted), one end given to the compositor, which the program writes
 // the text into, the other read to its end; "" when it fails
+@noInline
 action readOffer(c: net.Conn, offer: u32, mime: string): string {
     const name = `@isocron-ui-paste-${clock()}`;
     return match (unix.listen(name)) {
@@ -800,6 +874,7 @@ action readOffer(c: net.Conn, offer: u32, mime: string): string {
 // the text `text` made the selection of the seat (a source of data of
 // this program, the one before destroyed), given to the programs that
 // paste it (`sent`); nothing without a device of data
+@noInline
 action offered(c: net.Conn, st: State, text: string): State {
     if (st.manager == 0u32 || st.device == 0u32) {
         return st;
@@ -813,9 +888,10 @@ action offered(c: net.Conn, st: State, text: string): State {
 // made the selection of the seat; a paste given the selection when it is
 // another program's (this program's source no longer the selection), else
 // the program's clipboard
+@noInline
 action feedWayland<M>(c: net.Conn, ui: Ui, m: M, now: u64, st: State, update: (M, Input) => [M, Effect[]], ev: Ev): [M, Ui, State] {
     const [u1, m1] = step(ui, m, ev, now, update);
-    const copied = count(u1.asked, (e) => e != AskPaste) > 0;
+    const copied = count(u1.asked, (e) => isCopy(e)) > 0;
     const asks = count(u1.asked, (e) => e == AskPaste) > 0;
     const st1 = copied ? offered(c, st, u1.clipboard) : st;
     if (!asks) {
@@ -830,6 +906,7 @@ action feedWayland<M>(c: net.Conn, ui: Ui, m: M, now: u64, st: State, update: (M
 // the images of the pointer drawn here made again at `k` pixels a unit (a
 // surface, a pool, three buffers at the next ids; the pool's id the
 // surface's plus one), those before destroyed
+@noInline
 action cursorImages(c: net.Conn, st: State, k: i64): State {
     const side = cursors.SIDE * k;
     return match (unix.shared(3 * side * side * 4)) {
@@ -845,6 +922,7 @@ action cursorImages(c: net.Conn, st: State, k: i64): State {
 }
 
 // the shape of the pointer `shape` shown at its entry
+@noInline
 action shapeShown(c: net.Conn, st: State, shape: i64): State {
     if (st.entry == 0u32 || shape == st.shape) {
         return st;
@@ -984,8 +1062,9 @@ action loopWayland<M>(c: net.Conn, f: Font, m: M, ui: Ui, st: State, view: (M) =
         Err(e) => true,
     };
     if (!ready) {
-        const [u2, s2] = st.shown ? drawWayland(c, f, m, view, ui, st) : [ui, st] as const;
-        return loopWayland(c, f, m, u2, s2, view, update);
+        const [u1, m1, due] = timed(ui, m, clock(), update);
+        const [u2, s2] = st.shown && due ? drawWayland(c, f, m1, view, u1, st) : [u1, st] as const;
+        return loopWayland(c, f, m1, u2, s2, view, update);
     }
     const r = match (unix.receiveWithFds(c, 65536, 8)) {
         Ok(got) => got,
@@ -998,11 +1077,10 @@ action loopWayland<M>(c: net.Conn, f: Font, m: M, ui: Ui, st: State, view: (M) =
     // the descriptors received, taken in their order by the events that
     // carry one (the table of the keyboard, a paste of another program),
     // then closed
-    const [nm, nu, ns] = handle(c, f, m, evs, 0, ui, { ...st, pending: rest, fds: r.fds, fdAt: 0 }, view, update);
+    const [hm, hu, ns] = handle(c, f, m, evs, 0, ui, { ...st, pending: rest, fds: r.fds, fdAt: 0 }, view, update);
     const closed = map(r.fds, (fd) => unix.closeFd(fd) == Ok(()) ? 1 : 0);
-    const now = clock();
-    const blink = nu.caret && caretShown(nu, now) != nu.caretOn;
-    const [u2, s2] = (nu.redraw || blink) && ns.shown && !ns.done ? drawWayland(c, f, nm, view, nu, ns) : [nu, ns] as const;
+    const [nu, nm, due] = timed(hu, hm, clock(), update);
+    const [u2, s2] = due && ns.shown && !ns.done ? drawWayland(c, f, nm, view, nu, ns) : [nu, ns] as const;
     return loopWayland(c, f, nm, u2, shapeShown(c, s2, u2.cursor), view, update);
 }
 
@@ -1224,6 +1302,7 @@ action stripsX(c: net.Conn, st: XState, px: u32[n], w: i64, h: i64, y: i64, rows
 
 // the view of `m` laid out, drawn and sent to the window; the interface
 // with its places
+@noInline
 action drawX11<M>(c: net.Conn, f: Font, m: M, view: (M) => Element, ui: Ui, st: XState): Ui {
     const [ps, next] = laidOut(ui, f, m, view, clock());
     const px = render(ui.w, ui.h, rgb(0xFFFFFFu32), ps);
@@ -1233,6 +1312,7 @@ action drawX11<M>(c: net.Conn, f: Font, m: M, view: (M) => Element, ui: Ui, st: 
 
 // the text of the selection `CLIPBOARD` of another program asked as
 // UTF-8 into the property of the window; "" when it fails or is not UTF-8
+@noInline
 action pasteX(c: net.Conn, st: XState): [string, XState] {
     const asked = net.write(c, x11.convertSelection(st.window, st.atoms[A_CLIPBOARD], st.atoms[A_UTF8], st.atoms[A_PASTE]));
     const [found, ev, st1] = eventX(c, st, x11.SELECTION_NOTIFY, []);
@@ -1252,9 +1332,10 @@ action pasteX(c: net.Conn, st: XState): [string, XState] {
 // the event `ev` given to `step`, what the model asks done: a text copied
 // made the selection `CLIPBOARD` of this window; a paste given the
 // selection of another program, else the program's clipboard
+@noInline
 action feedX11<M>(c: net.Conn, ui: Ui, m: M, now: u64, st: XState, update: (M, Input) => [M, Effect[]], ev: Ev): [M, Ui, XState] {
     const [u1, m1] = step(ui, m, ev, now, update);
-    const copied = count(u1.asked, (e) => e != AskPaste) > 0;
+    const copied = count(u1.asked, (e) => isCopy(e)) > 0;
     const asks = count(u1.asked, (e) => e == AskPaste) > 0;
     const owned = copied ? net.write(c, x11.setSelectionOwner(st.window, st.atoms[A_CLIPBOARD])) : Ok(());
     const st1 = copied ? { ...st, owner: true, text: u1.clipboard } : st;
@@ -1270,6 +1351,7 @@ action feedX11<M>(c: net.Conn, ui: Ui, m: M, now: u64, st: XState, update: (M, I
 // a program that asks the selection this window owns answered: its text
 // (UTF-8, or the list of the types offered) written into the property it
 // names, then told; another type refused
+@noInline
 action answerX(c: net.Conn, st: XState, e: x11.Message): XState {
     const b = e.bytes;
     const requestor = x11.u32At(b, 12);
@@ -1379,10 +1461,9 @@ action loopX11<M>(c: net.Conn, f: Font, m: M, ui: Ui, st: XState, view: (M) => E
     if (gone) {
         return m;
     }
-    const [nm, nu, ns] = handleX(c, m, ms, 0, ui, { ...st, pending: rest, queued: [] }, update);
-    const now = clock();
-    const blink = nu.caret && caretShown(nu, now) != nu.caretOn;
-    const u2 = nu.redraw || blink ? drawX11(c, f, nm, view, nu, ns) : nu;
+    const [hm, hu, ns] = handleX(c, m, ms, 0, ui, { ...st, pending: rest, queued: [] }, update);
+    const [nu, nm, due] = timed(hu, hm, clock(), update);
+    const u2 = due ? drawX11(c, f, nm, view, nu, ns) : nu;
     const shaped = u2.cursor != ns.shape ? net.write(c, x11.setCursor(ns.window, ns.cursorFirst + u32(u2.cursor))) : Ok(());
     return loopX11(c, f, nm, { ...u2, redraw: false }, { ...ns, shape: u2.cursor }, view, update);
 }

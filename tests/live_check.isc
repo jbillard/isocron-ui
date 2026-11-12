@@ -1,0 +1,79 @@
+// The live gallery (examples/gallery_live.isc) driven without a screen, at
+// given times: the pointer over a button with a tooltip, the frame laid out
+// before and after half a second (the tooltip drawn, the wait asked), a
+// press hiding it; a click on "Animer": the frames asked (`Animate`), the
+// model told their time (`Tick`), the bar at a quarter, half and its end,
+// no frame asked after it; the switch.
+import { parse, Font } from "../src/font";
+import { Primitive, Box } from "../src/paint";
+import { CLICK } from "../src/ui";
+import { Ui, Ev, Moved, Down, Up, Elapsed, interface, step, laidOut, wakeIn } from "../src/app";
+import { Model, initial, update, view, valueAt, ANIMATE, TOGGLE, HELP } from "../examples/gallery_live";
+
+const MS: u64 = 1000000u64;
+
+// the event `ev` at `t` ms, the frame laid out after it at the same time
+function at(f: Font, ui: Ui, m: Model, ev: Ev, t: u64): [Ui, Model] {
+    const [u1, m1] = step(ui, m, ev, t * MS, update);
+    const [ps, u2] = laidOut({ ...u1, asked: [] }, f, m1, view, t * MS);
+    return [u2, m1] as const;
+}
+
+// the boxes of the colour of a tooltip in the frame laid out at `t`
+function tips(f: Font, ui: Ui, m: Model, t: u64): i64 {
+    const [ps, u] = laidOut(ui, f, m, view, t * MS);
+    return count(ps, (p) => match (p) {
+        Box(q) => q.background.r < 0.07f32 && q.background.g < 0.1f32 && q.background.b > 0.14f32 && q.background.b < 0.16f32,
+        _ => false,
+    });
+}
+
+// the centre of the place of the message `id`
+function centre(ui: Ui, id: i64): [f32, f32] {
+    const k = findIndex(ui.hits, (h) => h.kind == CLICK && h.id == id);
+    return [ui.hits[k].x + ui.hits[k].w * 0.5f32, ui.hits[k].y + ui.hits[k].h * 0.5f32] as const;
+}
+
+action main(args: string[k]): i32 {
+    return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => {
+            const m0 = initial([]);
+            const [ps0, u0] = laidOut(interface(1280, 800, 0u64), f, m0, view, 0u64);
+            // the pointer over "?" at 1000 ms
+            const [hx, hy] = centre(u0, HELP);
+            const [u1, m1] = at(f, u0, m0, Moved(hx, hy), 1000u64);
+            print([u1.hover == HELP, u1.tipDue, wakeIn(u1, 1000u64 * MS), tips(f, u1, m1, 1300u64), tips(f, u1, m1, 1600u64)] as const);
+            // a press on it: no tooltip after
+            const [u2, m2] = at(f, u1, m1, Down(0), 1700u64);
+            const [u3, m3] = at(f, u2, m2, Up(0), 1750u64);
+            print([tips(f, u3, m3, 2600u64), u3.tipDue] as const);
+            // "Animer" clicked at 3000 ms: frames asked
+            const [ax, ay] = centre(u3, ANIMATE);
+            const [u4, m4] = at(f, u3, m3, Moved(ax, ay), 2990u64);
+            const [u5, m5] = at(f, u4, m4, Down(0), 3000u64);
+            const [u6, m6] = at(f, u5, m5, Up(0), 3010u64);
+            print([u6.animating, wakeIn(u6, 3010u64 * MS)] as const);
+            // the frames: the first at 3016 (the bar starts), then at a
+            // quarter, half and past its end
+            const [u7, m7] = at(f, u6, m6, Elapsed, 3016u64);
+            const [u8, m8] = at(f, u7, m7, Elapsed, 3266u64);
+            const [u9, m9] = at(f, u8, m8, Elapsed, 3516u64);
+            const [u10, m10] = at(f, u9, m9, Elapsed, 4100u64);
+            print([valueAt(m7.fill, m7.now), valueAt(m8.fill, m8.now), valueAt(m9.fill, m9.now), valueAt(m10.fill, m10.now), u10.animating] as const);
+            // the switch: its knob at the start, half way, at its end
+            const [tx, ty] = centre(u10, TOGGLE);
+            const [u11, m11] = at(f, u10, m10, Moved(tx, ty), 5000u64);
+            const [u12, m12] = at(f, u11, m11, Down(0), 5010u64);
+            const [u13, m13] = at(f, u12, m12, Up(0), 5020u64);
+            const [u14, m14] = at(f, u13, m13, Elapsed, 5040u64);
+            const [u15, m15] = at(f, u14, m14, Elapsed, 5140u64);
+            const [u16, m16] = at(f, u15, m15, Elapsed, 5300u64);
+            print([m13.on, valueAt(m14.knob, m14.now), valueAt(m15.knob, m15.now), valueAt(m16.knob, m16.now), u16.animating] as const);
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

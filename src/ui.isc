@@ -7,9 +7,9 @@
 // draw them, and the places the pointer reaches, the last drawn first: a
 // click, the wheel, a scrollbar, the characters of a field, the shape of
 // the pointer.
-import { Primitive, Box, Blur, Clip, Unclip, Raster, Color, quad, rounded, bordered, transparent, rgb, rgba } from "./paint";
+import { Primitive, Box, Blur, Clip, Unclip, Raster, Color, quad, rounded, bordered, transparent, rgb, rgba, movedBy } from "./paint";
 import { Font } from "./font";
-import { Align, Start, Center, End, paragraph, measureParagraph, line, lineWidth, stops } from "./text";
+import { Align, Start, Center, End, paragraph, paragraphAs, measureParagraph, line, lineAs, lineWidth, stops } from "./text";
 import { Editing, selection } from "./edit";
 import { Picture } from "./png";
 
@@ -27,6 +27,22 @@ export const BAR: i64 = 2;
 export const FIELD: i64 = 3;
 export const SHAPE: i64 = 4;
 export const MENU: i64 = 5;
+// the tooltip of the box whose message is `id` in `e` ("": none)
+export function tipOf(e: Element, id: i64): string {
+    return match (e) {
+        Div(st, cs) => st.onClick == id && st.tip != "" ? st.tip : tipAmong(cs, id, 0),
+        _ => "",
+    };
+}
+
+function tipAmong(cs: Element[n], id: i64, k: i64): string {
+    if (k >= n) {
+        return "";
+    }
+    const t = tipOf(cs[k], id);
+    return t != "" ? t : tipAmong(cs, id, k + 1);
+}
+
 // a place the keyboard reaches (Tab): that of a box `focusable`, its
 // message `id`, the radius of its corners as its `range` (its ring drawn
 // around it)
@@ -76,6 +92,9 @@ export type Style = {
     // a box with a message reached by the keyboard too: Tab gives it the
     // focus (a ring around it), Enter or Space then click it
     focusable: boolean,
+    // the text of the tooltip of a box with a message, shown by the pointer
+    // resting over it (half a second); "": none
+    tip: string,
     // the padding across and down when not that of `padding` (-1)
     padX: f32,
     padY: f32,
@@ -94,7 +113,10 @@ export type TextStyle = { em: f32, color: Color, align: Align, lineHeight: f32 }
 // drawn; a text shown while it is empty, in a grey), or an image (a PNG
 // file read, `png.decode`) drawn in its box, its size given (its own when
 // 0)
-export type Element = Div(Style, Element[k]) | Label(TextStyle, string) | Input(TextStyle, Editing, boolean, string) | Image(Picture, f32, f32);
+// (`Canvas(w, h, ps)`: the primitives `ps` drawn in a box of `w` by `h`,
+// their (0, 0) its corner, in pixels: not enlarged with the density, as
+// GPUI's `canvas`)
+export type Element = Div(Style, Element[k]) | Label(TextStyle, string) | Input(TextStyle, Editing, boolean, string) | Image(Picture, f32, f32) | Canvas(f32, f32, Primitive[]);
 
 // a place the pointer reaches, by its `kind`: CLICK (a box and its message
 // `id`), WHEEL (a box that scrolls: the number of its offset as `id`, as
@@ -111,7 +133,9 @@ export type Hit = { x: f32, y: f32, w: f32, h: f32, id: i64, kind: i64, range: f
 // that scroll, the caret (shown or hidden by its blinking), the scrollbar
 // under the pointer (its offset's number, -1: none), the pixels of a unit
 // (the factor of the screen: 1.5 at 150 %), for the scrollbars
-export type Frame = { offsets: f32[], caretOn: boolean, hotBar: i64, scale: f32 };
+// (`deferred`: its glyphs `Pending`, their images made from those kept,
+// atlas.isc)
+export type Frame = { offsets: f32[], caretOn: boolean, hotBar: i64, scale: f32, deferred: boolean };
 
 // a length `k` times larger
 function scaledLength(l: Length, k: f32): Length {
@@ -137,6 +161,7 @@ export function scaledElement(e: Element, k: f32): Element {
         Label(ts, s) => Label(scaledText(ts, k), s),
         Input(ts, ed, focused, hint) => Input(scaledText(ts, k), ed, focused, hint),
         Image(p, w, h) => Image(p, (w > 0.0f32 ? w : f32(p.width)) * k, (h > 0.0f32 ? h : f32(p.height)) * k),
+        Canvas(w, h, ps) => Canvas(w, h, ps),
         Div(st, cs) => Div({
             ...st,
             width: scaledLength(st.width, k),
@@ -196,6 +221,7 @@ export function style(): Style {
         scroll: -1,
         cursor: -1,
         focusable: false,
+        tip: "",
         padX: -1.0f32,
         padY: -1.0f32,
         outline: 0.0f32,
@@ -254,6 +280,7 @@ function measure(f: Font, e: Element, room: f32): [f32, f32] {
         // a line and room for the caret after it
         Input(ts, ed, focused, hint) => [lineWidth(f, ts.em, ed.text == "" ? hint : ed.text) + 2.0f32, ts.lineHeight] as const,
         Image(p, w, h) => [w > 0.0f32 ? w : f32(p.width), h > 0.0f32 ? h : f32(p.height)] as const,
+        Canvas(w, h, ps) => [w, h] as const,
         Div(st, cs) => {
             const row = isRow(st.direction);
             const [px, py] = padsOf(st);
@@ -306,14 +333,14 @@ export function place(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32): [Pri
 // numbers; none: 0), each offset within its range (the height of its
 // content past its own)
 export function placeScrolled(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, offsets: f32[]): [Primitive[], Hit[]] {
-    return placeFrame(f, e, x, y, w, h, { offsets: offsets, caretOn: true, hotBar: -1, scale: 1.0f32 });
+    return placeFrame(f, e, x, y, w, h, { offsets: offsets, caretOn: true, hotBar: -1, scale: 1.0f32, deferred: false });
 }
 
 // the line of a field (its text, caret and selection `ed`; with the focus,
 // its selection and caret drawn) in the box (x, y, w, h), in the middle of
 // its height: moved left as far as its caret needs to be seen, cut to the
 // box; its place gives the pen at each boundary of its characters
-function placeInput(f: Font, ts: TextStyle, ed: Editing, focused: boolean, hint: string, x: f32, y: f32, w: f32, h: f32, caretOn: boolean): [Primitive[], Hit[]] {
+function placeInput(f: Font, ts: TextStyle, ed: Editing, focused: boolean, hint: string, x: f32, y: f32, w: f32, h: f32, caretOn: boolean, deferred: boolean): [Primitive[], Hit[]] {
     const [marks, xs] = stops(f, ts.em, ed.text);
     const at = (o: i64) => {
         const k = findIndex(marks, (m) => m >= o);
@@ -328,7 +355,7 @@ function placeInput(f: Font, ts: TextStyle, ed: Editing, focused: boolean, hint:
     const ch = ts.em * 1.25f32;
     const caret: Primitive[] = focused && caretOn ? [Box(quad(floor(ox + cx), top + (ts.lineHeight - ch) * 0.5f32, 1.5f32, ch, caretColor()))] : [];
     // (an empty field shows its hint, its caret before it)
-    const text = ed.text == "" ? line(f, ts.em, hint, ox, baseline(f, ts, top), hintColor()) : line(f, ts.em, ed.text, ox, baseline(f, ts, top), ts.color);
+    const text = ed.text == "" ? lineAs(f, ts.em, hint, ox, baseline(f, ts, top), hintColor(), deferred) : lineAs(f, ts.em, ed.text, ox, baseline(f, ts, top), ts.color, deferred);
     const drawn = concat(concat(concat(concat([Clip(x, y, x + w, y + h)], sel), text), caret), [Unclip]);
     // (its `id` 1 with the focus: a caret to blink; its `range` 1 with a
     // selection)
@@ -341,10 +368,12 @@ function placeInput(f: Font, ts: TextStyle, ed: Editing, focused: boolean, hint:
 export function placeFrame(f: Font, e: Element, x: f32, y: f32, w: f32, h: f32, fr: Frame): [Primitive[], Hit[]] {
     const offsets = fr.offsets;
     return match (e) {
-        Label(ts, s) => [paragraph(f, ts.em, s, x, baseline(f, ts, y), w, ts.lineHeight, ts.align, ts.color), []] as const,
-        Input(ts, ed, focused, hint) => placeInput(f, ts, ed, focused, hint, x, y, w, h, fr.caretOn),
+        Label(ts, s) => [paragraphAs(f, ts.em, s, x, baseline(f, ts, y), w, ts.lineHeight, ts.align, ts.color, fr.deferred), []] as const,
+        Input(ts, ed, focused, hint) => placeInput(f, ts, ed, focused, hint, x, y, w, h, fr.caretOn, fr.deferred),
         // (its pixels in its box: its size the box's, given by its parent)
         Image(p, iw, ih) => [[Raster({ x: x, y: y, w: w, h: h, iw: p.width, ih: p.height, pixels: p.pixels })], []] as const,
+        // (its primitives within its box)
+        Canvas(cw, ch, ps) => [concat(concat([Clip(x, y, x + w, y + h)], map(ps, (p) => movedBy(p, x, y))), [Unclip]), []] as const,
         Div(st, cs) => {
             const deco = decoration(st, x, y, w, h);
             const shape = st.cursor >= 0 ? st.cursor : (st.onClick >= 0 ? POINTER : -1);
