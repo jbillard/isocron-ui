@@ -1121,7 +1121,12 @@ function run(vm: Vm, stop: i64): Vm {
         35 => {
             const n = b == 0 ? vm.mtop - ra - 1 : b;
             const t = vm.rI[ra];
-            return run({ ...fold(iota(n), vm, (acc, i) => rawSet(acc, t, intV(c + 1 + i), reg(acc, ra + 1 + i))), pc: next }, stop);
+            // (the value read before the machine is given to `rawSet`: read
+            // after, it copied the whole store at each value)
+            return run({ ...fold(iota(n), vm, (acc, i) => {
+                const v = reg(acc, ra + 1 + i);
+                return rawSet(acc, t, intV(c + 1 + i), v);
+            }), pc: next }, stop);
         },
         36 => run(closure(gcMaybe({ ...vm, pc: next }), ra, b), stop),
         37 => run({ ...varargs(vm, ra, b - 1), pc: next }, stop),
@@ -1393,7 +1398,9 @@ function sortTable(vm: Vm, t: i64, comp: V, line: i64): Vm {
     if (order.length == n) {
         return fold(iota(n), vm, (acc, k) => rawSet(acc, t, intV(k + 1), vs[order[k]]));
     }
-    const [v1, idx] = mergeWidth(vm, vs, iota(n), 1, comp, line);
+    const so = mergeWidth({ vm: vm, dst: iota(n) }, vs, n, 1, comp, line);
+    const idx = so.dst;
+    const v1 = so.vm;
     if (v1.err) {
         return v1;
     }
@@ -1404,13 +1411,15 @@ function sortTable(vm: Vm, t: i64, comp: V, line: i64): Vm {
 // calls of `comp` (an array alone would be lent there, copied at each step)
 type Sorting = { vm: Vm, dst: i64[] };
 
-// the runs of `width` of `src` merged two by two, until one run
-function mergeWidth(vm: Vm, vs: V[m], src: i64[n], width: i64, comp: V, line: i64): [Vm, i64[]] {
-    if (width >= n || vm.err) {
-        return [vm, src] as const;
+// the runs of `width` of the order `so.dst` merged two by two, until one
+// run (the machine given along: lent, it was copied at each pass)
+function mergeWidth(so: Sorting, vs: V[m], n: i64, width: i64, comp: V, line: i64): Sorting {
+    if (width >= n || so.vm.err) {
+        return so;
     }
-    const so = mergePass({ vm: vm, dst: fill(n, 0) }, vs, src, width, 0, comp, line);
-    return mergeWidth(so.vm, vs, so.dst, width * 2, comp, line);
+    const src = so.dst;
+    const next = mergePass({ vm: so.vm, dst: fill(n, 0) }, vs, src, width, 0, comp, line);
+    return mergeWidth(next, vs, n, width * 2, comp, line);
 }
 
 function mergePass(so: Sorting, vs: V[m], src: i64[n], width: i64, lo: i64, comp: V, line: i64): Sorting {
