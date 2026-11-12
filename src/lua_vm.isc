@@ -272,6 +272,11 @@ function append(vm: Vm, t: i64, v: V): Vm {
 
 function regrowArr(vm: Vm, t: i64, cap: i64): Vm {
     const info = vm.tabs[t];
+    // (the last slots of the store: grown where they are, nothing copied)
+    if (info.arr + info.acap == vm.stop && info.acap > 0) {
+        const [v0, more] = alloc(vm, cap - info.acap);
+        return { ...v0, tabs: v0.tabs.with(t, { ...info, acap: cap }) };
+    }
     const [v1, base] = alloc(vm, cap);
     const v2 = fold(iota(info.len), v1, (acc, i) => ({ ...acc, svT: acc.svT.with(base + i, acc.svT[info.arr + i]), svI: acc.svI.with(base + i, acc.svI[info.arr + i]), svF: acc.svF.with(base + i, acc.svF[info.arr + i]) }));
     return { ...v2, tabs: v2.tabs.with(t, { ...info, arr: base, acap: cap }) };
@@ -1007,6 +1012,15 @@ function run(vm: Vm, stop: i64): Vm {
         22 => run({ ...vm, regs: vm.regs.with(ra, { t: truthyT(vm.regs[vm.base + b].t) ? T_FALSE : T_TRUE, i: 0, f: 0.0 }), pc: next }, stop),
         23 => {
             const x = reg(vm, vm.base + b);
+            // (a table of no metatable, a text: their lengths here)
+            if (x.t == T_TAB && vm.tabs[x.i].meta < 0) {
+                const n = vm.tabs[x.i].len;
+                return run({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: n, f: 0.0 }), pc: next }, stop);
+            }
+            if (x.t == T_STR) {
+                const n = vm.strs[x.i].length;
+                return run({ ...vm, regs: vm.regs.with(ra, { t: T_INT, i: n, f: 0.0 }), pc: next }, stop);
+            }
             return run(unary({ ...vm, pc: next }, 2, x, ra), stop);
         },
         24 => run({ ...vm, pc: next + b }, stop),
