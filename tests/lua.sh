@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The interpreter of Lua of the library (src/lua.isc) against the reference
+# The machine of Lua of the library (src/lua_vm.isc: the chunks compiled to
+# bytecode by src/lua_code.isc) against the reference
 # interpreter (Lua 5.4 of its authors, in the image `isocron-ui-lua` of
 # tools/lua/ref): each script of tests/lua run by both, their outputs the
 # same byte for byte; the scripts whose name ends in `_mine` (what this Lua
@@ -12,7 +13,7 @@ iscc="${ISCC:-iscc}"
 out="$(mktemp -d)"
 trap 'rm -r -- "$out"' EXIT
 docker image inspect isocron-ui-lua > /dev/null 2>&1 || docker build -q -t isocron-ui-lua tools/lua/ref > /dev/null
-"$iscc" build tools/lua/run.isc -o "$out/run"
+"$iscc" build tools/lua/vmrun.isc -o "$out/run"
 cd "$here/lua"
 n=0
 for f in *.lua; do

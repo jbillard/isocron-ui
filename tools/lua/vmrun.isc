@@ -1,0 +1,27 @@
+// A file of Lua run by the machine of the library (src/lua_vm.isc), its
+// lines printed, its error as the reference interpreter writes it.
+// usage: vmrun FILE.lua [ARGS...]
+import * as vm from "../../src/lua_vm";
+
+action main(args: string[k]): i32 {
+    if (args.length < 1) {
+        print("usage: vmrun FILE.lua [ARGS...]");
+        return 2;
+    }
+    const m0 = vm.newVm();
+    const [m1, f] = vm.load(m0, readText(args[0]), args[0]);
+    if (vm.failed(m1)) {
+        print(`lua: ${vm.errorText(m1)}`);
+        return 1;
+    }
+    const [m2, rs] = vm.call(m1, f, []);
+    const [m3, out] = vm.takeOutput(m2);
+    if (out.length > 0) {
+        print(join(out, "\n"));
+    }
+    if (vm.failed(m3)) {
+        print(`lua: ${vm.errorText(m3)}`);
+        return 1;
+    }
+    return 0;
+}

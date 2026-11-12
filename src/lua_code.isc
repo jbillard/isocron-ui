@@ -1,0 +1,889 @@
+// The compiler of Lua to the code of the machine of src/lua_vm.isc: the
+// trees of src/lua_parse.isc (their locals already resolved, each a slot of
+// its function) made into instructions of registers, as those of the
+// reference interpreter: each local of a function its register (its slot),
+// the temporaries above them; a call puts its function and its arguments in
+// consecutive registers and finds its results there; comparisons in
+// conditions jump (a comparison skips the jump that follows it), `and` and
+// `or` jump over their right operand.
+//
+// An instruction is one integer: its operation (8 bits), `a` (16 bits, a
+// register) and `b` and `c` (20 bits each, signed: a register, or below 0
+// the constant -b - 1, or the length of a jump). Every function of every
+// chunk loaded shares the code and the constants of the machine: a function
+// is the place of its first instruction.
+import { Proto, Chunk, Expr, Stat, Place, Local, Cell, Up, Global,
+    ENil, ETrue, EFalse, EInt, EFloat, EStr, EVararg, EFunc, EName, EIndex, ECall, EMethod, EBin, EAnd, EOr, EUn, ETable, EParen,
+    SLocal, SLocalFunc, SAssign, SCall, SIf, SWhile, SRepeat, SNumFor, SGenFor, SReturn, SBreak, SDo,
+    OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_IDIV, OP_MOD, OP_POW, OP_CONCAT, OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE,
+    UN_NEG, UN_NOT, UN_LEN } from "./lua_parse";
+
+// ----- the instructions ------------------------------------------------------
+
+export const I_MOVE: i64 = 0;        // R[a] = R[b]
+export const I_LOADK: i64 = 1;       // R[a] = K[b]
+export const I_LOADNIL: i64 = 2;     // R[a .. a + b] = nil
+export const I_LOADBOOL: i64 = 3;    // R[a] = b != 0
+export const I_LOADI: i64 = 4;       // R[a] = the integer b
+export const I_GETUPVAL: i64 = 5;    // R[a] = the upvalue b
+export const I_SETUPVAL: i64 = 6;    // the upvalue b = R[a]
+export const I_GETGLOBAL: i64 = 7;   // R[a] = globals[K[b]]
+export const I_SETGLOBAL: i64 = 8;   // globals[K[b]] = R[a]
+export const I_GETTABLE: i64 = 9;    // R[a] = R[b][RK(c)]
+export const I_SETTABLE: i64 = 10;   // R[a][RK(b)] = RK(c)
+export const I_NEWTABLE: i64 = 11;   // R[a] = {} (room for b values and c keys)
+export const I_SELF: i64 = 12;       // R[a + 1] = R[b]; R[a] = R[b][RK(c)]
+export const I_ADD: i64 = 13;        // R[a] = RK(b) + RK(c), and the others of `OP_*`
+export const I_SUB: i64 = 14;
+export const I_MUL: i64 = 15;
+export const I_DIV: i64 = 16;
+export const I_IDIV: i64 = 17;
+export const I_MOD: i64 = 18;
+export const I_POW: i64 = 19;
+export const I_CONCAT: i64 = 20;     // R[a] = RK(b) .. RK(c)
+export const I_UNM: i64 = 21;        // R[a] = -R[b]
+export const I_NOT: i64 = 22;        // R[a] = not R[b]
+export const I_LEN: i64 = 23;        // R[a] = #R[b]
+export const I_JMP: i64 = 24;        // pc += b
+export const I_EQ: i64 = 25;         // if (RK(b) == RK(c)) != a, the next instruction skipped
+export const I_LT: i64 = 26;         // the same with <
+export const I_LE: i64 = 27;         // with <=
+export const I_TEST: i64 = 28;       // if truthy(R[a]) != (c != 0), the next instruction skipped
+export const I_CALL: i64 = 29;       // R[a .. a + c - 2] = R[a](R[a + 1 .. a + b - 1]) (b = 0: to the top; c = 0: all, the top after them)
+export const I_RETURN: i64 = 30;     // return R[a .. a + b - 2] (b = 0: to the top)
+export const I_FORPREP: i64 = 31;    // R[a] start, R[a + 1] limit, R[a + 2] step: none, pc += b; else R[c] = start
+export const I_FORLOOP: i64 = 32;    // the next turn: R[c] = the value, pc += b (back to the body)
+export const I_TFORCALL: i64 = 33;   // R[a + 3 .. a + 2 + c] = R[a](R[a + 1], R[a + 2])
+export const I_TFORLOOP: i64 = 34;   // R[a + 3] not nil: R[a + 2] = R[a + 3], pc += b
+export const I_SETLIST: i64 = 35;    // R[a][c + i] = R[a + i], 1 <= i <= b (b = 0: to the top)
+export const I_CLOSURE: i64 = 36;    // R[a] = the closure of the function b
+export const I_VARARG: i64 = 37;     // R[a .. a + b - 2] = ... (b = 0: all, the top after them)
+export const I_NEWCELL: i64 = 38;    // R[a] = a new cell holding R[b] (a local captured)
+export const I_GETCELL: i64 = 39;    // R[a] = the value of the cell R[b]
+export const I_SETCELL: i64 = 40;    // the cell R[a] = R[b]
+export const I_SEQ: i64 = 41;        // R[a] = RK(b) == RK(c)
+export const I_SLT: i64 = 42;        // R[a] = RK(b) < RK(c)
+export const I_SLE: i64 = 43;        // R[a] = RK(b) <= RK(c)
+export const I_GETFIELD: i64 = 44;   // R[a] = R[b][K[c]] (a string)
+export const I_SETFIELD: i64 = 45;   // R[a][K[b]] = RK(c) (a string)
+export const I_ADDI: i64 = 46;       // R[a] = R[b] + the integer c
+
+// the names of the operations, for the listings of tests
+export const I_NAMES: string[] = ["MOVE", "LOADK", "LOADNIL", "LOADBOOL", "LOADI", "GETUPVAL", "SETUPVAL", "GETGLOBAL", "SETGLOBAL", "GETTABLE",
+    "SETTABLE", "NEWTABLE", "SELF", "ADD", "SUB", "MUL", "DIV", "IDIV", "MOD", "POW", "CONCAT", "UNM", "NOT", "LEN", "JMP", "EQ", "LT", "LE",
+    "TEST", "CALL", "RETURN", "FORPREP", "FORLOOP", "TFORCALL", "TFORLOOP", "SETLIST", "CLOSURE", "VARARG", "NEWCELL", "GETCELL", "SETCELL",
+    "SEQ", "SLT", "SLE", "GETFIELD", "SETFIELD", "ADDI"];
+
+const BIAS: i64 = 524288;
+// the largest integer of `b` (LOADI, ADDI)
+const SMALL: i64 = 524287;
+
+export function encode(op: i64, a: i64, b: i64, c: i64): i64 {
+    return op | (a << 8) | ((b + BIAS) << 24) | ((c + BIAS) << 44);
+}
+
+export function opOf(ins: i64): i64 {
+    return ins & 255;
+}
+
+export function aOf(ins: i64): i64 {
+    return (ins >> 8) & 65535;
+}
+
+export function bOf(ins: i64): i64 {
+    return ((ins >> 24) & 1048575) - BIAS;
+}
+
+export function cOf(ins: i64): i64 {
+    return ((ins >> 44) & 1048575) - BIAS;
+}
+
+// the tags of values (those of the constants and of the machine)
+export const T_NIL: i64 = 0;
+export const T_FALSE: i64 = 1;
+export const T_TRUE: i64 = 2;
+export const T_INT: i64 = 3;
+export const T_NUM: i64 = 4;
+export const T_STR: i64 = 5;
+export const T_TAB: i64 = 6;
+export const T_FUN: i64 = 7;
+export const T_BUILTIN: i64 = 8;
+export const T_CELL: i64 = 9;
+
+// ----- the code made -------------------------------------------------------
+
+// the code and constants of every function compiled (a constant: its tag,
+// its integer (the index of a string among `kS`), its float), and of each
+// function its first instruction, its parameters, whether it takes `...`,
+// its registers, its upvalues (from `upBase`: each the register of a local
+// of the function around it, `true`, or an upvalue of it), its name, line
+// and chunk
+// (`notes`: what an instruction that indexes or calls reads, named in its
+// errors as Lua names it: `local 't'`, `global 'f'`, `field 'a'`, ...)
+export type Code = {
+    code: i64[], lines: i64[], notes: string[], kT: i64[], kI: i64[], kF: f64[], kS: string[],
+    pStart: i64[], pNparams: i64[], pVararg: boolean[], pNregs: i64[], pUpBase: i64[], pNups: i64[], pName: string[], pLine: i64[], pChunk: string[],
+    upLocal: boolean[], upIdx: i64[],
+};
+
+export function emptyCode(): Code {
+    return {
+        code: [], lines: [], notes: [], kT: [], kI: [], kF: [], kS: [],
+        pStart: [], pNparams: [], pVararg: [], pNregs: [], pUpBase: [], pNups: [], pName: [], pLine: [], pChunk: [],
+        upLocal: [], upIdx: [],
+    };
+}
+
+// the compiler: the code, the function being compiled (its first global
+// number of the functions of its chunk, its first register of temporaries,
+// the next free, the most used, the line), the jumps of the `break`s of the
+// loop around; the names of the locals and upvalues of the function
+type Cg = { k: Code, pbase: i64, base: i64, free: i64, maxreg: i64, line: i64, breaks: i64[], names: string[], upNames: string[] };
+
+function emit(cg: Cg, op: i64, a: i64, b: i64, c: i64): [Cg, i64] {
+    const at = cg.k.code.length;
+    const k1 = { ...cg.k, code: concat(cg.k.code, [encode(op, a, b, c)]), lines: concat(cg.k.lines, [cg.line]), notes: concat(cg.k.notes, [""]) };
+    return [{ ...cg, k: k1 }, at] as const;
+}
+
+// the last instruction noted with what it reads (`describe`)
+function noted(cg: Cg, note: string): Cg {
+    const at = cg.k.notes.length - 1;
+    return note == "" || at < 0 ? cg : { ...cg, k: { ...cg.k, notes: cg.k.notes.with(at, note) } };
+}
+
+// what the value of `e` is, as Lua names it in an error (nothing for a
+// value of no name)
+function describe(cg: Cg, e: Expr): string {
+    return match (e) {
+        EName(pl) => match (pl) {
+            Local(s) => s < cg.names.length && cg.names[s] != "" ? `local '${cg.names[s]}'` : "",
+            Cell(s) => s < cg.names.length && cg.names[s] != "" ? `local '${cg.names[s]}'` : "",
+            Up(i) => i < cg.upNames.length ? `upvalue '${cg.upNames[i]}'` : "",
+            Global(name, h) => `global '${name}'`,
+        },
+        EIndex(o, key, line) => match (key) {
+            EStr(s, h) => `field '${s}'`,
+            _ => "",
+        },
+        _ => "",
+    };
+}
+
+function emit0(cg: Cg, op: i64, a: i64, b: i64, c: i64): Cg {
+    const [c1, at] = emit(cg, op, a, b, c);
+    return c1;
+}
+
+// the jump at `at` made to land at `to`
+function patch(cg: Cg, at: i64, to: i64): Cg {
+    const ins = cg.k.code[at];
+    const fixed = encode(opOf(ins), aOf(ins), to - at - 1, cOf(ins));
+    return { ...cg, k: { ...cg.k, code: cg.k.code.with(at, fixed) } };
+}
+
+function patchAll(cg: Cg, jumps: i64[n], to: i64): Cg {
+    return fold(iota(n), cg, (acc, i) => patch(acc, jumps[i], to));
+}
+
+function here(cg: Cg): i64 {
+    return cg.k.code.length;
+}
+
+// a new temporary register
+function temp(cg: Cg): [Cg, i64] {
+    const r = cg.free;
+    return [{ ...cg, free: r + 1, maxreg: max(cg.maxreg, r + 1) }, r] as const;
+}
+
+function temps(cg: Cg, n: i64): [Cg, i64] {
+    const r = cg.free;
+    return [{ ...cg, free: r + n, maxreg: max(cg.maxreg, r + n) }, r] as const;
+}
+
+function freeTo(cg: Cg, mark: i64): Cg {
+    return { ...cg, free: mark };
+}
+
+// a constant (its index)
+function constant(cg: Cg, t: i64, i: i64, f: f64): [Cg, i64] {
+    const at = cg.k.kT.length;
+    return [{ ...cg, k: { ...cg.k, kT: concat(cg.k.kT, [t]), kI: concat(cg.k.kI, [i]), kF: concat(cg.k.kF, [f]) } }, at] as const;
+}
+
+function strConst(cg: Cg, s: string): [Cg, i64] {
+    const si = cg.k.kS.length;
+    const c1 = { ...cg, k: { ...cg.k, kS: concat(cg.k.kS, [s]) } };
+    return constant(c1, T_STR, si, 0.0);
+}
+
+// ----- expressions ---------------------------------------------------------
+
+function lineOfExpr(e: Expr, line: i64): i64 {
+    return match (e) {
+        EIndex(o, k, l) => l,
+        ECall(f, a, l) => l,
+        EMethod(o, n, h, a, l) => l,
+        EBin(op, a, b, l) => l,
+        EUn(op, a, l) => l,
+        ETable(p, k, v, m, l) => l,
+        _ => line,
+    };
+}
+
+function atLine(cg: Cg, e: Expr): Cg {
+    return { ...cg, line: lineOfExpr(e, cg.line) };
+}
+
+// the operand of `e`: a constant (-k - 1) for a literal, else a register
+function rk(cg: Cg, e: Expr): [Cg, i64] {
+    return match (e) {
+        ENil => {
+            const [c1, k] = constant(cg, T_NIL, 0, 0.0);
+            return [c1, -k - 1] as const;
+        },
+        ETrue => {
+            const [c1, k] = constant(cg, T_TRUE, 0, 0.0);
+            return [c1, -k - 1] as const;
+        },
+        EFalse => {
+            const [c1, k] = constant(cg, T_FALSE, 0, 0.0);
+            return [c1, -k - 1] as const;
+        },
+        EInt(v) => {
+            const [c1, k] = constant(cg, T_INT, v, 0.0);
+            return [c1, -k - 1] as const;
+        },
+        EFloat(v) => {
+            const [c1, k] = constant(cg, T_NUM, 0, v);
+            return [c1, -k - 1] as const;
+        },
+        EStr(s, h) => {
+            const [c1, k] = strConst(cg, s);
+            return [c1, -k - 1] as const;
+        },
+        _ => anyReg(cg, e),
+    };
+}
+
+// a register holding `e`: a local's own, or a new temporary
+function anyReg(cg: Cg, e: Expr): [Cg, i64] {
+    return match (e) {
+        EName(pl) => match (pl) {
+            Local(s) => [cg, s] as const,
+            _ => {
+                const [c1, r] = temp(cg);
+                return [expTo(c1, e, r), r] as const;
+            },
+        },
+        EParen(x) => anyReg(cg, x),
+        _ => {
+            const [c1, r] = temp(cg);
+            return [expTo(c1, e, r), r] as const;
+        },
+    };
+}
+
+const ARITH: i64[] = [13, 14, 15, 16, 17, 18, 19, 20];
+
+// the value of `e` into the register `r` (the temporaries it needs above
+// the free ones, freed after)
+function expTo(cg0: Cg, e: Expr, r: i64): Cg {
+    const cg = atLine(cg0, e);
+    const mark = cg.free;
+    return match (e) {
+        ENil => emit0(cg, I_LOADNIL, r, 0, 0),
+        ETrue => emit0(cg, I_LOADBOOL, r, 1, 0),
+        EFalse => emit0(cg, I_LOADBOOL, r, 0, 0),
+        EInt(v) => {
+            if (v >= -SMALL && v <= SMALL) {
+                return emit0(cg, I_LOADI, r, v, 0);
+            }
+            const [c1, k] = constant(cg, T_INT, v, 0.0);
+            return emit0(c1, I_LOADK, r, k, 0);
+        },
+        EFloat(v) => {
+            const [c1, k] = constant(cg, T_NUM, 0, v);
+            return emit0(c1, I_LOADK, r, k, 0);
+        },
+        EStr(s, h) => {
+            const [c1, k] = strConst(cg, s);
+            return emit0(c1, I_LOADK, r, k, 0);
+        },
+        EVararg => emit0(cg, I_VARARG, r, 2, 0),
+        EFunc(j) => emit0(cg, I_CLOSURE, r, cg.pbase + j, 0),
+        EName(pl) => match (pl) {
+            Local(s) => s == r ? cg : emit0(cg, I_MOVE, r, s, 0),
+            Cell(s) => emit0(cg, I_GETCELL, r, s, 0),
+            Up(i) => emit0(cg, I_GETUPVAL, r, i, 0),
+            Global(name, h) => {
+                const [c1, k] = strConst(cg, name);
+                return emit0(c1, I_GETGLOBAL, r, k, 0);
+            },
+        },
+        EIndex(o, key, line) => {
+            const [c1, ro] = anyReg(cg, o);
+            return match (key) {
+                EStr(s, h) => {
+                    const [c2, k] = strConst(c1, s);
+                    return freeTo(noted(emit0(c2, I_GETFIELD, r, ro, k), describe(cg, o)), mark);
+                },
+                _ => {
+                    const [c2, rkk] = rk(c1, key);
+                    return freeTo(noted(emit0(c2, I_GETTABLE, r, ro, rkk), describe(cg, o)), mark);
+                },
+            };
+        },
+        ECall(f, args, line) => {
+            const [c1, base] = callExp(cg, e, 1);
+            return freeTo(base == r ? c1 : emit0(c1, I_MOVE, r, base, 0), mark);
+        },
+        EMethod(o, name, h, args, line) => {
+            const [c1, base] = callExp(cg, e, 1);
+            return freeTo(base == r ? c1 : emit0(c1, I_MOVE, r, base, 0), mark);
+        },
+        EBin(op, a, b, line) => binTo(cg, op, a, b, r, mark),
+        EAnd(a, b) => {
+            const c1 = expTo(cg, a, r);
+            const [c2, j] = emit(c1, I_TEST, r, 0, 0);
+            const [c3, jmp] = emit(c2, I_JMP, 0, 0, 0);
+            const c4 = expTo(c3, b, r);
+            return freeTo(patch(c4, jmp, here(c4)), mark);
+        },
+        EOr(a, b) => {
+            const c1 = expTo(cg, a, r);
+            const [c2, j] = emit(c1, I_TEST, r, 0, 1);
+            const [c3, jmp] = emit(c2, I_JMP, 0, 0, 0);
+            const c4 = expTo(c3, b, r);
+            return freeTo(patch(c4, jmp, here(c4)), mark);
+        },
+        EUn(op, a, line) => {
+            const [c1, ra] = anyReg(cg, a);
+            const ins = op == UN_NEG ? I_UNM : (op == UN_NOT ? I_NOT : I_LEN);
+            return freeTo(emit0(c1, ins, r, ra, 0), mark);
+        },
+        ETable(pos, keys, vals, multi, line) => freeTo(tableTo(cg, pos, keys, vals, multi, r), mark),
+        EParen(x) => expTo(cg, x, r),
+    };
+}
+
+// a binary operation into `r`
+function binTo(cg: Cg, op: i64, a: Expr, b: Expr, r: i64, mark: i64): Cg {
+    // `x + 1`: one instruction
+    if (op == OP_ADD) {
+        const small = match (b) {
+            EInt(v) => v >= -SMALL && v <= SMALL,
+            _ => false,
+        };
+        if (small) {
+            const v = match (b) {
+                EInt(x) => x,
+                _ => 0,
+            };
+            const [c1, ra] = anyReg(cg, a);
+            return freeTo(emit0(c1, I_ADDI, r, ra, v), mark);
+        }
+    }
+    const [c1, rb] = rk(cg, a);
+    const [c2, rc] = rk(c1, b);
+    if (op <= OP_CONCAT) {
+        return freeTo(emit0(c2, ARITH[op], r, rb, rc), mark);
+    }
+    if (op == OP_EQ) {
+        return freeTo(emit0(c2, I_SEQ, r, rb, rc), mark);
+    }
+    if (op == OP_NE) {
+        return freeTo(emit0(emit0(c2, I_SEQ, r, rb, rc), I_NOT, r, r, 0), mark);
+    }
+    // (`a > b` is `b < a`, the operands computed in their order)
+    const ins = op == OP_LT || op == OP_GT ? I_SLT : I_SLE;
+    const swap = op == OP_GT || op == OP_GE;
+    return freeTo(emit0(c2, ins, r, swap ? rc : rb, swap ? rb : rc), mark);
+}
+
+// a table constructor into `r`
+function tableTo(cg: Cg, pos: Expr[n], keys: Expr[m], vals: Expr[m], multi: boolean, r: i64): Cg {
+    // (SETLIST reads its values from the register after the table: a table
+    // below the free one, an argument whose next ones are kept, made at the
+    // top and moved)
+    if (n > 0 && r + 1 != cg.free) {
+        const mark = cg.free;
+        const [c0, t] = temp(cg);
+        return freeTo(emit0(tableTo(c0, pos, keys, vals, multi, t), I_MOVE, r, t, 0), mark);
+    }
+    const c1 = emit0(cg, I_NEWTABLE, r, n, m);
+    // the positional values in the registers after `r`, by groups of 50
+    const c2 = groups(c1, pos, multi, r, 0);
+    return keyedTo(c2, keys, vals, r, 0);
+}
+
+function groups(cg: Cg, pos: Expr[n], multi: boolean, r: i64, from: i64): Cg {
+    if (from >= n) {
+        return cg;
+    }
+    const to = min(n, from + 50);
+    const mark = cg.free;
+    const [c1, first] = temps(cg, to - from);
+    // (the last one, a call or `...`, all its values)
+    const last = to == n && multi;
+    const c2 = fold(iota(to - from), c1, (acc, i) => last && from + i == n - 1 ? multiTo(acc, pos[from + i], first + i) : expTo(acc, pos[from + i], first + i));
+    const c3 = emit0(c2, I_SETLIST, r, last ? 0 : to - from, from);
+    return groups(freeTo(c3, mark), pos, multi, r, to);
+}
+
+function keyedTo(cg: Cg, keys: Expr[n], vals: Expr[n], r: i64, i: i64): Cg {
+    if (i >= n) {
+        return cg;
+    }
+    const mark = cg.free;
+    return match (keys[i]) {
+        EStr(s, h) => {
+            const [c1, k] = strConst(cg, s);
+            const [c2, rv] = rk(c1, vals[i]);
+            return keyedTo(freeTo(emit0(c2, I_SETFIELD, r, k, rv), mark), keys, vals, r, i + 1);
+        },
+        _ => {
+            const [c1, rkk] = rk(cg, keys[i]);
+            const [c2, rv] = rk(c1, vals[i]);
+            return keyedTo(freeTo(emit0(c2, I_SETTABLE, r, rkk, rv), mark), keys, vals, r, i + 1);
+        },
+    };
+}
+
+// a call or `...` giving all its values from the register `r` (which must
+// be the free one: the top set after them)
+function multiTo(cg: Cg, e: Expr, r: i64): Cg {
+    return match (e) {
+        ECall(f, a, l) => {
+            const [c1, base] = callExp(freeTo(cg, r), e, -1);
+            return c1;
+        },
+        EMethod(o, n, h, a, l) => {
+            const [c1, base] = callExp(freeTo(cg, r), e, -1);
+            return c1;
+        },
+        EVararg => emit0(cg, I_VARARG, r, 0, 0),
+        _ => expTo(cg, e, r),
+    };
+}
+
+function isMulti(e: Expr): boolean {
+    return match (e) {
+        ECall(f, a, l) => true,
+        EMethod(o, n, h, a, l) => true,
+        EVararg => true,
+        _ => false,
+    };
+}
+
+// a call: its function and arguments in the registers from the free one,
+// `nres` results there (-1: all, the top after them); the register of its
+// first result
+function callExp(cg0: Cg, e: Expr, nres: i64): [Cg, i64] {
+    const cg = atLine(cg0, e);
+    return match (e) {
+        ECall(f, args, line) => {
+            const [c1, base] = temp(cg);
+            const c2 = expTo(c1, f, base);
+            const [c3, b] = argsTo(c2, args);
+            const c4 = noted(emit0({ ...c3, line: line }, I_CALL, base, b, nres + 1), describe(cg, f));
+            return [{ ...c4, free: base + max(nres, 0) }, base] as const;
+        },
+        EMethod(o, name, h, args, line) => {
+            const [c1, base] = temps(cg, 2);
+            const [c2, ro] = anyReg(c1, o);
+            const [c3, k] = strConst(c2, name);
+            const [c4, rkk] = [c3, -k - 1] as const;
+            const c5 = freeTo(noted(emit0(c4, I_SELF, base, ro, rkk), describe(cg, o)), base + 2);
+            const [c6, b] = argsTo(c5, args);
+            // (the object, a first argument)
+            const c7 = noted(emit0({ ...c6, line: line }, I_CALL, base, b == 0 ? 0 : b + 1, nres + 1), `method '${name}'`);
+            return [{ ...c7, free: base + max(nres, 0) }, base] as const;
+        },
+        _ => [cg, 0] as const,
+    };
+}
+
+// the arguments of a call into the registers from the free one: the `b` of
+// its CALL (their number and one, 0 when the last gives all its values)
+function argsTo(cg: Cg, args: Expr[n]): [Cg, i64] {
+    if (n == 0) {
+        return [cg, 1] as const;
+    }
+    const [c1, first] = temps(cg, n);
+    const lastMulti = isMulti(args[n - 1]);
+    const c2 = fold(iota(n), c1, (acc, i) => i == n - 1 && lastMulti ? multiTo(acc, args[i], first + i) : expTo(acc, args[i], first + i));
+    return [c2, lastMulti ? 0 : n + 1] as const;
+}
+
+// ----- conditions ------------------------------------------------------------
+
+// the code that jumps when the truth of `e` is `jumpIf` (the jumps to
+// patch), and goes on otherwise
+function condJump(cg0: Cg, e: Expr, jumpIf: boolean): [Cg, i64[]] {
+    const cg = atLine(cg0, e);
+    const mark = cg.free;
+    return match (e) {
+        EBin(op, a, b, line) => {
+            if (op < OP_EQ) {
+                return testJump(cg, e, jumpIf);
+            }
+            const [c1, rb] = rk(cg, a);
+            const [c2, rc] = rk(c1, b);
+            // (EQ, LT, LE skip the jump that follows when their result is
+            // not `a`)
+            const ins = op == OP_EQ || op == OP_NE ? I_EQ : (op == OP_LT || op == OP_GT ? I_LT : I_LE);
+            const swap = op == OP_GT || op == OP_GE;
+            const want = op == OP_NE ? !jumpIf : jumpIf;
+            const c3 = emit0(c2, ins, want ? 1 : 0, swap ? rc : rb, swap ? rb : rc);
+            const [c4, j] = emit(c3, I_JMP, 0, 0, 0);
+            return [freeTo(c4, mark), [j]] as const;
+        },
+        EUn(op, a, line) => op == UN_NOT ? condJump(cg, a, !jumpIf) : testJump(cg, e, jumpIf),
+        EAnd(a, b) => {
+            if (jumpIf) {
+                const [c1, fa] = condJump(cg, a, false);
+                const [c2, tb] = condJump(c1, b, true);
+                return [patchAll(c2, fa, here(c2)), tb] as const;
+            }
+            const [c1, fa] = condJump(cg, a, false);
+            const [c2, fb] = condJump(c1, b, false);
+            return [c2, concat(fa, fb)] as const;
+        },
+        EOr(a, b) => {
+            if (jumpIf) {
+                const [c1, ta] = condJump(cg, a, true);
+                const [c2, tb] = condJump(c1, b, true);
+                return [c2, concat(ta, tb)] as const;
+            }
+            const [c1, ta] = condJump(cg, a, true);
+            const [c2, fb] = condJump(c1, b, false);
+            return [patchAll(c2, ta, here(c2)), fb] as const;
+        },
+        ETrue => jumpIf ? jumpAlways(cg) : [cg, []] as const,
+        EFalse => jumpIf ? [cg, []] as const : jumpAlways(cg),
+        ENil => jumpIf ? [cg, []] as const : jumpAlways(cg),
+        EParen(x) => condJump(cg, x, jumpIf),
+        _ => testJump(cg, e, jumpIf),
+    };
+}
+
+function jumpAlways(cg: Cg): [Cg, i64[]] {
+    const [c1, j] = emit(cg, I_JMP, 0, 0, 0);
+    return [c1, [j]] as const;
+}
+
+function testJump(cg: Cg, e: Expr, jumpIf: boolean): [Cg, i64[]] {
+    const mark = cg.free;
+    const [c1, r] = anyReg(cg, e);
+    // (TEST skips the jump when the truth of the register is not `c`)
+    const c2 = emit0(c1, I_TEST, r, 0, jumpIf ? 1 : 0);
+    const [c3, j] = emit(c2, I_JMP, 0, 0, 0);
+    return [freeTo(c3, mark), [j]] as const;
+}
+
+// ----- statements ------------------------------------------------------------
+
+function block(cg: Cg, ss: Stat[n], i: i64): Cg {
+    return i >= n ? cg : block(stat(cg, ss[i]), ss, i + 1);
+}
+
+function statLine(s: Stat): i64 {
+    return match (s) {
+        SLocal(p, e, l) => l,
+        SLocalFunc(p, k, l) => l,
+        SAssign(t, e, l) => l,
+        SCall(e, l) => l,
+        SIf(c, a, b, l) => l,
+        SWhile(c, b, l) => l,
+        SRepeat(b, c, l) => l,
+        SNumFor(p, a, b, c, d, l) => l,
+        SGenFor(p, e, b, l) => l,
+        SReturn(e, l) => l,
+        SBreak(l) => l,
+        SDo(b, l) => l,
+    };
+}
+
+// the value in the register `r` given to a local (its register, or a new
+// cell for one captured)
+function bindLocal(cg: Cg, pl: Place, r: i64): Cg {
+    return match (pl) {
+        Local(s) => s == r ? cg : emit0(cg, I_MOVE, s, r, 0),
+        Cell(s) => emit0(cg, I_NEWCELL, s, r, 0),
+        _ => cg,
+    };
+}
+
+// the value in `r` assigned to the place of a name
+function storeName(cg: Cg, pl: Place, r: i64): Cg {
+    return match (pl) {
+        Local(s) => s == r ? cg : emit0(cg, I_MOVE, s, r, 0),
+        Cell(s) => emit0(cg, I_SETCELL, s, r, 0),
+        Up(i) => emit0(cg, I_SETUPVAL, r, i, 0),
+        Global(name, h) => {
+            const [c1, k] = strConst(cg, name);
+            return emit0(c1, I_SETGLOBAL, r, k, 0);
+        },
+    };
+}
+
+// the values of `es` into `n` consecutive registers from `first` (the last
+// giving its values to fill them, nils for the rest)
+function valuesTo(cg: Cg, es: Expr[m], first: i64, n: i64): Cg {
+    if (m == 0) {
+        return n > 0 ? emit0(cg, I_LOADNIL, first, n - 1, 0) : cg;
+    }
+    const lastMulti = isMulti(es[m - 1]) && n > m - 1;
+    // (the ones beyond `n` computed and dropped)
+    const c1 = fold(iota(m), cg, (acc, i) => {
+        if (i == m - 1 && lastMulti) {
+            const want = n - (m - 1);
+            return match (es[i]) {
+                EVararg => emit0(acc, I_VARARG, first + i, want + 1, 0),
+                _ => {
+                    const mark = acc.free;
+                    const [c2, base] = callExp(freeTo(acc, max(acc.free, first + i)), es[i], want);
+                    const moved = base == first + i ? c2 : fold(iota(want), c2, (a2, j) => emit0(a2, I_MOVE, first + i + j, base + j, 0));
+                    return freeTo(moved, max(mark, first + n));
+                },
+            };
+        }
+        if (i < n) {
+            return expTo(acc, es[i], first + i);
+        }
+        const mark = acc.free;
+        const [c2, r] = temp(acc);
+        return freeTo(expTo(c2, es[i], r), mark);
+    });
+    return m < n && !lastMulti ? emit0(c1, I_LOADNIL, first + m, n - m - 1, 0) : c1;
+}
+
+function stat(cg0: Cg, s: Stat): Cg {
+    const cg = { ...cg0, line: statLine(s) };
+    const mark = cg.free;
+    return match (s) {
+        SLocal(places, es, line) => {
+            const n = places.length;
+            const [c1, first] = temps(cg, n);
+            const c2 = valuesTo(c1, es, first, n);
+            return freeTo(fold(iota(n), c2, (acc, i) => bindLocal(acc, places[i], first + i)), mark);
+        },
+        SLocalFunc(pl, j, line) => match (pl) {
+            Local(sl) => emit0(cg, I_CLOSURE, sl, cg.pbase + j, 0),
+            Cell(sl) => {
+                // (the cell first: the function reads itself through it)
+                const [c1, r] = temp(cg);
+                const c2 = emit0(emit0(c1, I_LOADNIL, r, 0, 0), I_NEWCELL, sl, r, 0);
+                const c3 = emit0(c2, I_CLOSURE, r, cg.pbase + j, 0);
+                return freeTo(emit0(c3, I_SETCELL, sl, r, 0), mark);
+            },
+            _ => cg,
+        },
+        SAssign(ts, es, line) => freeTo(assign(cg, ts, es), mark),
+        SCall(e, line) => {
+            const [c1, base] = callExp(cg, e, 0);
+            return freeTo(c1, mark);
+        },
+        SIf(c, a, b, line) => {
+            const [c1, fails] = condJump(cg, c, false);
+            const c2 = block(c1, a, 0);
+            if (b.length == 0) {
+                return patchAll(c2, fails, here(c2));
+            }
+            const [c3, jend] = emit(c2, I_JMP, 0, 0, 0);
+            const c4 = block(patchAll(c3, fails, here(c3)), b, 0);
+            return patch(c4, jend, here(c4));
+        },
+        SWhile(c, body, line) => {
+            const start = here(cg);
+            const saved = cg.breaks;
+            const [c1, exits] = condJump({ ...cg, breaks: [] }, c, false);
+            const c2 = block(c1, body, 0);
+            const [c3, back] = emit(c2, I_JMP, 0, 0, 0);
+            const c4 = patch(c3, back, start);
+            const end = here(c4);
+            return { ...patchAll(patchAll(c4, exits, end), c4.breaks, end), breaks: saved };
+        },
+        SRepeat(body, c, line) => {
+            const start = here(cg);
+            const saved = cg.breaks;
+            const c1 = block({ ...cg, breaks: [] }, body, 0);
+            const [c2, again] = condJump(c1, c, false);
+            const c3 = patchAll(c2, again, start);
+            return { ...patchAll(c3, c3.breaks, here(c3)), breaks: saved, free: mark };
+        },
+        SNumFor(pl, a, b, c, body, line) => numFor(cg, pl, a, b, c, body, line),
+        SGenFor(places, es, body, line) => genFor(cg, places, es, body, line),
+        SReturn(es, line) => {
+            const n = es.length;
+            if (n == 1 && !isMulti(es[0])) {
+                const [c1, r] = anyReg(cg, es[0]);
+                return freeTo(emit0(c1, I_RETURN, r, 2, 0), mark);
+            }
+            const [c1, first] = temps(cg, n);
+            const lastMulti = n > 0 && isMulti(es[n - 1]);
+            const c2 = fold(iota(n), c1, (acc, i) => i == n - 1 && lastMulti ? multiTo(acc, es[i], first + i) : expTo(acc, es[i], first + i));
+            return freeTo(emit0(c2, I_RETURN, first, lastMulti ? 0 : n + 1, 0), mark);
+        },
+        SBreak(line) => {
+            const [c1, j] = emit(cg, I_JMP, 0, 0, 0);
+            return { ...c1, breaks: concat(c1.breaks, [j]) };
+        },
+        SDo(body, line) => block(cg, body, 0),
+    };
+}
+
+function assign(cg: Cg, ts: Expr[n], es: Expr[m]): Cg {
+    if (n == 1 && m == 1) {
+        return match (ts[0]) {
+            EName(pl) => match (pl) {
+                Local(s) => expTo(cg, es[0], s),
+                _ => {
+                    const [c1, r] = anyReg(cg, es[0]);
+                    return storeName(c1, pl, r);
+                },
+            },
+            EIndex(o, key, line) => {
+                const [c1, ro] = anyReg(cg, o);
+                return match (key) {
+                    EStr(s, h) => {
+                        const [c2, k] = strConst(c1, s);
+                        const [c3, rv] = rk(c2, es[0]);
+                        return noted(emit0({ ...c3, line: line }, I_SETFIELD, ro, k, rv), describe(cg, o));
+                    },
+                    _ => {
+                        const [c2, rkk] = rk(c1, key);
+                        const [c3, rv] = rk(c2, es[0]);
+                        return noted(emit0({ ...c3, line: line }, I_SETTABLE, ro, rkk, rv), describe(cg, o));
+                    },
+                };
+            },
+            _ => cg,
+        };
+    }
+    // several: the tables and keys of the targets first, then the values,
+    // assigned from the last
+    const [c1, slots] = targets(cg, ts, 0, []);
+    const [c2, first] = temps(c1, n);
+    const c3 = valuesTo(c2, es, first, n);
+    return fold(iota(n), c3, (acc, j) => {
+        const i = n - 1 - j;
+        return match (ts[i]) {
+            EName(pl) => storeName(acc, pl, first + i),
+            EIndex(o, key, line) => noted(emit0(acc, I_SETTABLE, slots[2 * i], slots[2 * i + 1], first + i), describe(acc, o)),
+            _ => acc,
+        };
+    });
+}
+
+// the registers of the table and the key of each target (two per target)
+function targets(cg: Cg, ts: Expr[n], i: i64, acc: i64[]): [Cg, i64[]] {
+    if (i >= n) {
+        return [cg, acc] as const;
+    }
+    return match (ts[i]) {
+        EIndex(o, key, line) => {
+            const [c1, ro] = temp(cg);
+            const c2 = expTo(c1, o, ro);
+            const [c3, rkk] = temp(c2);
+            const c4 = expTo(c3, key, rkk);
+            return targets(c4, ts, i + 1, concat(acc, [ro, rkk]));
+        },
+        _ => targets(cg, ts, i + 1, concat(acc, [0, 0])),
+    };
+}
+
+// for v = a, b, c do body end
+function numFor(cg: Cg, pl: Place, a: Expr, b: Expr, c: Expr, body: Stat[n], line: i64): Cg {
+    const mark = cg.free;
+    const saved = cg.breaks;
+    const [c1, base] = temps({ ...cg, breaks: [] }, 4);
+    const c2 = expTo(expTo(expTo(c1, a, base), b, base + 1), c, base + 2);
+    // (the variable written by the loop: its own register, or the fourth
+    // one for a variable captured, its cell made at each turn)
+    const v = match (pl) {
+        Local(s) => s,
+        _ => base + 3,
+    };
+    const [c3, prep] = emit({ ...c2, line: line }, I_FORPREP, base, 0, v);
+    const start = here(c3);
+    const c4 = match (pl) {
+        Cell(s) => emit0(c3, I_NEWCELL, s, v, 0),
+        _ => c3,
+    };
+    const c5 = block(c4, body, 0);
+    const [c6, loop] = emit({ ...c5, line: line }, I_FORLOOP, base, 0, v);
+    const c7 = patch(c6, loop, start);
+    const end = here(c7);
+    const c8 = patch(c7, prep, end);
+    return { ...patchAll(c8, c8.breaks, end), breaks: saved, free: mark };
+}
+
+// for k, v in explist do body end
+function genFor(cg: Cg, places: Place[n], es: Expr[m], body: Stat[k], line: i64): Cg {
+    const mark = cg.free;
+    const saved = cg.breaks;
+    const [c1, base] = temps({ ...cg, breaks: [] }, 3 + max(n, 3));
+    const c2 = valuesTo(freeTo(c1, base + 3 + max(n, 3)), es, base, 3);
+    const [c3, toCall] = emit(c2, I_JMP, 0, 0, 0);
+    const start = here(c3);
+    const c4 = fold(iota(n), c3, (acc, i) => bindLocal(acc, places[i], base + 3 + i));
+    const c5 = block(c4, body, 0);
+    const c6 = patch(c5, toCall, here(c5));
+    const c7 = emit0({ ...c6, line: line }, I_TFORCALL, base, 0, n);
+    const [c8, loop] = emit(c7, I_TFORLOOP, base, 0, 0);
+    const c9 = patch(c8, loop, start);
+    const end = here(c9);
+    return { ...patchAll(c9, c9.breaks, end), breaks: saved, free: mark };
+}
+
+// ----- functions -------------------------------------------------------------
+
+// the functions of a chunk (`c`) compiled, named `chunk`: the code with
+// them, and the global number of the chunk's own function
+export function compileChunk(k0: Code, c: Chunk, chunk: string): [Code, i64] {
+    const pbase = k0.pStart.length;
+    const k1 = fold(iota(c.protos.length), k0, (acc, j) => compileProto(acc, c.protos[j], pbase, chunk));
+    return [k1, pbase + c.main] as const;
+}
+
+function startCg(k: Code, pbase: i64, slots: i64, line: i64, names: string[], upNames: string[]): Cg {
+    return { k: k, pbase: pbase, base: slots, free: slots, maxreg: slots, line: line, breaks: [], names: names, upNames: upNames };
+}
+
+function compileProto(k: Code, p: Proto, pbase: i64, chunk: string): Code {
+    const start = k.code.length;
+    const upBase = k.upLocal.length;
+    const cg0 = startCg(k, pbase, p.slots, p.line, p.slotNames, p.upNames);
+    // (the parameters captured in cells first)
+    const cg1 = fold(iota(p.nparams), cg0, (acc, i) => p.paramCell[i] ? emit0(acc, I_NEWCELL, i, i, 0) : acc);
+    const cg2 = block(cg1, p.body, 0);
+    // (a function that ends without `return` returns nothing)
+    const cg3 = emit0(cg2, I_RETURN, 0, 1, 0);
+    const k3 = cg3.k;
+    return {
+        ...k3,
+        pStart: concat(k3.pStart, [start]),
+        pNparams: concat(k3.pNparams, [p.nparams]),
+        pVararg: concat(k3.pVararg, [p.vararg]),
+        pNregs: concat(k3.pNregs, [cg3.maxreg + 1]),
+        pUpBase: concat(k3.pUpBase, [upBase]),
+        pNups: concat(k3.pNups, [p.upIndex.length]),
+        pName: concat(k3.pName, [p.name]),
+        pLine: concat(k3.pLine, [p.line]),
+        pChunk: concat(k3.pChunk, [chunk]),
+        upLocal: concat(k3.upLocal, p.upFromLocal),
+        upIdx: concat(k3.upIdx, p.upIndex),
+    };
+}
+
+// a listing of the code of the function `f` (for the tests)
+export function listing(k: Code, f: i64): string[] {
+    const start = k.pStart[f];
+    const end = f + 1 < k.pStart.length ? k.pStart[f + 1] : k.code.length;
+    return map(iota(end - start), (i) => {
+        const ins = k.code[start + i];
+        return `${start + i} ${I_NAMES[opOf(ins)]} ${aOf(ins)} ${bOf(ins)} ${cOf(ins)}`;
+    });
+}
