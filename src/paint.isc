@@ -329,25 +329,146 @@ function shadowAlpha(s: Shadow, px: f32, py: f32): f32 {
 // the channels of the pixels of a tile, premultiplied
 type Channels = [f32[256], f32[256], f32[256], f32[256]];
 
+// whether every centre of a pixel in [cx0, cx1] by [cy0, cy1] is inside the
+// rectangle (x0, y0) to (x1, y1) by more than half a pixel (a quarter more
+// for the roundings of the distance) and outside the quarters of its
+// corners of radius `r`: its distance there is half a pixel or more
+// inside, its coverage 1
+function deepIn(x0: f32, y0: f32, x1: f32, y1: f32, r: f32, cx0: f32, cy0: f32, cx1: f32, cy1: f32): boolean {
+    const m = 0.75f32;
+    const sides = cx0 >= x0 + m && cx1 <= x1 - m && cy0 >= y0 + m && cy1 <= y1 - m;
+    return sides && ((cx0 >= x0 + r && cx1 <= x1 - r) || (cy0 >= y0 + r && cy1 <= y1 - r));
+}
+
+// whether `q`, within its box `bx` (its clip), covers every centre of a
+// pixel in [cx0, cx1] by [cy0, cy1] with its fill alone: `coverOf` and
+// `insideOf` 1 at each (inside its outer edge and inside the inner edge of
+// its border, outside the quarters of its corners, the largest radius
+// taken for each)
+function covers(q: Quad, bx: [f32, f32, f32, f32], cx0: f32, cy0: f32, cx1: f32, cy1: f32): boolean {
+    const [x0, y0, x1, y1] = bx;
+    const r = min(max(max(q.topLeft, q.topRight), max(q.bottomLeft, q.bottomRight)), min(q.w, q.h) * 0.5f32);
+    const boxed = cx0 > x0 && cx1 < x1 && cy0 > y0 && cy1 < y1;
+    return boxed && deepIn(q.x, q.y, q.x + q.w, q.y + q.h, r, cx0, cy0, cx1, cy1)
+        && deepIn(q.x + q.left, q.y + q.top, q.x + q.w - q.right, q.y + q.h - q.bottom, r, cx0, cy0, cx1, cy1);
+}
+
+// the centres of the first and last pixels of the tile `t` (of `tx` tiles
+// a row) within an image `width` by `height`: [cx0, cy0, cx1, cy1]
+function centres(t: i64, tx: i64, width: i64, height: i64): [f32, f32, f32, f32] {
+    const cx0 = f32((t % tx) * TILE) + 0.5f32;
+    const cy0 = f32((t / tx) * TILE) + 0.5f32;
+    return [cx0, cy0, min(cx0 + f32(TILE - 1), f32(width) - 0.5f32), min(cy0 + f32(TILE - 1), f32(height) - 0.5f32)] as const;
+}
+
+// a primitive that draws something: not a quad of no colour (its fill and
+// its border transparent leave every pixel as it was, to the bit)
+function seen(p: Primitive): boolean {
+    return match (p) {
+        Box(q) => q.background.a != 0.0f32 || q.borderColor.a != 0.0f32,
+        _ => true,
+    };
+}
+
+// a quad that covers the tile with an opaque fill: the pixels drawn before
+// it are its colour after it, to the bit
+function hides(p: Primitive, bx: [f32, f32, f32, f32], c: [f32, f32, f32, f32]): boolean {
+    const [cx0, cy0, cx1, cy1] = c;
+    return match (p) {
+        Box(q) => q.background.a == 1.0f32 && covers(q, bx, cx0, cy0, cx1, cy1),
+        _ => false,
+    };
+}
+
+// the pixels `px` of an image `width` by `height` (of `tx` tiles a row)
+// with the tiles `fresh` written in their places (the pixels of each in
+// `tiles`, those beyond the image left out)
+function patched(px: u32[n], tiles: { px: u32[256] }[m], fresh: i64[m], tx: i64, width: i64, height: i64): u32[n] {
+    return fold(iota(m * 256), px, (im, j) => {
+        const k = j / 256;
+        const local = j % 256;
+        const t = fresh[k];
+        const x = (t % tx) * TILE + local % TILE;
+        const y = (t / tx) * TILE + local / TILE;
+        const inside = x < width && y < height;
+        // (a pixel beyond the image writes the first again, as it is)
+        const at = inside ? y * width + x : 0;
+        const v = inside ? tiles[k].px[local] : im[0];
+        return im.with(at, v);
+    });
+}
+
+// the most primitives kept for a tile, to know whether the next frame
+// draws it the same
+const KEPT: i64 = 32;
+
+// what drew a tile: the number of its primitives (-1: more than `KEPT`, the
+// tile drawn again at each frame), their indexes among those of the frame,
+// whether the first hides those before it (drawn from its colour, not from
+// the colour under all)
+type Kept = { n: i64, ids: i64[32], hidden: boolean };
+
+// the primitives that may colour a pixel of the tile `t`, among those of
+// its band `band`: from the last that hides those before it; whether one
+// does
+function listed(t: i64, tx: i64, width: i64, height: i64, ps: Primitive[n], boxes: [f32, f32, f32, f32][n], band: i64[m]): [i64[], boolean] {
+    const c = centres(t, tx, width, height);
+    const [cx0, cy0, cx1, cy1] = c;
+    // (the centres of the whole tile: a primitive reaching none of them
+    // colours none of its pixels)
+    const ex = cx0 + f32(TILE - 1);
+    const ey = cy0 + f32(TILE - 1);
+    const all = filter(band, (k) => {
+        const [x0, y0, x1, y1] = boxes[k];
+        return ex > x0 && cx0 < x1 && ey > y0 && cy0 < y1;
+    });
+    const from = fold(iota(all.length), -1, (f, j) => hides(ps[all[j]], boxes[all[j]], c) ? j : f);
+    return [from < 0 ? all : all.slice(from, all.length), from >= 0] as const;
+}
+
+// `listed` as kept for the next frame
+function keptOf(ids: i64[n], hidden: boolean): Kept {
+    return { n: n <= KEPT ? n : -1, ids: map(iota(32), (j) => j < n ? ids[j] : -1), hidden: hidden };
+}
+
+// whether the tile drawn by `a` (primitives `ps`, boxes `boxes`) is drawn
+// as the tile drawn by `b` (primitives `qs`, boxes `qboxes`): the same
+// primitives in the same boxes, in the same order
+function sameTile(a: Kept, ps: Primitive[n], boxes: [f32, f32, f32, f32][n], b: Kept, qs: Primitive[m], qboxes: [f32, f32, f32, f32][m]): boolean {
+    return a.n >= 0 && a.n == b.n && a.hidden == b.hidden
+        && count(iota(a.n), (j) => !(ps[a.ids[j]] == qs[b.ids[j]] && boxes[a.ids[j]] == qboxes[b.ids[j]])) == 0;
+}
+
 // the 256 pixels of the tile `t` (of `tx` tiles a row), row after row: the
 // primitives `ids` drawn over `base`, each over the 256 pixels at once, a
 // channel after the other (loops the compiler makes of vector
-// instructions), as a GPU draws
-function tile(t: i64, tx: i64, base: Color, ps: Primitive[n], boxes: [f32, f32, f32, f32][n], ids: i64[]): u32[256] {
+// instructions), as a GPU draws. When the first hides those before it
+// (`hidden`), its colour is the start, the others drawn over it; a quad
+// that covers every pixel has a coverage of 1 without its distances
+// computed (the same bits as computed).
+function tile(t: i64, tx: i64, width: i64, height: i64, base: Color, ps: Primitive[n], boxes: [f32, f32, f32, f32][n], ids: i64[], hidden: boolean): u32[256] {
     const ox = f32((t % tx) * TILE) + 0.5f32;
     const oy = f32((t / tx) * TILE) + 0.5f32;
-    const start: Channels = [fill(256, base.r * base.a), fill(256, base.g * base.a), fill(256, base.b * base.a), fill(256, base.a)] as const;
-    const c = fold(ids, start, (acc, k) => {
+    const [cx0, cy0, cx1, cy1] = centres(t, tx, width, height);
+    const ground = hidden ? match (ps[ids[0]]) {
+        Box(q) => [q.background.r, q.background.g, q.background.b, 1.0f32] as const,
+        _ => [0.0f32, 0.0f32, 0.0f32, 0.0f32] as const,
+    } : [base.r * base.a, base.g * base.a, base.b * base.a, base.a] as const;
+    const [gr, gg, gb, ga] = ground;
+    const start: Channels = [fill(256, gr), fill(256, gg), fill(256, gb), fill(256, ga)] as const;
+    const rest = hidden ? ids.slice(1, ids.length) : ids;
+    const c = fold(rest, start, (acc, k) => {
         const [r, g, b, a] = acc;
         const [x0, y0, x1, y1] = boxes[k];
         return match (ps[k]) {
             Box(q) => {
-                const cover = map(iota(256), (j) => {
+                const whole = covers(q, boxes[k], cx0, cy0, cx1, cy1);
+                const cover = whole ? fill(256, 1.0f32) : map(iota(256), (j) => {
                     const px = ox + f32(j % TILE);
                     const py = oy + f32(j / TILE);
                     return px > x0 && px < x1 && py > y0 && py < y1 ? coverOf(q, px, py) : 0.0f32;
                 });
-                const inside = map(iota(256), (j) => {
+                const inside = whole ? fill(256, 1.0f32) : map(iota(256), (j) => {
                     const px = ox + f32(j % TILE);
                     const py = oy + f32(j / TILE);
                     // (read before the condition: a branch that cannot fail
@@ -431,39 +552,89 @@ function tile(t: i64, tx: i64, base: Color, ps: Primitive[n], boxes: [f32, f32, 
     return map(iota(256), (j) => pack([r[j], g[j], b[j], a[j]] as const));
 }
 
+// a frame drawn, kept to draw the next: the side of its tiles, its size,
+// the colour under all, its primitives and their boxes (within their
+// clips), what drew each tile; its pixels (`0xAARRGGBB`, rows from the
+// top); the tiles drawn for it (the others those of the frame before), and
+// the rectangle they cover ([x, y, width, height] in pixels; a width of 0:
+// none)
+// (the side of the tiles kept from frame to frame: the next frame made
+// from the parts of the last, which a loop then gives rather than copies)
+export type Canvas = { tile: i64, w: i64, h: i64, base: Color, ps: Primitive[], boxes: [f32, f32, f32, f32][], kept: Kept[], pixels: u32[], drawn: i64, damage: [i64, i64, i64, i64] };
+
+// no frame drawn before
+export function blank(): Canvas {
+    return { tile: TILE, w: 0, h: 0, base: transparent(), ps: [], boxes: [], kept: [], pixels: [], drawn: 0, damage: [0, 0, 0, 0] as const };
+}
+
 // the `width` by `height` pixels (`0xAARRGGBB`) of the primitives `ps`
-// drawn in their order over the colour `base`. The image is cut in tiles
-// of 16 by 16 pixels, each with the primitives whose box reaches one of
-// its centres of pixels: a pixel is drawn with those alone, the others
-// colouring nothing there (the same test, so the same bits as drawing
-// every primitive at every pixel). The tiles in parallel, the pixels of a
-// tile together.
+// drawn in their order over the colour `base` (`renderAgain` after no
+// frame)
 export function render(width: i64, height: i64, base: Color, ps: Primitive[n]): u32[] {
+    return renderAgain(blank(), width, height, base, ps).pixels;
+}
+
+// the frame of the primitives `ps` drawn over `base`, `width` by `height`
+// pixels, after the frame `prev`. The image is cut in tiles of 16 by 16
+// pixels, each with the primitives whose box reaches one of its centres of
+// pixels: a pixel is drawn with those alone, the others colouring nothing
+// there (the same test, so the same bits as drawing every primitive at
+// every pixel), from the last that hides those before it. A tile whose
+// primitives are those that drew it in `prev` (of the same size and
+// colour under all) keeps its pixels; the others are drawn, in parallel,
+// the pixels of a tile together.
+export function renderAgain(prev: Canvas, width: i64, height: i64, base: Color, ps: Primitive[n]): Canvas {
     const tx = (width + TILE - 1) / TILE;
     const ty = (height + TILE - 1) / TILE;
+    const nt = tx * ty;
     // each box within its clip
     const cl = clips(ps);
-    const boxes = map(iota(ps.length), (k) => {
+    const boxes = map(iota(n), (k) => {
         const [x0, y0, x1, y1] = reach(ps[k]);
         const [c0, c1, c2, c3] = cl[k];
         return [max(x0, c0), max(y0, c1), min(x1, c2), min(y1, c3)] as const;
     });
-    const tiles = map(iota(tx * ty), (t) => {
-        // the centres of the first and last pixels of the tile
-        const cx0 = f32((t % tx) * TILE) + 0.5f32;
-        const cy0 = f32((t / tx) * TILE) + 0.5f32;
-        const cx1 = cx0 + f32(TILE - 1);
-        const cy1 = cy0 + f32(TILE - 1);
-        const ids = filter(iota(ps.length), (k) => {
-            const [x0, y0, x1, y1] = boxes[k];
-            return cx1 > x0 && cx0 < x1 && cy1 > y0 && cy0 < y1;
-        });
-        return tile(t, tx, base, ps, boxes, ids);
+    // the primitives that draw something in each band of tiles
+    const bands = map(iota(ty), (b) => {
+        const y0 = f32(b * TILE) + 0.5f32;
+        const y1 = y0 + f32(TILE - 1);
+        return { ids: filter(iota(n), (k) => {
+            const [a0, b0, a1, b1] = boxes[k];
+            return a1 > a0 && b1 > b0 && y1 > b0 && y0 < b1 && seen(ps[k]);
+        }) };
     });
-    // the tiles back to rows of the image
-    return map(iota(width * height), (i) => {
-        const x = i % width;
-        const y = i / width;
-        return tiles[(y / TILE) * tx + x / TILE][(y % TILE) * TILE + x % TILE];
+    const kept = map(iota(nt), (t) => {
+        const [ids, hidden] = listed(t, tx, width, height, ps, boxes, bands[t / tx].ids);
+        return keptOf(ids, hidden);
     });
+    // the tiles of `prev` kept, those drawn again
+    const again = prev.tile == TILE && prev.w == width && prev.h == height && prev.base == base && prev.kept.length == nt;
+    const same = map(iota(nt), (t) => again && sameTile(kept[t], ps, boxes, prev.kept[t], prev.ps, prev.boxes));
+    const fresh = filter(iota(nt), (t) => !same[t]);
+    const tiles = map(fresh, (t) => {
+        const k = kept[t];
+        const [ids, hidden] = k.n >= 0 ? [k.ids.slice(0, k.n), k.hidden] as const : listed(t, tx, width, height, ps, boxes, bands[t / tx].ids);
+        return { px: tile(t, tx, width, height, base, ps, boxes, ids, hidden) };
+    });
+    // the place of each tile drawn among them
+    const at = scan(map(iota(nt), (t) => same[t] ? 0 : 1), (a, b) => a + b, 0);
+    // the tiles drawn written into the pixels of `prev` when they are few
+    // (an eighth of the tiles at most), else the tiles back to rows of the
+    // image (the row of a pixel by a product: exact for less than a million
+    // columns, no division by pixel)
+    const inv = 1.0 / f64(max(1, width));
+    const pixels = again && fresh.length * 8 <= nt ? patched(prev.pixels, tiles, fresh, tx, width, height) : map(iota(width * height), (i) => {
+        const y = i64(f64(i) * inv + 0.000001);
+        const x = i - y * width;
+        const t = (y / TILE) * tx + x / TILE;
+        return same[t] ? prev.pixels[i] : tiles[at[t] - 1].px[(y % TILE) * TILE + x % TILE];
+    });
+    // the rectangle of the tiles drawn
+    const [l, tp, r, bt] = fold(fresh, [nt, nt, -1, -1] as const, (acc, t) => {
+        const [a0, b0, a1, b1] = acc;
+        return [min(a0, t % tx), min(b0, t / tx), max(a1, t % tx), max(b1, t / tx)] as const;
+    });
+    const damage = fresh.length == 0 ? [0, 0, 0, 0] as const
+        : [l * TILE, tp * TILE, min(width, (r + 1) * TILE) - l * TILE, min(height, (bt + 1) * TILE) - tp * TILE] as const;
+    return { tile: prev.tile, w: width, h: height, base: base, ps: ps, boxes: boxes, kept: kept, pixels: pixels, drawn: fresh.length, damage: damage };
 }

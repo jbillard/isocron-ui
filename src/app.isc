@@ -18,7 +18,7 @@ import * as net from "net";
 import * as wl from "./wayland";
 import * as x11 from "./x11";
 import { IoError, ioError } from "sys";
-import { rgb, rgba, render, Primitive, Box, quad, rounded, bordered, transparent } from "./paint";
+import { rgb, rgba, render, renderAgain, blank, Canvas, Primitive, Box, quad, rounded, bordered, transparent } from "./paint";
 import { Font, parse } from "./font";
 import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU, FOCUS, WHEEL, tipOf } from "./ui";
 import { POINTER as POINTER_SHAPE, TEXT as TEXT_SHAPE } from "./ui";
@@ -58,7 +58,8 @@ export type Ev = Moved(f32, f32) | Down(i64) | Up(i64) | Scroll(f32) | Typed(i64
 // window took it (`asked`); the menu of a field (open, its corner, the
 // entry under the pointer, -1: none; whether the field has a selection, to
 // cut or copy; the texts of its entries: cut, copy, paste, select all); a
-// frame to draw; the window closed
+// frame to draw; the window closed; the height of the window last told to
+// the boxes that scroll (-1: none yet)
 export type Ui = {
     w: i64,
     h: i64,
@@ -103,6 +104,7 @@ export type Ui = {
     tipOff: boolean,
     redraw: boolean,
     closed: boolean,
+    toldH: i64,
 };
 
 // the texts of the entries of the menu of a field, by default
@@ -120,7 +122,7 @@ export function interface(w: i64, h: i64, now: u64): Ui {
         pressed: -1, field: -1, px: 0.0f32, py: 0.0f32, bar: -1, grab: 0.0f32, hotBar: -1,
         clickTime: 0u64, clicks: 0, cx: 0.0f32, cy: 0.0f32, since: now, caret: false, caretOn: true,
         clipboard: "", asked: [], menu: false, menuX: 0.0f32, menuY: 0.0f32, menuHover: -1, menuCut: false, labels: englishMenu(), scale: 1.0f32, dead: -1, focus: -1, ring: false, atlas: emptyAtlas(), animating: false, tickAt: 0u64, hoverSince: now, tipDue: false, tipOff: false,
-        redraw: true, closed: false,
+        redraw: true, closed: false, toldH: -1,
     };
 }
 
@@ -438,28 +440,32 @@ function menuLaidOut(ui: Ui, fs: Font[nf]): [Primitive[], Hit[]] {
 // (compiled once, called by each loop of each system)
 @noInline
 export function step<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    const told0 = ui.toldH;
+    const before = ui.offsets;
     const [u1, m1] = stepOnce(ui, m, ev, now, update);
+    // (the height told changes with that of the window, not its width)
     const resized = match (ev) {
-        Resized(w, h) => true,
+        Resized(w, h) => h != told0,
         Scaled(k) => true,
         _ => false,
     };
-    return viewports(u1, m1, ui.offsets, resized, 0, update);
+    return viewports({ ...u1, toldH: resized ? u1.h : u1.toldH }, m1, before, resized, 0, false, update);
 }
 
 // the model told where each box that scrolls is whose offset changed from
-// `before` (every one the view shows when `all`: the window resized), from
-// the `k`-th, in units
-function viewports<M>(ui: Ui, m: M, before: f32[n], all: boolean, k: i64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+// `before` (every one the view shows when `all`: the height of the window
+// changed), from the `k`-th, in units; after them, when one was (`any`),
+// `Viewport(-1, 0, 0)`: the boxes all told
+function viewports<M>(ui: Ui, m: M, before: f32[n], all: boolean, k: i64, any: boolean, update: (M, Input) => [M, Effect[]]): [Ui, M] {
     if (k >= n || k >= ui.offsets.length) {
-        return [ui, m] as const;
+        return any ? told(ui, m, Viewport(-1, 0.0f32, 0.0f32), update) : [ui, m] as const;
     }
     const shown = all && count(ui.hits, (h) => h.kind == WHEEL && h.id == k) > 0;
     if (ui.offsets[k] != before[k] || shown) {
         const [u1, m1] = told(ui, m, Viewport(k, ui.offsets[k] / ui.scale, f32(ui.h) / ui.scale), update);
-        return viewports(u1, m1, before, all, k + 1, update);
+        return viewports(u1, m1, before, all, k + 1, true, update);
     }
-    return viewports(ui, m, before, all, k + 1, update);
+    return viewports(ui, m, before, all, k + 1, any, update);
 }
 
 // one event given to the interface (`step` tells the boxes that scroll
@@ -700,12 +706,17 @@ export action runWithFonts<M>(title: string, width: i64, height: i64, labels: st
 
 // ----- Windows ---------------------------------------------------------
 
-// the view of `m` laid out in the window, drawn and shown: the interface
-// with its places
-action frame<M>(w: win.Window, fs: Font[nf], m: M, view: (M) => Element, ui: Ui): Ui {
+// the view of `m` laid out in the window, drawn after the frame `cv` (its
+// tiles drawn the same kept) and shown when `draw`: the interface with its
+// places, the frame drawn
+action frame<M>(w: win.Window, fs: Font[nf], m: M, view: (M) => Element, ui: Ui, cv: Canvas, draw: boolean): [Ui, Canvas] {
+    if (!draw) {
+        return [ui, cv] as const;
+    }
     const [ps, next] = laidOutFonts(ui, fs, m, view, clock());
-    const shown = win.show(w, render(ui.w, ui.h, rgb(0xFFFFFFu32), ps), ui.w, ui.h);
-    return next;
+    const c = renderAgain(cv, ui.w, ui.h, rgb(0xFFFFFFu32), ps);
+    const shown = win.show(w, c.pixels, ui.w, ui.h);
+    return [next, c] as const;
 }
 
 action runWindows<M>(title: string, width: i64, height: i64, labels: string[], fs: Font[nf], m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
@@ -713,8 +724,8 @@ action runWindows<M>(title: string, width: i64, height: i64, labels: string[], f
         Ok(w) => {
             const [cw, ch] = win.clientSize(w);
             // the pixels of a unit: the density of its screen
-            const ui = frame(w, fs, m, view, { ...interface(cw, ch, clock()), labels: labels, scale: f32(win.dpi(w)) / 96.0f32 });
-            const end = loopWindows(w, fs, m, ui, 0, ARROW, view, update);
+            const [ui, cv] = frame(w, fs, m, view, { ...interface(cw, ch, clock()), labels: labels, scale: f32(win.dpi(w)) / 96.0f32 }, blank(), true);
+            const [end, lastUi, lastFrame] = loopWindows(w, fs, m, ui, cv, 0, ARROW, view, update);
             win.close(w);
             return end;
         },
@@ -843,25 +854,27 @@ action askedWindows<M>(w: win.Window, ui: Ui, m: M, fx: Effect[n], k: i64, now: 
 
 // the events of the window until it is closed, the caret blinking between
 // them, the shape of the pointer (`shape`: that set) following the places
-action loopWindows<M>(w: win.Window, fs: Font[nf], m: M, ui: Ui, high: i64, shape: i64, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+// (the interface and the last frame given back at the end: given from one
+// turn to the next, not copied at each)
+action loopWindows<M>(w: win.Window, fs: Font[nf], m: M, ui: Ui, cv: Canvas, high: i64, shape: i64, view: (M) => Element, update: (M, Input) => [M, Effect[]]): [M, Ui, Canvas] {
     return match (win.events(w, wakeIn(ui, clock()))) {
         Ok(evs) => {
             const now = clock();
             const [ins, mods, nh] = fromWindows(evs, ui.mods, high);
             const [u0, m0] = feedWindows(w, ui, m, ins, 0, now, update);
             if (u0.closed) {
-                return m0;
+                return [m0, u0, cv] as const;
             }
             // what time asks: the caret blinked, a frame of an animation, a
             // tooltip due; drawn again
             const [u1, m1, due] = timed(u0, m0, now, update);
-            const next = due && u1.w > 0 && u1.h > 0 ? frame(w, fs, m1, view, u1) : u1;
+            const [next, c2] = frame(w, fs, m1, view, u1, cv, due && u1.w > 0 && u1.h > 0);
             if (next.cursor != shape) {
                 win.setCursor(w, next.cursor);
             }
-            return loopWindows(w, fs, m1, next, nh, next.cursor, view, update);
+            return loopWindows(w, fs, m1, next, c2, nh, next.cursor, view, update);
         },
-        Err(e) => m,
+        Err(e) => [m, ui, cv] as const,
     };
 }
 

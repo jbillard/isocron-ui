@@ -82,7 +82,9 @@ export function spacingAccent(k: i64): i64 {
 //   `height` units (the height of the window): told when its offset
 //   changes, and for every such box when the window changes its size or
 //   its density (a long list builds the rows in sight alone with it:
-//   `uniformList` of widgets.isc)
+//   `uniformList` of widgets.isc); the boxes of a step told, one
+//   `Viewport(-1, 0, 0)` after them (an application that makes its view
+//   again for each may wait for it to make it once)
 // - `Tick(ms)`: the time of a frame (milliseconds of the clock of the
 //   system), after `Animate`
 // - `TextRead(path, text, ok)`: the text of the file `path` asked by

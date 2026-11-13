@@ -1,0 +1,51 @@
+// A frame drawn after another (`renderAgain`): the same pixels as drawn
+// alone (`render`), whatever changed between them: a quad moved, a colour
+// changed, a text, a quad under the pointer lit (few tiles: written into
+// the last frame), nothing, the size of the image, the colour under all;
+// the tiles drawn each time.
+import { parse, Font } from "../src/font";
+import { render, renderAgain, blank, Canvas, rgb, rgba, quad, rounded, bordered, Box, Primitive } from "../src/paint";
+import { Element, Div, Label, style, textStyle, Px, Fill, placeFrame } from "../src/ui";
+import { resolved, emptyAtlas } from "../src/atlas";
+
+// a scene of quads, a rounded card with a border and a text
+function scene(fs: Font[n], w: i64, h: i64, x: f32, lit: boolean, label: string): Primitive[] {
+    const card = Div({ ...style(), width: Px(240.0f32), height: Px(90.0f32), padding: 12.0f32, background: rgb(0xFFFFFFu32), border: 1.0f32, borderColor: rgb(0xD1D5DBu32), radius: 8.0f32 }, [Label(textStyle(15.0f32, rgb(0x111827u32)), label)]);
+    const root = Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), padding: 20.0f32, gap: 10.0f32, background: rgb(0xF3F4F6u32) }, [card,
+        Div({ ...style(), width: Px(120.0f32), height: Px(30.0f32), radius: 6.0f32, background: lit ? rgb(0x2563EBu32) : rgb(0x93C5FDu32) }, [])]);
+    const [ps, hits] = placeFrame(fs, root, 0.0f32, 0.0f32, f32(w), f32(h), { offsets: [], caretOn: false, hotBar: -1, scale: 1.0f32, deferred: true });
+    const [rs, atlas] = resolved(fs, emptyAtlas(), concat(ps, [Box(rounded(quad(x, 150.0f32, 60.0f32, 40.0f32, rgba(0.9f32, 0.2f32, 0.1f32, 0.7f32)), 5.0f32))]));
+    return rs;
+}
+
+// the frame of `ps` after `c`: the same pixels as `ps` drawn alone, the
+// tiles drawn
+function compared(c: Canvas, w: i64, h: i64, ps: Primitive[n], base: u32): [Canvas, boolean, i64] {
+    const c2 = renderAgain(c, w, h, rgb(base), ps);
+    const alone = render(w, h, rgb(base), ps);
+    const same = c2.pixels.length == alone.length && count(iota(alone.length), (i) => c2.pixels[i] != alone[i]) == 0;
+    return [c2, same, c2.drawn] as const;
+}
+
+action main(args: string[k]): i32 {
+    return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Ok(f) => {
+            const fs = [f];
+            const [c0, s0, d0] = compared(blank(), 300, 220, scene(fs, 300, 220, 30.0f32, false, "Une carte"), 0xFFFFFFu32);
+            const [c1, s1, d1] = compared(c0, 300, 220, scene(fs, 300, 220, 37.0f32, false, "Une carte"), 0xFFFFFFu32);
+            const [c2, s2, d2] = compared(c1, 300, 220, scene(fs, 300, 220, 37.0f32, true, "Une carte"), 0xFFFFFFu32);
+            const [c3, s3, d3] = compared(c2, 300, 220, scene(fs, 300, 220, 37.0f32, true, "Deux cartes"), 0xFFFFFFu32);
+            const [c4, s4, d4] = compared(c3, 300, 220, scene(fs, 300, 220, 37.0f32, true, "Deux cartes"), 0xFFFFFFu32);
+            const [c5, s5, d5] = compared(c4, 333, 250, scene(fs, 333, 250, 37.0f32, true, "Deux cartes"), 0xFFFFFFu32);
+            const [c6, s6, d6] = compared(c5, 333, 250, scene(fs, 333, 250, 37.0f32, true, "Deux cartes"), 0x000000u32);
+            print([s0, s1, s2, s3, s4, s5, s6] as const);
+            print([d0, d1, d2, d3, d4, d5, d6] as const);
+            print([c4.damage, c2.damage] as const);
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

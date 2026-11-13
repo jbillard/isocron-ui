@@ -1191,6 +1191,14 @@ function compElement(b: B, file: string, c: Comp, kind: i64, label: string, id: 
 // the application with its elements made again (its memory collected
 // first when it has grown: the values of the places made after it)
 export function rebuilt(a: App): App {
+    return rebuiltUnless(a, false);
+}
+
+// `rebuilt`, or `a` as it is when `waits`
+function rebuiltUnless(a: App, waits: boolean): App {
+    if (waits) {
+        return a;
+    }
     // (Lua has not run since the values were kept: made again from them,
     // no Lua called, nothing collected: the tables they name stay)
     const replay = !a.luaRan && a.memo.length > 0;
@@ -1273,12 +1281,18 @@ export function update(a0: App, i: HandInput): [App, Effect[]] {
     const [a1, fx] = answered(a, i);
     // (the files and folders its Lua asked: read by the loop of the window)
     const [a2, files] = requested(a1);
-    return [rebuilt(a2), concat(fx, files)] as const;
+    // (a box that scrolls told: the elements made again once the boxes of
+    // the step are all told, at `Viewport(-1, ...)`)
+    const waits = match (i) {
+        Viewport(k, offset, height) => k >= 0,
+        _ => false,
+    };
+    return [rebuiltUnless(a2, waits), concat(fx, files)] as const;
 }
 
 function answered(a: App, i: HandInput): [App, Effect[]] {
     return match (i) {
-        Viewport(k, offset, height) => [viewported(a, k, offset, height), []] as const,
+        Viewport(k, offset, height) => [k >= 0 ? viewported(a, k, offset, height) : a, []] as const,
         TextRead(p, t, ok) => [delivered(a, i), []] as const,
         FolderListed(p, names, ok) => [delivered(a, i), []] as const,
         Hover(p) => [{ ...a, hover: p }, []] as const,
