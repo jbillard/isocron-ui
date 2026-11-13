@@ -872,6 +872,9 @@ action answerOf(e: Effect): HandInput {
 
 // the files and folders the scripts asked (`host.readFile`,
 // `host.listFolder` since the last time): the effects that ask them
+// (not inlined: the application given whole, its machine moved, not
+// copied, into the call)
+@noInline
 function requested(a: App): [App, Effect[]] {
     const host = lua.global(a.vm, "host");
     const take = lua.fieldOf(a.vm, host, "take");
@@ -1194,7 +1197,17 @@ export function rebuilt(a: App): App {
     return rebuiltUnless(a, false);
 }
 
+// what made the elements with the collector of its machine held by `by`
+// more (not inlined: given whole, made anew of its parts, its machine
+// moved rather than copied)
+@noInline
+function heldBy(b: B, by: i64): B {
+    return { ...b, vm: lua.held(b.vm, by) };
+}
+
 // `rebuilt`, or `a` as it is when `waits`
+// (not inlined: the application given whole, its machine moved)
+@noInline
 function rebuiltUnless(a: App, waits: boolean): App {
     if (waits) {
         return a;
@@ -1202,13 +1215,18 @@ function rebuiltUnless(a: App, waits: boolean): App {
     // (Lua has not run since the values were kept: made again from them,
     // no Lua called, nothing collected: the tables they name stay)
     const replay = !a.luaRan && a.memo.length > 0;
-    const v0 = replay ? a.vm : lua.held(lua.collectIfDue(a.vm), 1);
+    // (replayed: held while it is due, so not collected, then as it was;
+    // else collected when due and held while the elements are made)
+    // (no `if` between the machine and another: each would copy it)
+    const v0 = lua.held(lua.collectIfDue(lua.held(a.vm, replay ? 1 : 0)), replay ? -1 : 1);
     const b0 = { vm: v0, hs: [], err: "", eds: a.eds, focus: a.focus, hover: a.hover, pressed: a.pressed, seen: a.seen, now: map(a.seen, (x) => false), memo: replay ? a.memo : [], replay: replay, at: 0 };
     const [b1, es] = made(b0, a.cx, a.tpl[0], []);
+    const b2 = heldBy(b1, replay ? 0 : -1);
     // (the focus of a field no longer made lost)
-    const focus = b1.focus >= 0 && !b1.now[b1.focus] ? -1 : b1.focus;
-    const builtErr = replay ? a.memoErr : b1.err;
-    return { ...a, vm: replay ? b1.vm : lua.held(b1.vm, -1), hs: b1.hs, eds: b1.eds, focus: focus, seen: b1.now, tree: es.length > 0 ? es[0] : Div(style(), []), err: a.err == "" ? builtErr : a.err, memo: b1.memo, memoErr: builtErr, luaRan: false };
+    const focus = b2.focus >= 0 && !b2.now[b2.focus] ? -1 : b2.focus;
+    // (the parts of `b2` read where the application is made of them: a text
+    // of it read before would hold it, its arrays then copied)
+    return { ...a, vm: b2.vm, hs: b2.hs, eds: b2.eds, focus: focus, seen: b2.now, tree: es.length > 0 ? es[0] : Div(style(), []), err: a.err == "" ? (replay ? a.memoErr : b2.err) : a.err, memo: b2.memo, memoErr: replay ? a.memoErr : b2.err, luaRan: false };
 }
 
 // the elements of the application: an error shown above them
@@ -1232,7 +1250,9 @@ function ranValue(a: App, f: i64, args: V[n]): [App, V] {
     if (f < 0) {
         return [a, lua.nilValue()] as const;
     }
-    const b = { vm: a.vm, hs: [], err: "", eds: a.eds, focus: a.focus, hover: a.hover, pressed: a.pressed, seen: a.seen, now: a.seen, memo: [], replay: false, at: 0 };
+    // (the fields and the places not read by a call: none given, the
+    // application not copied for them)
+    const b: B = { vm: a.vm, hs: [], err: "", eds: [], focus: a.focus, hover: a.hover, pressed: a.pressed, seen: [], now: [], memo: [], replay: false, at: 0 };
     const [b1, v] = called(b, f, args);
     return [{ ...a, vm: b1.vm, err: a.err == "" ? b1.err : a.err, luaRan: true }, v] as const;
 }

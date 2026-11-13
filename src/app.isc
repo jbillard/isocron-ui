@@ -1070,20 +1070,28 @@ action globals(c: net.Conn, pending: u8[], g: wl.Globals): wl.Globals {
 // the view of `m` drawn into a new memory shared with the compositor and
 // shown as the `images`-th image, the previous one destroyed; the
 // interface with its places
-action drawWayland<M>(c: net.Conn, fs: Font[nf], m: M, view: (M) => Element, ui: Ui, st: State): [Ui, State] {
+// the view of `m` laid out, drawn after the frame `cv` (its tiles drawn
+// the same kept) and given to the compositor when `draw`: the interface,
+// the state, the frame drawn
+action drawWayland<M>(c: net.Conn, fs: Font[nf], m: M, view: (M) => Element, ui: Ui, st: State, cv: Canvas, draw: boolean): [Ui, State, Canvas] {
+    if (!draw) {
+        return [ui, st, cv] as const;
+    }
     const [ps, next] = laidOutFonts(ui, fs, m, view, clock());
     const pool = st.next;
     const buffer = st.next + 1u32;
+    const c2 = renderAgain(cv, ui.w, ui.h, rgb(0xFFFFFFu32), ps);
     return match (unix.shared(ui.w * ui.h * 4)) {
         Ok(mem) => {
-            const written = unix.writeSharedU32(mem, 0, render(ui.w, ui.h, rgb(0xFFFFFFu32), ps));
+            const written = unix.writeSharedU32(mem, 0, c2.pixels);
             const sent = unix.sendWithFds(c, wl.imageRequests(pool, buffer, ui.w * ui.h * 4, ui.w, ui.h), [unix.sharedFd(mem)]);
             unix.closeShared(mem);
             const old = st.pool != 0u32 ? net.write(c, wl.destroyRequests(st.pool, st.buffer)) : Ok(());
             const drawn = { ...st, next: st.next + 2u32, pool: pool, buffer: buffer };
-            return written == Ok(()) && sent == Ok(()) ? [next, drawn] as const : [next, { ...drawn, done: true, failed: "an image not sent" }] as const;
+            const fine = written == Ok(()) && sent == Ok(());
+            return [next, { ...drawn, done: !fine, failed: fine ? drawn.failed : "an image not sent" }, c2] as const;
         },
-        Err(e) => [next, { ...st, done: true, failed: sys.message(e) }] as const,
+        Err(e) => [next, { ...st, done: true, failed: sys.message(e) }, c2] as const,
     };
 }
 
@@ -1152,7 +1160,7 @@ action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f
             if (sys.env("ISC_UI_TRACE") != None) {
                 print(["Wayland fractional scale", fractional] as const);
             }
-            const end = loopWayland(c, fs, m, { ...interface(width, height, clock()), labels: labels }, st2, view, update);
+            const [end, lastFrame] = loopWayland(c, fs, m, { ...interface(width, height, clock()), labels: labels }, st2, blank(), view, update);
             net.close(c);
             return end;
         },
@@ -1182,9 +1190,11 @@ function keyEvent(ch: i64, mods: u32): Ev {
 
 // the events of the window until it is closed (or its compositor gone),
 // the caret blinking between them
-action loopWayland<M>(c: net.Conn, fs: Font[nf], m: M, ui: Ui, st: State, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+// (the last frame given back at the end: given from one turn to the next,
+// not copied at each)
+action loopWayland<M>(c: net.Conn, fs: Font[nf], m: M, ui: Ui, st: State, cv: Canvas, view: (M) => Element, update: (M, Input) => [M, Effect[]]): [M, Canvas] {
     if (st.done || ui.closed) {
-        return m;
+        return [m, cv] as const;
     }
     // nothing to read before the caret blinks: drawn again
     const wait = wakeIn(ui, clock());
@@ -1194,15 +1204,15 @@ action loopWayland<M>(c: net.Conn, fs: Font[nf], m: M, ui: Ui, st: State, view: 
     };
     if (!ready) {
         const [u1, m1, due] = timed(ui, m, clock(), update);
-        const [u2, s2] = st.shown && due ? drawWayland(c, fs, m1, view, u1, st) : [u1, st] as const;
-        return loopWayland(c, fs, m1, u2, s2, view, update);
+        const [u2, s2, c2] = drawWayland(c, fs, m1, view, u1, st, cv, st.shown && due);
+        return loopWayland(c, fs, m1, u2, s2, c2, view, update);
     }
     const r = match (unix.receiveWithFds(c, 65536, 8)) {
         Ok(got) => got,
         Err(e) => ({ bytes: [], fds: [] }),
     };
     if (r.bytes.length == 0) {
-        return m;
+        return [m, cv] as const;
     }
     const [evs, rest] = wl.events(concat(st.pending, r.bytes));
     // the descriptors received, taken in their order by the events that
@@ -1211,8 +1221,8 @@ action loopWayland<M>(c: net.Conn, fs: Font[nf], m: M, ui: Ui, st: State, view: 
     const [hm, hu, ns] = handle(c, fs, m, evs, 0, ui, { ...st, pending: rest, fds: r.fds, fdAt: 0 }, view, update);
     const closed = map(r.fds, (fd) => unix.closeFd(fd) == Ok(()) ? 1 : 0);
     const [nu, nm, due] = timed(hu, hm, clock(), update);
-    const [u2, s2] = due && ns.shown && !ns.done ? drawWayland(c, fs, nm, view, nu, ns) : [nu, ns] as const;
-    return loopWayland(c, fs, nm, u2, shapeShown(c, s2, u2.cursor), view, update);
+    const [u2, s2, c2] = drawWayland(c, fs, nm, view, nu, ns, cv, due && ns.shown && !ns.done);
+    return loopWayland(c, fs, nm, u2, shapeShown(c, s2, u2.cursor), c2, view, update);
 }
 
 // the events `evs` from the `i`-th, answered in their order
@@ -1305,10 +1315,10 @@ action handle<M>(c: net.Conn, fs: Font[nf], m: M, evs: wl.Event[n], i: i64, ui: 
             const st2 = st.shapes == 0u32 ? cursorImages(c, { ...st, scale: k, px: f32(k) }, k) : { ...st, scale: k, px: f32(k) };
             return [m1, { ...u1, asked: [] }, shapeShown(c, st2, u1.cursor)] as const;
         },
+        // (acknowledged; drawn by the loop after the events read with it)
         wl.Configure(serial) => {
             const acked = net.write(c, wl.request(wl.XDG_SURFACE, 4u32, wl.le32(serial)));
-            const [u2, s2] = drawWayland(c, fs, m, view, ui, { ...st, shown: true });
-            return [m, u2, s2] as const;
+            return [m, { ...ui, redraw: true }, { ...st, shown: true }] as const;
         },
         wl.Ping(serial) => {
             const pong = net.write(c, wl.request(wl.WM_BASE, 3u32, wl.le32(serial)));
@@ -1489,12 +1499,17 @@ action stripsX(c: net.Conn, st: XState, px: u32[n], w: i64, h: i64, y: i64, rows
 // the view of `m` laid out, drawn and sent to the window; the interface
 // with its places
 @noInline
-action drawX11<M>(c: net.Conn, fs: Font[nf], m: M, view: (M) => Element, ui: Ui, st: XState): Ui {
+// the view of `m` laid out, drawn after the frame `cv` (its tiles drawn
+// the same kept) and shown when `draw`: the interface, the frame drawn
+action drawX11<M>(c: net.Conn, fs: Font[nf], m: M, view: (M) => Element, ui: Ui, st: XState, cv: Canvas, draw: boolean): [Ui, Canvas] {
+    if (!draw) {
+        return [ui, cv] as const;
+    }
     const [ps, next] = laidOutFonts(ui, fs, m, view, clock());
-    const px = render(ui.w, ui.h, rgb(0xFFFFFFu32), ps);
-    const shown = st.shm > 0 && st.setup.littleImages && shmShown(c, st, px, ui.w, ui.h);
-    const sent = shown || stripsX(c, st, px, ui.w, ui.h, 0, x11.rowsPerRequest(ui.w, st.setup.maxRequest));
-    return next;
+    const c2 = renderAgain(cv, ui.w, ui.h, rgb(0xFFFFFFu32), ps);
+    const shown = st.shm > 0 && st.setup.littleImages && shmShown(c, st, c2.pixels, ui.w, ui.h);
+    const sent = shown || stripsX(c, st, c2.pixels, ui.w, ui.h, 0, x11.rowsPerRequest(ui.w, st.setup.maxRequest));
+    return [next, c2] as const;
 }
 
 // the image `px` shown by MIT-SHM: written into a new memory shared with
@@ -1724,21 +1739,23 @@ action handleX<M>(c: net.Conn, m: M, ms: x11.Message[n], i: i64, ui: Ui, st: XSt
 // the events of the window until it is closed (or its server gone), the
 // caret blinking between them: the messages answered, the window drawn
 // again when it changed, the shape of the pointer set
-action loopX11<M>(c: net.Conn, fs: Font[nf], m: M, ui: Ui, st: XState, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+// (the last frame given back at the end: given from one turn to the next,
+// not copied at each)
+action loopX11<M>(c: net.Conn, fs: Font[nf], m: M, ui: Ui, st: XState, cv: Canvas, view: (M) => Element, update: (M, Input) => [M, Effect[]]): [M, Canvas] {
     if (st.done || ui.closed) {
-        return m;
+        return [m, cv] as const;
     }
     // the messages read during a wait (a paste) first
     const queued = st.queued.length > 0;
     const [ms, rest, gone] = queued ? [st.queued, st.pending, false] as const : readX(c, st.pending, wakeIn(ui, clock()));
     if (gone) {
-        return m;
+        return [m, cv] as const;
     }
     const [hm, hu, ns] = handleX(c, m, ms, 0, ui, { ...st, pending: rest, queued: [] }, update);
     const [nu, nm, due] = timed(hu, hm, clock(), update);
-    const u2 = due ? drawX11(c, fs, nm, view, nu, ns) : nu;
+    const [u2, c2] = drawX11(c, fs, nm, view, nu, ns, cv, due);
     const shaped = u2.cursor != ns.shape ? net.write(c, x11.setCursor(ns.window, ns.cursorFirst + u32(u2.cursor))) : Ok(());
-    return loopX11(c, fs, nm, { ...u2, redraw: false }, { ...ns, shape: u2.cursor }, view, update);
+    return loopX11(c, fs, nm, { ...u2, redraw: false }, { ...ns, shape: u2.cursor }, c2, view, update);
 }
 
 // MIT-SHM of a version that passes memories by descriptors (1.2 and after)
@@ -1819,7 +1836,7 @@ action runX11<M>(title: string, width: i64, height: i64, labels: string[], fs: F
                 shm: shmOk ? shmMajor : 0, seg: id(10), incrTo: 0u32, incrProperty: 0u32, incrTarget: 0u32, incrAt: 0, done: false,
             };
             const ui = { ...interface(pw, ph, clock()), labels: labels, scale: scale, redraw: false };
-            const end = loopX11(c, fs, m, ui, st, view, update);
+            const [end, lastFrame] = loopX11(c, fs, m, ui, st, blank(), view, update);
             net.close(c);
             return end;
         },
