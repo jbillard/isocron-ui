@@ -13,8 +13,8 @@ current = ""         -- the path chosen in the tree
 view = "files"       -- the view of the side bar
 search = ""          -- the text of the search
 sidebarShown = true
-sidebarWidth = 250
-panelShown = true
+sidebarWidth = 300
+panelShown = false
 panelHeight = 150
 from = 0
 palette = false
@@ -22,9 +22,6 @@ query = ""
 choice = 1
 files = {}           -- the paths of the files known, in the order found
 log = { "Isocron : éditeur prêt." }
-
--- the most lines of a file shown
-MOST_LINES = 600
 
 local IGNORED = { [".git/"] = true, ["target/"] = true, ["node_modules/"] = true }
 
@@ -42,6 +39,39 @@ local function say(text)
   end
 end
 
+-- the order of the names of the explorer of Visual Studio Code: that of
+-- the collation of the system (ICU's root): the punctuation first (`_`
+-- before `.`), then the digits, then the letters whatever their case; two
+-- names of the same key in the order of their bytes
+local PUNCT = "\t _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$"
+local RANK = {}
+for k = 1, #PUNCT do
+  RANK[string.sub(PUNCT, k, k)] = string.char(k)
+end
+
+local function nameKey(x)
+  -- (ASCII alone ranked: a character beyond it kept as it is, whole)
+  return (string.gsub(x, "[%w%p%s]", function(c)
+    local b = string.byte(c)
+    if RANK[c] then
+      return RANK[c]
+    elseif b >= 48 and b <= 57 then
+      return string.char(b - 48 + 40)
+    elseif b >= 65 and b <= 90 then
+      return string.char(b - 65 + 60)
+    elseif b >= 97 and b <= 122 then
+      return string.char(b - 97 + 60)
+    elseif b >= 128 then
+      return c
+    end
+    return string.char(90)
+  end)) .. "\1" .. x
+end
+
+local function byName(a, b)
+  return nameKey(a) < nameKey(b)
+end
+
 -- the names of a folder: its folders first, then its files, each sorted
 local function sorted(names)
   local dirs, plain = {}, {}
@@ -52,8 +82,8 @@ local function sorted(names)
       plain[#plain + 1] = x
     end
   end
-  table.sort(dirs)
-  table.sort(plain)
+  table.sort(dirs, byName)
+  table.sort(plain, byName)
   for _, x in ipairs(plain) do
     dirs[#dirs + 1] = x
   end
@@ -128,257 +158,151 @@ function clickNode(n)
   end
 end
 
--- ----- the languages and their colours -------------------------------
+-- ----- the icons ------------------------------------------------------
 
-local COLORS = {
-  plain = "#D4D4D4", keyword = "#569CD6", control = "#C586C0", string = "#CE9178",
-  comment = "#6A9955", number = "#B5CEA8", call = "#DCDCAA", type = "#4EC9B0",
-  tag = "#569CD6", attr = "#9CDCFE", punct = "#D4D4D4",
+-- the icons of Visual Studio Code (the font codicon, `font="icons"`)
+I = {
+  files = "\u{EAF0}", search = "\u{EA6D}", branch = "\u{EA68}", debug = "\u{EB91}", blocks = "\u{EAE6}",
+  account = "\u{EB99}", gear = "\u{EB51}", right = "\u{EAB6}", down = "\u{EAB4}", close = "\u{EA76}",
+  more = "\u{EA7C}", back = "\u{EA9B}", forward = "\u{EA9C}", split = "\u{EB56}", error = "\u{EA87}",
+  warning = "\u{EA6C}", bell = "\u{EAA2}", remote = "\u{EB3A}", sidebar = "\u{EBF3}", panel = "\u{EBF2}",
+  aside = "\u{EBF4}", braces = "\u{EB0F}", file = "\u{EA7B}", folder = "\u{EA83}", info = "\u{EA74}",
+  markdown = "\u{EB1D}", terminal = "\u{EA85}",
+  minimize = "\u{EABA}", maximize = "\u{EAB9}", restore = "\u{EABB}", closeWindow = "\u{EAB8}",
+  chat = "\u{EC4F}", copilot = "\u{EC1E}", layout = "\u{EBEB}",
+  sidebarOn = "\u{EBF3}", sidebarOff = "\u{EC02}", panelOn = "\u{EBF2}", panelOff = "\u{EC01}",
+  asideOn = "\u{EBF4}", asideOff = "\u{EC00}", object = "\u{EA8B}", array = "\u{EA8A}",
+  dirty = "\u{EA71}",
 }
 
-local function set(words)
-  local s = {}
-  for w in string.gmatch(words, "%S+") do
-    s[w] = true
+-- the glyphs of the buttons of the window: those of the system under
+-- Windows (Segoe Fluent Icons, `font="caption"`, 10 units), else those of
+-- Visual Studio Code (codicon, 16)
+local CAPTION = { min = "\u{E921}", max = "\u{E922}", restore = "\u{E923}", close = "\u{E8BB}" }
+local CHROME = { min = I.minimize, max = I.maximize, restore = I.restore, close = I.closeWindow }
+
+function winGlyph(kind)
+  if kind == "max" and host.maximized then
+    kind = "restore"
   end
-  return s
+  return host.system == "windows" and CAPTION[kind] or CHROME[kind]
 end
 
-local LANGS = {
-  lua = { name = "Lua", line = "--", keywords = set("local function end if then else elseif for in do while repeat until return break nil true false and or not goto"),
-          control = set("if then else elseif for in do while repeat until return break goto") },
-  isc = { name = "Isocron", line = "//", block = { "/*", "*/" }, keywords = set("function action const type import export from match return if else true false as"),
-          control = set("if else return match"), types = set("i64 i32 u8 u32 u64 f32 f64 string boolean void Result Ok Err Some None") },
-  rs = { name = "Rust", line = "//", block = { "/*", "*/" }, keywords = set("fn let mut pub use mod struct enum impl trait for in if else match return while loop break continue const static true false self Self where as ref move"),
-         control = set("if else match return while loop for break continue"), types = set("i64 i32 u8 u32 u64 usize f32 f64 bool str String Vec Option Result Box") },
-  py = { name = "Python", line = "#", keywords = set("def class import from return if elif else for in while try except finally with as pass break continue and or not None True False lambda yield"),
-         control = set("if elif else for while return try except finally break continue") },
-  sh = { name = "Shell", line = "#", keywords = set("if then else elif fi for in do done while case esac function return export local set"),
-         control = set("if then else elif fi for do done while case esac return") },
-  style = { name = "Styles", block = { "/*", "*/" }, keywords = set("") },
-  xml = { name = "XML", xml = true },
-  md = { name = "Markdown", keywords = set("") },
-  txt = { name = "Texte brut", keywords = set("") },
+function captionFont()
+  return host.system == "windows" and "caption" or "icons"
+end
+
+function captionSize()
+  return host.system == "windows" and 10 or 16
+end
+
+-- the box that finds a file: 38 % of the window wide, 600 units at most
+function commandWidth()
+  return math.min(600, (host.width or 1100) * 0.38)
+end
+
+-- the icon of a file as the theme Seti of Visual Studio Code chooses it
+-- (seti.lua, the font seti.ttf at 150 % of the text): by its name, then by
+-- its extensions (the longest first: `tsconfig.json` before `json`), then
+-- by its language; else the icon of a file
+local LANGUAGE_OF = {
+  py = "python", pyw = "python", sh = "shellscript", bash = "shellscript", zsh = "shellscript",
+  yaml = "yaml", yml = "yaml", md = "markdown", markdown = "markdown", lua = "lua", json = "json",
+  jsonc = "jsonc", jsonl = "jsonl", js = "javascript", mjs = "javascript", cjs = "javascript",
+  jsx = "javascriptreact", ts = "typescript", mts = "typescript", tsx = "typescriptreact",
+  rs = "rust", go = "go", c = "c", h = "c", cpp = "cpp", cc = "cpp", hpp = "cpp", cs = "csharp",
+  java = "java", kt = "kotlin", swift = "swift", rb = "ruby", php = "php", pl = "perl",
+  css = "css", scss = "scss", sass = "sass", less = "less", html = "html", htm = "html",
+  xml = "xml", svg = "xml", sql = "sql", bat = "bat", cmd = "bat", ps1 = "powershell",
+  r = "r", dart = "dart", vue = "vue", tex = "latex", ini = "properties", properties = "properties",
+  gradle = "gradle", groovy = "groovy", ml = "ocaml", hs = "haskell", ex = "elixir", jl = "julia",
 }
+local NAME_LANGUAGE = { dockerfile = "dockerfile", makefile = "makefile", [".gitignore"] = "ignore",
+  [".dockerignore"] = "ignore", [".env"] = "dotenv" }
 
-local EXTENSIONS = { lua = "lua", isc = "isc", rs = "rs", py = "py", sh = "sh", style = "style", css = "style",
-  xml = "xml", html = "xml", md = "md", txt = "txt", json = "txt", toml = "txt" }
-
-function langOf(name)
-  local ext = string.match(name, "%.([%w_]+)$")
-  return LANGS[EXTENSIONS[ext or ""] or "txt"]
+function kindOf(name)
+  local low = string.lower(string.match(name, "([^/\\]+)$") or name)
+  local hit = SETI.names[low]
+  if hit then
+    return hit
+  end
+  -- (the extensions: from the first dot after the start of the name)
+  local at = string.find(low, ".", 2, true)
+  while at do
+    local ext = string.sub(low, at + 1)
+    hit = SETI.extensions[ext]
+    if hit then
+      return hit
+    end
+    at = string.find(low, ".", at + 1, true)
+  end
+  local ext = string.match(low, "%.([^%.]+)$")
+  local language = NAME_LANGUAGE[low] or (ext and LANGUAGE_OF[ext])
+  return (language and SETI.languages[language]) or SETI.file
 end
 
--- the colour of the icon of a file, by its kind
-function fileColor(name)
-  local ext = string.match(name, "%.([%w_]+)$") or ""
-  local c = { isc = "#3B82F6", lua = "#4F7ACF", rs = "#DEA584", py = "#3572A5", sh = "#89E051", xml = "#E37933",
-              style = "#C586C0", css = "#C586C0", md = "#519ABA", png = "#A074C4", ttf = "#A074C4", json = "#CBCB41", toml = "#9C4221" }
-  return c[ext] or "#8B8B8B"
+function fileIcon(name)
+  return kindOf(name)[1]
 end
 
--- the tokens of the line `s` of the language `lang`, `state` true when a
--- block comment is open at its start: the tokens ({ text, color }) and
--- the state at its end
-local function tokens(s, lang, state)
-  local out = {}
-  -- (the spaces a token ends with given to the next one: the width of a
-  -- text ends at its last character that is not a space)
-  local pending = ""
-  local function add(text, kind)
-    if text == "" then
-      return
-    end
-    local sp = string.find(text, "%s+$")
-    local body = pending .. (sp and string.sub(text, 1, sp - 1) or text)
-    pending = sp and string.sub(text, sp) or ""
-    if body == "" or string.find(body, "^%s+$") then
-      pending = body .. pending
-      return
-    end
-    local last = out[#out]
-    if last and last.kind == kind and not string.find(body, "^%s") then
-      last.text = last.text .. body
-    else
-      out[#out + 1] = { text = body, kind = kind, color = COLORS[kind] }
-    end
-  end
-  local i, n = 1, #s
-  if lang.xml then
-    while i <= n do
-      local a, b = string.find(s, "<!%-%-.-%-%->", i)
-      local t = string.find(s, "<", i, true)
-      if a and a == i then
-        add(string.sub(s, a, b), "comment")
-        i = b + 1
-      elseif t == i then
-        local e = string.find(s, ">", i, true) or n
-        local inner = string.sub(s, i, e)
-        local j = 1
-        local name = string.match(inner, "^</?[%w_:%-]*")
-        add(name, "tag")
-        j = #name + 1
-        while j <= #inner do
-          local q1, q2 = string.find(inner, "\"[^\"]*\"", j)
-          if q1 then
-            add(string.sub(inner, j, q1 - 1), "attr")
-            add(string.sub(inner, q1, q2), "string")
-            j = q2 + 1
-          else
-            add(string.sub(inner, j), "tag")
-            j = #inner + 1
-          end
-        end
-        i = e + 1
-      else
-        local e = (t or n + 1) - 1
-        add(string.sub(s, i, e), "plain")
-        i = e + 1
-      end
-    end
-    return out, false
-  end
-  while i <= n do
-    if state then
-      local a, b = string.find(s, lang.block[2], i, true)
-      if a then
-        add(string.sub(s, i, b), "comment")
-        i = b + 1
-        state = false
-      else
-        add(string.sub(s, i), "comment")
-        i = n + 1
-      end
-    else
-      -- (the strings of this Lua are texts: a character is never cut,
-      -- each test a pattern at `i`, each part between ASCII characters)
-      if lang.block and string.find(s, lang.block[1], i, true) == i then
-        state = true
-        add(lang.block[1], "comment")
-        i = i + #lang.block[1]
-      elseif lang.line and string.find(s, lang.line, i, true) == i then
-        add(string.sub(s, i), "comment")
-        i = n + 1
-      elseif string.find(s, "^[\"'`]", i) then
-        local q = string.sub(s, i, i)
-        local j = n
-        local at = i + 1
-        while at <= n do
-          local a = string.find(s, "[\\" .. q .. "]", at)
-          if not a then
-            break
-          end
-          if string.find(s, "^\\", a) then
-            at = a + 2
-          else
-            j = a
-            break
-          end
-        end
-        add(string.sub(s, i, j), "string")
-        i = j + 1
-      elseif string.find(s, "^%d", i) then
-        local a, b = string.find(s, "^[%w_%.]+", i)
-        add(string.sub(s, a, b), "number")
-        i = b + 1
-      elseif string.find(s, "^[%a_]", i) then
-        local a, b = string.find(s, "^[%w_]+", i)
-        local w = string.sub(s, a, b)
-        local kind = "plain"
-        if lang.control and lang.control[w] then
-          kind = "control"
-        elseif lang.keywords and lang.keywords[w] then
-          kind = "keyword"
-        elseif lang.types and lang.types[w] then
-          kind = "type"
-        elseif string.find(s, "^%(", b + 1) then
-          kind = "call"
-        elseif string.find(w, "^%u") then
-          kind = "type"
-        end
-        add(w, kind)
-        i = b + 1
-      else
-        local a, b = string.find(s, "^[^%w_\"'`]+", i)
-        local part = string.sub(s, a, b)
-        -- (a comment may start inside the punctuation)
-        local cut = nil
-        for _, mark in ipairs({ lang.line or "\0", lang.block and lang.block[1] or "\0" }) do
-          local m = string.find(part, mark, 1, true)
-          if m and (not cut or m < cut) then
-            cut = m
-          end
-        end
-        if cut and cut > 1 then
-          part = string.sub(part, 1, cut - 1)
-        elseif cut == 1 then
-          part = string.sub(part, 1, 1)
-        end
-        add(part, "punct")
-        i = i + #part
-      end
-    end
-  end
-  return out, state
+function fileIconColor(name)
+  return kindOf(name)[2]
 end
 
--- the lines of the text `text` of a file, each its tokens (MOST_LINES at
--- most), and the number of its lines
-local function linesOf(text, lang)
-  local lines = {}
-  local count = 0
-  local state = false
-  for raw in string.gmatch(text .. "\n", "([^\n]*)\n") do
-    count = count + 1
-    if count <= MOST_LINES then
-      local s = string.gsub(string.gsub(raw, "\r$", ""), "\t", "    ")
-      local toks
-      toks, state = tokens(s, lang, state)
-      lines[#lines + 1] = toks
-    end
-  end
-  return lines, count
+function fileIconFont(name)
+  return "seti"
 end
+
+function fileIconSize(name)
+  return 19.5
+end
+
+-- the sections of the explorer below the tree
+sections = { "Outline", "Timeline" }
 
 -- ----- tabs ------------------------------------------------------------
 
+-- a file opened: its document made by the host (host.openDoc: its lines,
+-- its cursor, its colours, its undo; the keys and the pointer change it
+-- there), a tab for it, the keyboard given to its code
 function openFile(path)
   for k, t in ipairs(tabs) do
     if t.path == path then
       active = k
       current = path
+      host.focusCode()
       return
     end
   end
-  local name = string.match(path, "([^/]+)$") or path
+  local name = string.match(path, "([^/\\]+)$") or path
   host.readFile(path, function(text, err)
     if not text then
       say("Lecture impossible : " .. path .. " (" .. tostring(err) .. ")")
       return
     end
-    local lang = langOf(name)
-    local lines, count
     if string.find(text, "\0", 1, true) then
-      lines, count = { { { text = "(fichier binaire : non affiché)", color = COLORS.comment } } }, 1
-    else
-      lines, count = linesOf(text, lang)
+      text = "The file is not displayed in the text editor because it is either binary or uses an unsupported text encoding."
     end
-    tabs[#tabs + 1] = { path = path, name = name, lang = lang.name, lines = lines, count = count }
+    host.openDoc(path, text)
+    tabs[#tabs + 1] = { path = path, name = name }
     active = #tabs
     current = path
-    say("Ouvert : " .. rel(path) .. " (" .. count .. " lignes)")
+    host.focusCode()
+    say("Ouvert : " .. rel(path))
   end)
 end
 
 function selectTab(k)
   active = k
   current = tabs[k].path
+  host.focusCode()
 end
 
 function closeTab(k)
   if k < 1 or k > #tabs then
     return
   end
+  host.closeDoc(tabs[k].path)
   table.remove(tabs, k)
   if active >= k then
     active = math.max(active - 1, #tabs > 0 and 1 or 0)
@@ -390,52 +314,17 @@ function activeTab()
   return tabs[active]
 end
 
--- the lines in sight of the code (the box that scrolls `scroll="1"`: its
--- offset and height told by the host), a few more above and below: the
--- first, the last, and the number of lines
-LINE_H = 19
-
-local function codeRange()
+-- the path of the document shown ("" without a tab)
+function activePath()
   local t = tabs[active]
-  if not t then
-    return 1, 0, 0
-  end
-  local n = #t.lines
-  local off = host.offsets[2] or 0
-  local h = host.heights[2] or 720
-  local first = math.max(1, math.floor(off / LINE_H) + 1 - 5)
-  local last = math.min(n, math.floor((off + h) / LINE_H) + 1 + 5)
-  return first, last, n
+  return t and t.path or ""
 end
 
--- the space of the lines above those in sight, those in sight (their
--- numbers, their tokens), the space of those below
-function codeTop()
-  local first = codeRange()
-  return (first - 1) * LINE_H
-end
-
-function codeRows()
-  local first, last = codeRange()
-  local t = tabs[active]
-  local out = {}
-  for k = first, last do
-    out[#out + 1] = { num = k, toks = t.lines[k] }
-  end
-  return out
-end
-
-function codeBottom()
-  local first, last, n = codeRange()
-  return math.max(0, n - last) * LINE_H
-end
-
-function more()
-  local t = tabs[active]
-  if t and t.count > MOST_LINES then
-    return { "… " .. (t.count - MOST_LINES) .. " lignes de plus, non affichées" }
-  end
-  return {}
+-- what the host tells of the document of the tab `t` (host.docs: its line,
+-- its column, whether it changed, its language, its indentation, its ends
+-- of lines, the symbols around its cursor)
+local function docOf(t)
+  return t and host.docs[t.path]
 end
 
 -- the path `p` from the folder shown
@@ -446,12 +335,39 @@ function rel(p)
   return p
 end
 
-function breadcrumb()
+-- the symbols around the cursor of the tab `t` (a JSON: its outline, as
+-- the breadcrumbs of Visual Studio Code show it), told by the host
+local function symbols(t)
+  local d = docOf(t)
+  local out = {}
+  for _, sym in ipairs(d and d.symbols or {}) do
+    out[#out + 1] = { name = sym.name, icon = sym.array and I.array or I.object }
+  end
+  return out
+end
+
+-- the parts of the path of the file of the tab (its icon on the file),
+-- then the symbols around the cursor, each its icon and whether it is the
+-- last
+function crumbs()
   local t = tabs[active]
   if not t then
-    return ""
+    return {}
   end
-  return (string.gsub(string.gsub(rel(t.path), "\\", "/"), "/", "  ›  "))
+  local out = {}
+  for part in string.gmatch(string.gsub(rel(t.path), "\\", "/"), "[^/]+") do
+    out[#out + 1] = { name = part, last = false, file = false, icon = "" }
+  end
+  if #out > 0 then
+    out[#out].file = true
+  end
+  for _, sym in ipairs(symbols(t)) do
+    out[#out + 1] = { name = sym.name, last = false, file = false, icon = sym.icon }
+  end
+  if #out > 0 then
+    out[#out].last = true
+  end
+  return out
 end
 
 -- ----- the palette -----------------------------------------------------
@@ -525,6 +441,12 @@ function onKey(key, ctrl)
     closeTab(active)
     return true
   end
+  if ctrl and key == "s" then
+    if tabs[active] then
+      host.save(tabs[active].path)
+    end
+    return true
+  end
   if palette then
     if key == "Escape" then
       palette = false
@@ -551,28 +473,37 @@ function showView(v)
   end
 end
 
-menus = { "Fichier", "Édition", "Sélection", "Affichage", "Atteindre", "Exécuter", "Terminal", "Aide" }
-activities = { "files", "search", "branch", "blocks" }
-viewNames = { files = "Explorateur (Ctrl+B)", search = "Rechercher", branch = "Gestion des sources", blocks = "Extensions" }
+-- (the words of Visual Studio Code in English, as the author's)
+menus = { "File", "Edit", "Selection", "View", "Go", "Run", "Terminal", "Help" }
+activities = { "files", "search", "branch", "debug", "blocks" }
+viewNames = { files = "Explorer (Ctrl+Shift+E)", search = "Search (Ctrl+Shift+F)", branch = "Source Control (Ctrl+Shift+G)", debug = "Run and Debug (Ctrl+Shift+D)", blocks = "Extensions (Ctrl+Shift+X)" }
 
 function viewTitle()
-  return ({ files = "EXPLORATEUR", search = "RECHERCHE", branch = "GESTION DES SOURCES", blocks = "EXTENSIONS" })[view] or ""
+  return ({ files = "Explorer", search = "Search", branch = "Source Control", debug = "Run and Debug", blocks = "Extensions" })[view] or ""
+end
+
+-- the name of the folder shown (that of the current folder, told by the
+-- host, for ".")
+function rootName()
+  local path = root == "." and (host.cwd or ".") or root
+  return string.match(path, "([^/\\]+)[/\\]*$") or path
 end
 
 function rootTitle()
-  return root == "." and "DOSSIER COURANT" or string.upper(string.match(root, "([^/\\]+)[/\\]*$") or root)
+  return rootName()
 end
 
 -- the chevron of a node: a folder closed or open, nothing for a file
 function chevron(n)
   if not n.dir then
-    return "icons/blank.png"
+    return ""
   end
-  return n.open and "icons/open.png" or "icons/closed.png"
+  return n.open and I.down or I.right
 end
 
-function icon(v)
-  return v .. ((view == v and sidebarShown) and "_on.png" or ".png")
+-- whether the activity `v` is the view shown
+function shown(v)
+  return view == v and sidebarShown
 end
 
 function title()
@@ -580,12 +511,31 @@ function title()
   return (t and (t.name .. " — ") or "") .. "Isocron"
 end
 
-function statusRight()
-  local t = tabs[active]
-  if not t then
-    return ""
+-- the items of the right of the bar of the state (none without a file)
+function statusItems()
+  local d = docOf(tabs[active])
+  if not d then
+    return {}
   end
-  return t.count .. " lignes    UTF-8    LF    " .. t.lang
+  return { "Ln " .. d.line .. ", Col " .. d.col, "Spaces: " .. d.indent, "UTF-8", d.eol }
+end
+
+-- the tabs as they are drawn: the one shown joined to its editor (the
+-- first flush with the edge of the card: no shoulder at its left), a line
+-- between two others
+function tabsView()
+  local out = {}
+  for k, t in ipairs(tabs) do
+    local d = docOf(t)
+    out[#out + 1] = { k = k, name = t.name, active = k == active, first = k == 1,
+                      divider = k > 1 and k ~= active and k - 1 ~= active, dirty = d and d.dirty or false }
+  end
+  return out
+end
+
+function langName()
+  local d = docOf(tabs[active])
+  return d and d.lang or ""
 end
 
 function logLines()

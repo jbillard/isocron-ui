@@ -1,0 +1,376 @@
+// The code of a file cut in coloured tokens, line by line (the editor of
+// code of the library, src/doc.isc and src/code_view.isc): the languages
+// it knows,
+// their keywords, strings, comments (of a line and of a block, open from
+// a line to the next), numbers, calls, types, the tags of XML, the names
+// of the members of JSON; the brackets coloured by their depth; the
+// guides of the indentation. The colours are those of the theme 2026 Dark
+// of Visual Studio Code.
+import { rgb, Color } from "./paint";
+
+export type Tok = { text: string, color: Color };
+
+// a line: its tokens after its indentation, the number of its guides
+export type Line = { toks: Tok[], guides: i64 };
+
+export type Lang = {
+    name: string, line: string, open: string, close: string,
+    keywords: string[], control: string[], types: string[], constants: string[],
+    xml: boolean, json: boolean, plain: boolean,
+};
+
+const K_PLAIN: i64 = 0;
+const K_KEYWORD: i64 = 1;
+const K_CONTROL: i64 = 2;
+const K_STRING: i64 = 3;
+const K_COMMENT: i64 = 4;
+const K_NUMBER: i64 = 5;
+const K_CALL: i64 = 6;
+const K_TYPE: i64 = 7;
+const K_TAG: i64 = 8;
+const K_ATTR: i64 = 9;
+const K_PUNCT: i64 = 10;
+const K_KEY: i64 = 11;
+const K_CONSTANT: i64 = 12;
+const K_TEXT: i64 = 13;
+
+// the colours of the kinds, in their order
+const COLORS: u32[] = [0xC9D1D9u32, 0xFF7B72u32, 0xFF7B72u32, 0xA5D6FFu32, 0x8B949Eu32, 0x79C0FFu32, 0xD2A8FFu32, 0xFFA657u32, 0x7EE787u32, 0x79C0FFu32, 0xBBBEBFu32, 0x7EE787u32, 0x79C0FFu32, 0xBBBEBFu32];
+
+// the colours of the brackets by their depth (bracket pair colorization)
+const BRACKETS: u32[] = [0xFFD700u32, 0xDA70D6u32, 0x179FFFu32];
+
+function words(s: string): string[] {
+    return filter(split(s, " "), (w) => w != "");
+}
+
+function lang(name: string, line: string, open: string, close: string, keywords: string, control: string, types: string): Lang {
+    return { name: name, line: line, open: open, close: close, keywords: words(keywords), control: words(control), types: words(types), constants: [], xml: false, json: false, plain: false };
+}
+
+// the language of a file by its name
+export function langOf(name: string): Lang {
+    const dot = name.lastIndexOf(".");
+    const ext = dot < 0 ? "" : name.slice(dot + 1, name.length);
+    if (ext == "lua") {
+        return lang("Lua", "--", "", "", "local function end if then else elseif for in do while repeat until return break nil true false and or not goto", "if then else elseif for in do while repeat until return break goto", "");
+    }
+    if (ext == "isc") {
+        return lang("Isocron", "//", "/*", "*/", "function action const type import export from match return if else true false as", "if else return match", "i64 i32 u8 u32 u64 f32 f64 string boolean void Result Ok Err Some None");
+    }
+    if (ext == "rs") {
+        return lang("Rust", "//", "/*", "*/", "fn let mut pub use mod struct enum impl trait for in if else match return while loop break continue const static true false self Self where as ref move", "if else match return while loop for break continue", "i64 i32 u8 u32 u64 usize f32 f64 bool str String Vec Option Result Box");
+    }
+    if (ext == "py") {
+        return lang("Python", "#", "", "", "def class import from return if elif else for in while try except finally with as pass break continue and or not None True False lambda yield", "if elif else for while return try except finally break continue", "");
+    }
+    if (ext == "sh") {
+        return lang("Shell Script", "#", "", "", "if then else elif fi for in do done while case esac function return export local set", "if then else elif fi for do done while case esac return", "");
+    }
+    if (ext == "style" || ext == "css") {
+        return lang(ext == "css" ? "CSS" : "Styles", "", "/*", "*/", "", "", "");
+    }
+    if (ext == "xml" || ext == "html") {
+        return { ...lang(ext == "xml" ? "XML" : "HTML", "", "", "", "", "", ""), xml: true };
+    }
+    if (ext == "json") {
+        return { ...lang("JSON", "", "", "", "", "", ""), json: true, constants: ["true", "false", "null"] };
+    }
+    // (a plain text: its lines in the colour of the editor)
+    if (ext == "md") {
+        return { ...lang("Markdown", "", "", "", "", "", ""), plain: true };
+    }
+    return { ...lang("Plain Text", "", "", "", "", "", ""), plain: true };
+}
+
+// (a byte of a character beyond ASCII taken as a letter: a token never
+// cuts a character)
+function isLetter(c: u8): boolean {
+    return (c >= 97u8 && c <= 122u8) || (c >= 65u8 && c <= 90u8) || c == 95u8 || c >= 128u8;
+}
+
+function isDigit(c: u8): boolean {
+    return c >= 48u8 && c <= 57u8;
+}
+
+function isWord(c: u8): boolean {
+    return isLetter(c) || isDigit(c);
+}
+
+function isSpace(c: u8): boolean {
+    return c == 32u8 || c == 9u8;
+}
+
+// whether `b` holds the text `t` at `i`
+function at(b: u8[n], i: i64, t: string): boolean {
+    const tb = bytes(t);
+    return tb.length > 0 && i + tb.length <= n && count(iota(tb.length), (k) => b[i + k] == tb[k]) == tb.length;
+}
+
+// the first index from `i` where `b` holds `t` (n when none)
+function find(b: u8[n], i: i64, t: string): i64 {
+    return i >= n ? n : (at(b, i, t) ? i : find(b, i + 1, t));
+}
+
+// the end of a run of the bytes `p` holds from `i`
+function runOf(b: u8[n], i: i64, p: (u8) => boolean): i64 {
+    return i < n && p(b[i]) ? runOf(b, i + 1, p) : i;
+}
+
+// the end of a string opened by the quote at `i` (past its closing quote,
+// a quote after a backslash not closing it; the end of the line when it
+// does not close)
+function stringEnd(b: u8[n], i: i64, q: u8): i64 {
+    return i >= n ? n : (b[i] == 92u8 ? stringEnd(b, i + 2, q) : (b[i] == q ? i + 1 : stringEnd(b, i + 1, q)));
+}
+
+// a token: its bytes [start, end) and its kind (-1: spaces)
+export type Raw = { start: i64, end: i64, kind: i64 };
+
+function has(xs: string[n], w: string): boolean {
+    return findIndex(xs, (x) => x == w) >= 0;
+}
+
+// the tokens of the line `b` (of the text `s`) of the language `l` from
+// `i`, `open` when a comment of a block is open there: the tokens and
+// whether one is open at its end
+function scan(s: string, b: u8[n], l: Lang, i: i64, open: boolean, out: Raw[]): [Raw[], boolean] {
+    if (i >= n) {
+        return [out, open] as const;
+    }
+    if (open) {
+        const e = find(b, i, l.close);
+        return e >= n ? [concat(out, [{ start: i, end: n, kind: K_COMMENT }]), true] as const
+            : scan(s, b, l, e + bytes(l.close).length, false, concat(out, [{ start: i, end: e + bytes(l.close).length, kind: K_COMMENT }]));
+    }
+    const c = b[i];
+    if (isSpace(c)) {
+        const e = runOf(b, i, isSpace);
+        return scan(s, b, l, e, false, concat(out, [{ start: i, end: e, kind: -1 }]));
+    }
+    if (l.open != "" && at(b, i, l.open)) {
+        return scan(s, b, l, i + bytes(l.open).length, true, concat(out, [{ start: i, end: i + bytes(l.open).length, kind: K_COMMENT }]));
+    }
+    if (l.line != "" && at(b, i, l.line)) {
+        return [concat(out, [{ start: i, end: n, kind: K_COMMENT }]), false] as const;
+    }
+    if (c == 34u8 || c == 39u8 || c == 96u8) {
+        const e = stringEnd(b, i + 1, c);
+        // (a name of a member of JSON: a text followed by `:`)
+        const after = runOf(b, e, isSpace);
+        const key = l.json && after < n && b[after] == 58u8;
+        return scan(s, b, l, e, false, concat(out, [{ start: i, end: e, kind: key ? K_KEY : K_STRING }]));
+    }
+    if (isDigit(c)) {
+        const e = runOf(b, i, (x) => isWord(x) || x == 46u8);
+        return scan(s, b, l, e, false, concat(out, [{ start: i, end: e, kind: K_NUMBER }]));
+    }
+    if (isLetter(c)) {
+        const e = runOf(b, i, isWord);
+        const w = s.slice(i, e);
+        const kind = has(l.constants, w) ? K_CONSTANT : (has(l.control, w) ? K_CONTROL : (has(l.keywords, w) ? K_KEYWORD
+            : (has(l.types, w) ? K_TYPE : (e < n && b[e] == 40u8 ? K_CALL : (c >= 65u8 && c <= 90u8 ? K_TYPE : K_PLAIN)))));
+        return scan(s, b, l, e, false, concat(out, [{ start: i, end: e, kind: kind }]));
+    }
+    // punctuation, up to a quote, a word, a space or a comment
+    const e = punctEnd(b, l, i + 1);
+    return scan(s, b, l, e, false, concat(out, [{ start: i, end: e, kind: K_PUNCT }]));
+}
+
+function punctEnd(b: u8[n], l: Lang, i: i64): i64 {
+    if (i >= n) {
+        return n;
+    }
+    const c = b[i];
+    const stops = isWord(c) || isSpace(c) || c == 34u8 || c == 39u8 || c == 96u8
+        || (l.line != "" && at(b, i, l.line)) || (l.open != "" && at(b, i, l.open));
+    return stops ? i : punctEnd(b, l, i + 1);
+}
+
+// the tokens of a line of XML: its comments, tags (their names, attributes
+// and values) and texts
+function scanXml(s: string, b: u8[n], i: i64, out: Raw[]): Raw[] {
+    if (i >= n) {
+        return out;
+    }
+    if (at(b, i, "<!--")) {
+        const e = find(b, i, "-->");
+        const end = e >= n ? n : e + 3;
+        return scanXml(s, b, end, concat(out, [{ start: i, end: end, kind: K_COMMENT }]));
+    }
+    if (b[i] == 60u8) {
+        const close = find(b, i, ">");
+        const end = close >= n ? n : close + 1;
+        const nameEnd = runOf(b, i + 1, (x) => isWord(x) || x == 47u8 || x == 58u8 || x == 45u8);
+        return scanXml(s, b, end, tagInside(b, nameEnd, end, concat(out, [{ start: i, end: nameEnd, kind: K_TAG }])));
+    }
+    const e = find(b, i, "<");
+    return scanXml(s, b, e, concat(out, [{ start: i, end: e, kind: K_PLAIN }]));
+}
+
+// the inside of a tag from `i` to `end`: its attributes and their values
+function tagInside(b: u8[n], i: i64, end: i64, out: Raw[]): Raw[] {
+    if (i >= end) {
+        return out;
+    }
+    if (b[i] == 34u8) {
+        const e = min(end, stringEnd(b, i + 1, 34u8));
+        return tagInside(b, e, end, concat(out, [{ start: i, end: e, kind: K_STRING }]));
+    }
+    const q = findIndex(iota(end - i), (k) => b[i + k] == 34u8);
+    const e = q < 0 ? end : i + q;
+    const last = e == end;
+    return tagInside(b, e, end, concat(out, [{ start: i, end: e, kind: last ? K_TAG : K_ATTR }]));
+}
+
+// the tokens made texts: the spaces before a token given to it (the width
+// of a text ends at its last character that is not a space), punctuation
+// cut at its brackets, each coloured by its depth (`depth` the depth
+// before the line: the depth after it given back)
+function coloured(s: string, raws: Raw[n], k: i64, pending: string, depth: i64, out: Tok[]): [Tok[], i64] {
+    if (k >= n) {
+        return [out, depth] as const;
+    }
+    const r = raws[k];
+    const text = s.slice(r.start, r.end);
+    if (r.kind < 0) {
+        return coloured(s, raws, k + 1, pending + text, depth, out);
+    }
+    if (r.kind == K_PUNCT) {
+        const [pieces, d2] = brackets(pending + text, 0, "", depth, []);
+        return coloured(s, raws, k + 1, "", d2, concat(out, pieces));
+    }
+    return coloured(s, raws, k + 1, "", depth, concat(out, [{ text: pending + text, color: rgb(COLORS[r.kind]) }]));
+}
+
+// the punctuation `t` from `i` cut at its brackets: the pieces, the depth
+// after them
+function brackets(t: string, i: i64, piece: string, depth: i64, out: Tok[]): [Tok[], i64] {
+    if (i >= t.length) {
+        return [piece == "" ? out : concat(out, [{ text: piece, color: rgb(COLORS[K_PUNCT]) }]), depth] as const;
+    }
+    const c = t.slice(i, i + 1);
+    const opens = c == "(" || c == "[" || c == "{";
+    const shuts = c == ")" || c == "]" || c == "}";
+    if (!opens && !shuts) {
+        return brackets(t, i + 1, piece + c, depth, out);
+    }
+    // (the spaces before the bracket go with it)
+    const body = piece.trimEnd();
+    const lead = piece.slice(body.length, piece.length);
+    const d = shuts ? max(0, depth - 1) : depth;
+    const before: Tok[] = body == "" ? [] : [{ text: body, color: rgb(COLORS[K_PUNCT]) }];
+    const mark = { text: lead + c, color: rgb(BRACKETS[d % 3]) };
+    return brackets(t, i + 1, "", opens ? d + 1 : d, concat(concat(out, before), [mark]));
+}
+
+// ----- a line at a time (the editor of code: each line scanned again when
+// it changes) ----------------------------------------------------------------
+
+// a line scanned: its tokens, and whether a comment of a block is open at
+// its end
+export type Scan = { raws: Raw[], open: boolean };
+
+// the tokens of the whole line `text` (its indentation in them) of the
+// language `l`, `open` when a comment of a block is open at its start
+export function scanLine(text: string, l: Lang, open: boolean): Scan {
+    const b = bytes(text);
+    if (l.plain) {
+        return { raws: b.length == 0 ? [] : [{ start: 0, end: b.length, kind: K_TEXT }], open: false };
+    }
+    if (l.xml) {
+        return { raws: scanXml(text, b, 0, []), open: false };
+    }
+    const [raws, o] = scan(text, b, l, 0, open, []);
+    return { raws: raws, open: o };
+}
+
+// the colour of the tokens of the kind `k` (spaces: that of the text)
+export function kindColor(k: i64): Color {
+    return rgb(COLORS[k < 0 ? K_TEXT : k]);
+}
+
+// a piece of a line to draw: its bytes [start, end), its colour
+export type Piece = { start: i64, end: i64, color: Color };
+
+// the pieces of the line `text` scanned as `raws`, the brackets of its
+// punctuation coloured by their depth (`depth` the depth at its start):
+// the pieces and the depth at its end
+export function piecesOf(text: string, raws: Raw[n], depth: i64): [Piece[], i64] {
+    return piecesFrom(bytes(text), raws, 0, depth, []);
+}
+
+function piecesFrom(b: u8[m], raws: Raw[n], k: i64, depth: i64, out: Piece[]): [Piece[], i64] {
+    if (k >= n) {
+        return [out, depth] as const;
+    }
+    const r = raws[k];
+    if (r.kind != K_PUNCT) {
+        return piecesFrom(b, raws, k + 1, depth, concat(out, [{ start: r.start, end: r.end, color: kindColor(r.kind) }]));
+    }
+    const [ps, d2] = bracketPieces(b, r.start, r.end, r.start, depth, []);
+    return piecesFrom(b, raws, k + 1, d2, concat(out, ps));
+}
+
+// the punctuation of the bytes [i, end) cut at its brackets (`from` the
+// start of the piece not yet given)
+function bracketPieces(b: u8[m], i: i64, end: i64, from: i64, depth: i64, out: Piece[]): [Piece[], i64] {
+    if (i >= end) {
+        return [from < end ? concat(out, [{ start: from, end: end, color: rgb(COLORS[K_PUNCT]) }]) : out, depth] as const;
+    }
+    const c = b[i];
+    const opens = c == 40u8 || c == 91u8 || c == 123u8;
+    const shuts = c == 41u8 || c == 93u8 || c == 125u8;
+    if (!opens && !shuts) {
+        return bracketPieces(b, i + 1, end, from, depth, out);
+    }
+    const d = shuts ? max(0, depth - 1) : depth;
+    const before: Piece[] = from < i ? [{ start: from, end: i, color: rgb(COLORS[K_PUNCT]) }] : [];
+    const mark = { start: i, end: i + 1, color: rgb(BRACKETS[d % 3]) };
+    return bracketPieces(b, i + 1, end, i + 1, opens ? d + 1 : d, concat(concat(out, before), [mark]));
+}
+
+// the depth of the brackets after the line `text` scanned as `raws`, from
+// `depth` at its start
+export function depthAfter(text: string, raws: Raw[n], depth: i64): i64 {
+    const b = bytes(text);
+    return fold(raws, depth, (d, r) => r.kind != K_PUNCT ? d : fold(iota(r.end - r.start), d, (e, j) => {
+        const c = b[r.start + j];
+        return c == 40u8 || c == 91u8 || c == 123u8 ? e + 1 : (c == 41u8 || c == 93u8 || c == 125u8 ? max(0, e - 1) : e);
+    }));
+}
+
+// the width of an indentation of a file: the smallest one (2 or 4) of its
+// first lines that are indented
+export function indentOf(lines: string[n]): i64 {
+    const leads = map(iota(min(n, 200)), (k) => {
+        const b = bytes(lines[k]);
+        const sp = runOf(b, 0, (x) => x == 32u8);
+        return sp > 0 && sp < b.length ? sp : 1000;
+    });
+    return fold(leads, 1000, (a, x) => min(a, x)) == 2 ? 2 : 4;
+}
+
+// the lines of the text of a file of the language `l`: each its tokens, the
+// number of its guides; `step` the width of an indentation
+export function linesOf(raw: string[n], l: Lang, step: i64): Line[] {
+    const [lines, open, depth] = linesFrom(raw, l, step, 0, false, 0, []);
+    return lines;
+}
+
+function linesFrom(raw: string[n], l: Lang, step: i64, k: i64, open: boolean, depth: i64, out: Line[]): [Line[], boolean, i64] {
+    if (k >= n) {
+        return [out, open, depth] as const;
+    }
+    const s0 = raw[k].endsWith("\r") ? raw[k].slice(0, raw[k].length - 1) : raw[k];
+    const s = join(split(s0, "\t"), "    ");
+    const b = bytes(s);
+    const lead = runOf(b, 0, (x) => x == 32u8);
+    const levels = lead == b.length ? 0 : lead / step;
+    const body = s.slice(levels * step, s.length);
+    const bb = bytes(body);
+    const [raws, open2] = l.plain ? [[{ start: 0, end: bb.length, kind: K_TEXT }], false] as const
+        : (l.xml ? [scanXml(body, bb, 0, []), false] as const : scan(body, bb, l, 0, open, []));
+    const [toks, d2] = coloured(body, raws, 0, "", depth, []);
+    return linesFrom(raw, l, step, k + 1, open2, d2, concat(out, [{ toks: toks, guides: levels }]));
+}

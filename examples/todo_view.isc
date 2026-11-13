@@ -3,7 +3,7 @@ import { rgb, rgba } from "../src/paint";
 import { Element, Div, Label, Px, Fill, Auto, Row, Column, Packed, Between, style, textStyle, Style, TextStyle, ARROW, POINTER, TEXT } from "../src/ui";
 import { Start, Center, End } from "../src/text";
 import { editing } from "../src/edit";
-import { button, iconButton, textField, checkbox, toggleAt, progress, restyled } from "../src/widgets";
+import { button, iconButton, textField, checkbox, toggleAt, progress, restyled, retexted } from "../src/widgets";
 import { Model, FIELD, ADD, CLEAR, NOTHING, TICK, REMOVE, hand, leftText } from "./todo";
 import { INK, HINT, MUTED } from "../src/widgets";
 

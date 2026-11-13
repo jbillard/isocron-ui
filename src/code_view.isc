@@ -1,0 +1,229 @@
+// The lines of a document of the editor of code (src/doc.isc) as elements,
+// as Visual Studio Code draws them: those in sight alone (the others a
+// space of their height), each its number, the guides of its indentation,
+// its tokens coloured, its selection, the caret, the line of the cursor
+// lit; the lines of the blocks around the first line in sight kept at the
+// top (sticky scroll). Its spaces and tabs are drawn as spaces of no break:
+// a column of a font of fixed width each.
+import { rgb, rgba, Color, transparent } from "./paint";
+import { Element, Div, Label, Caret, style, textStyle, Px, Fill, Auto, Row, Column, Packed } from "./ui";
+import { Center, End } from "./text";
+import { Doc, Pos, selection, hasSelection, columnOf, LINE_HEIGHT, TAB_SIZE } from "./doc";
+import { Piece, piecesOf, kindColor } from "./code";
+
+// how the code looks (the theme 2026 Dark of Visual Studio Code by
+// default): the width of a column of its font of fixed width at its size
+// (`advance`), the font (`face`), the message of the first line (`ids`: a
+// click on the line `k` gives `ids + k`), whether the editor has the focus
+// (the caret shown, the selection of its colour)
+export type CodeLook = {
+    advance: f32, em: f32, lineHeight: f32, face: i64, ids: i64, focused: boolean,
+    gutter: f32, gap: f32,
+    number: Color, numberActive: Color, current: Color, selection: Color, inactiveSelection: Color,
+    caret: Color, guide: Color, background: Color, stickyLine: Color,
+};
+
+export function codeLook(advance: f32, face: i64, ids: i64, focused: boolean): CodeLook {
+    return {
+        advance: advance, em: 14.0f32, lineHeight: LINE_HEIGHT, face: face, ids: ids, focused: focused,
+        gutter: 42.4f32, gap: 25.6f32,
+        number: rgb(0x858889u32), numberActive: rgb(0xBBBEBFu32), current: rgb(0x242526u32),
+        selection: rgba(0.153f32, 0.404f32, 0.510f32, 0.867f32), inactiveSelection: rgba(0.153f32, 0.404f32, 0.510f32, 0.376f32),
+        caret: rgb(0xBBBEBFu32), guide: rgba(0.514f32, 0.518f32, 0.522f32, 0.3f32), background: rgb(0x121314u32),
+        stickyLine: rgb(0x2A2B2Cu32),
+    };
+}
+
+// the lines in sight (a few more above and below), lines of `lineHeight`:
+// the first, the last (excluded)
+export function sightOf(d: Doc, lineHeight: f32): [i64, i64] {
+    const n = d.lines.length;
+    const first = max(0, i64(d.top / lineHeight) - 5);
+    const last = min(n, i64((d.top + d.height) / lineHeight) + 6);
+    return [min(first, last), last] as const;
+}
+
+// the elements of the box that scrolls the document: a space for the lines
+// above those in sight, their rows, a space for those below
+export function codeRows(d: Doc, look: CodeLook): Element[] {
+    const [first, last] = sightOf(d, look.lineHeight);
+    const above = Div({ ...style(), height: Px(f32(first) * look.lineHeight) }, []);
+    const below = Div({ ...style(), height: Px(f32(d.lines.length - last) * look.lineHeight) }, []);
+    return concat(concat([above], map(iota(last - first), (i) => lineRow(d, look, first + i, true))), [below]);
+}
+
+// a run of the line to draw: its bytes, its colour, whether it is selected
+type Run = { start: i64, end: i64, color: Color, selected: boolean };
+
+// the row of the line `k`: its number, its code (`live`: its selection,
+// its caret and the light of the line of the cursor; the sticky lines
+// have none)
+function lineRow(d: Doc, look: CodeLook, k: i64, live: boolean): Element {
+    const text = d.lines[k];
+    const n = bytes(text).length;
+    const active = live && k == d.cursor.line;
+    const number = Div({ ...style(), width: Px(look.gutter), height: Px(look.lineHeight), direction: Row, justify: Packed(End), align: Center, stretch: false }, [
+        Label({ ...textStyle(look.em, active ? look.numberActive : look.number), face: look.face }, `${k + 1}`),
+    ]);
+    const gap = Div({ ...style(), width: Px(look.gap), height: Px(1.0f32) }, []);
+    // (the bytes of the selection on this line, the end of the line when it
+    // goes on below)
+    const [a, b] = selection(d);
+    const some = live && hasSelection(d) && k >= a.line && k <= b.line;
+    const sa = some ? (k == a.line ? a.col : 0) : -1;
+    const sb = some ? (k == b.line ? b.col : n) : -1;
+    const past = some && k < b.line;
+    const [pieces, depth] = piecesOf(text, d.scans[k].raws, d.depths[k]);
+    // (the indentation: its guides each `indent` columns, the runs within)
+    const lead = leadColumns(text);
+    const levels = lead.bytes == n ? 0 : lead.columns / d.indent;
+    const caretAt = active && look.focused ? d.cursor.col : -1;
+    const cuts = sortedCuts(concat(concat([sa, sb, caretAt], guideCuts(text, levels, d.indent)), concat(map(pieces, (p) => p.start), map(pieces, (p) => p.end))), n);
+    const runs = runsOf(pieces, cuts, sa, sb);
+    const selColor = look.focused ? look.selection : look.inactiveSelection;
+    const [guided, rest] = guidesOf(text, runs, levels, d.indent, look, selColor);
+    const drawn = runsDrawn(text, rest, guidedColumns(text, levels, d.indent), look, selColor, caretAt);
+    const caretFirst: Element[] = caretAt == 0 && levels == 0 ? [Caret(2.0f32, look.lineHeight, look.caret)] : [];
+    const eol: Element[] = past ? [Div({ ...style(), width: Px(look.advance), height: Px(look.lineHeight), background: selColor }, [])] : [];
+    const caretEnd: Element[] = caretAt == n && n > 0 ? [Caret(2.0f32, look.lineHeight, look.caret)] : [];
+    const code = Div({ ...style(), width: Fill(1.0f32), height: Px(look.lineHeight), direction: Row, align: Center, stretch: false,
+        background: active && !hasSelection(d) ? look.current : transparent() }, concat(concat(concat(concat(caretFirst, guided), drawn), caretEnd), eol));
+    return Div({ ...style(), width: Fill(1.0f32), height: Px(look.lineHeight), direction: Row, align: Center, stretch: false, onClick: live ? look.ids + k : -1, cursor: 2 }, [number, gap, code]);
+}
+
+// the leading spaces and tabs of a line: their bytes and their columns
+type Lead = { bytes: i64, columns: i64 };
+
+function leadColumns(text: string): Lead {
+    const b = bytes(text);
+    const k = findIndex(iota(b.length), (j) => b[j] != 32u8 && b[j] != 9u8);
+    const end = k < 0 ? b.length : k;
+    return { bytes: end, columns: columnOf(text, end) };
+}
+
+// the offsets where the guides of the indentation begin (each `indent`
+// columns of the leading spaces)
+function guideCuts(text: string, levels: i64, indent: i64): i64[] {
+    return map(iota(levels + 1), (g) => offsetAtColumn(text, g * indent));
+}
+
+// the offset of the line at the column `c` of its indentation
+function offsetAtColumn(text: string, c: i64): i64 {
+    const b = bytes(text);
+    const k = findIndex(iota(b.length + 1), (j) => columnOf(text, j) >= c);
+    return k < 0 ? b.length : k;
+}
+
+// the end of the guides: the offset of their last column
+function guidedColumns(text: string, levels: i64, indent: i64): i64 {
+    return offsetAtColumn(text, levels * indent);
+}
+
+// the offsets where the runs are cut, sorted, each once, within the line
+function sortedCuts(xs: i64[n], len: i64): i64[] {
+    return uniq(sort(filter(concat(xs, [0, len]), (x) => x >= 0 && x <= len)), 0, []);
+}
+
+function uniq(s: i64[n], i: i64, out: i64[]): i64[] {
+    if (i >= n) {
+        return out;
+    }
+    return uniq(s, i + 1, i > 0 && s[i] == s[i - 1] ? out : concat(out, [s[i]]));
+}
+
+// the runs between the cuts: the colour of the piece holding each, selected
+// when within [sa, sb)
+function runsOf(pieces: Piece[p], cuts: i64[n], sa: i64, sb: i64): Run[] {
+    return filter(map(iota(max(0, n - 1)), (i) => {
+        const s = cuts[i];
+        const e = cuts[i + 1];
+        const k = findIndex(pieces, (q) => q.start <= s && s < q.end);
+        return { start: s, end: e, color: k >= 0 ? pieces[k].color : kindColor(-1), selected: s >= sa && e <= sb && sa < sb };
+    }), (r) => r.end > r.start);
+}
+
+// the guides of the indentation (each a box with its line at its left, the
+// runs within it) and the runs after them
+function guidesOf(text: string, runs: Run[n], levels: i64, indent: i64, look: CodeLook, sel: Color): [Element[], Run[]] {
+    const ends = map(iota(levels), (g) => offsetAtColumn(text, (g + 1) * indent));
+    const starts = map(iota(levels), (g) => offsetAtColumn(text, g * indent));
+    const guided = map(iota(levels), (g) => Div({ ...style(), height: Px(look.lineHeight), direction: Row, align: Center, stretch: false, borderLeft: 1.0f32, borderColor: look.guide },
+        runsDrawn(text, filter(runs, (r) => r.start >= starts[g] && r.end <= ends[g]), -1, look, sel, -1)));
+    const after = levels > 0 ? ends[levels - 1] : 0;
+    return [guided, filter(runs, (r) => r.start >= after)] as const;
+}
+
+// the runs drawn: their text with spaces of no break, a tab up to its stop;
+// a selected run on the colour of the selection; the caret before the run
+// that begins at its offset (`caret`)
+function runsDrawn(text: string, runs: Run[n], unused: i64, look: CodeLook, sel: Color, caret: i64): Element[] {
+    return drawnFrom(text, runs, 0, look, sel, caret, []);
+}
+
+function drawnFrom(text: string, runs: Run[n], i: i64, look: CodeLook, sel: Color, caret: i64, out: Element[]): Element[] {
+    if (i >= n) {
+        return out;
+    }
+    const r = runs[i];
+    const label = Label({ ...textStyle(look.em, r.color), face: look.face }, spacedText(text, r.start, r.end));
+    const item = r.selected ? Div({ ...style(), height: Px(look.lineHeight), align: Center, stretch: false, background: sel, direction: Row }, [label]) : label;
+    const mark: Element[] = caret == r.start && caret > 0 ? [Caret(2.0f32, look.lineHeight, look.caret)] : [];
+    return drawnFrom(text, runs, i + 1, look, sel, caret, concat(concat(out, mark), [item]));
+}
+
+// the bytes [s, e) of the line as drawn: a space a space of no break, a tab
+// as many as its columns
+function spacedText(text: string, s: i64, e: i64): string {
+    const part = text.slice(s, e);
+    return part.indexOf(" ") < 0 && part.indexOf("\t") < 0 ? part : spaced(text, s, e);
+}
+
+// (each character of the part, a space or a tab replaced)
+function spaced(text: string, s: i64, e: i64): string {
+    const b = bytes(text);
+    return spacedFrom(text, b, s, e, s, "");
+}
+
+function spacedFrom(text: string, b: u8[n], i: i64, e: i64, from: i64, out: string): string {
+    if (i >= e) {
+        return out + text.slice(from, e);
+    }
+    if (b[i] == 32u8) {
+        return spacedFrom(text, b, i + 1, e, i + 1, out + text.slice(from, i) + "\u{A0}");
+    }
+    if (b[i] == 9u8) {
+        const w = columnOf(text, i + 1) - columnOf(text, i);
+        return spacedFrom(text, b, i + 1, e, i + 1, out + text.slice(from, i) + join(map(iota(w), (x) => "\u{A0}"), ""));
+    }
+    return spacedFrom(text, b, i + 1, e, from, out);
+}
+
+// the lines of the blocks around the first line in sight, kept at the top
+// of the box (sticky scroll): each line before it less indented than those
+// after it, the outermost first, 5 at most (a line of a bracket alone left
+// out); in a box over the code, a line and a shadow under it
+export function stickyOf(d: Doc, look: CodeLook): Element[] {
+    const first = i64(d.top / look.lineHeight);
+    if (first <= 0 || first >= d.lines.length) {
+        return [];
+    }
+    const chain = stickyFrom(d, first - 1, leadColumns(d.lines[first]).columns, []);
+    const n = min(5, chain.length);
+    if (n == 0) {
+        return [];
+    }
+    const rows = map(iota(n), (i) => lineRow(d, look, chain[chain.length - 1 - i], false));
+    return [Div({ ...style(), width: Fill(1.0f32), floating: true, background: look.background, borderBottom: 1.0f32, borderColor: look.stickyLine,
+        shadowBlur: 3.0f32, shadowY: 2.0f32, shadowColor: rgba(0.098f32, 0.106f32, 0.114f32, 0.3f32) }, rows)];
+}
+
+function stickyFrom(d: Doc, k: i64, level: i64, out: i64[]): i64[] {
+    if (k < 0 || level == 0) {
+        return out;
+    }
+    const lead = leadColumns(d.lines[k]);
+    const blank = lead.bytes == bytes(d.lines[k]).length;
+    const body = d.lines[k].trim();
+    const bare = body == "{" || body == "[" || body == "(";
+    return lead.columns < level && !blank && !bare ? stickyFrom(d, k - 1, lead.columns, concat(out, [k])) : stickyFrom(d, k - 1, level, out);
+}

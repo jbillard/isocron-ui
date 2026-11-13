@@ -20,9 +20,9 @@ import * as x11 from "./x11";
 import { IoError, ioError } from "sys";
 import { rgb, rgba, render, renderAgain, blank, Canvas, Primitive, Box, quad, rounded, bordered, transparent } from "./paint";
 import { Font, parse } from "./font";
-import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU, FOCUS, WHEEL, tipOf } from "./ui";
+import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU, FOCUS, WHEEL, MOVE, tipOf } from "./ui";
 import { POINTER as POINTER_SHAPE, TEXT as TEXT_SHAPE } from "./ui";
-import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Focus, Viewport, Tick, TextRead, FolderListed, Copy, AskPaste, Animate, ReadText, ListFolder, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END } from "./input";
+import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Focus, Viewport, Tick, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, WriteText, ScrollTo, Reveal, Copy, AskPaste, Animate, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END, PAGE_UP, PAGE_DOWN } from "./input";
 import { DEAD, DEAD_ACCENTS, composed, spacingAccent } from "./input";
 import { Keymap, parseKeymap, charOf } from "./xkb";
 import * as cursors from "./cursors";
@@ -43,7 +43,7 @@ const NEAR: f32 = 4.0f32;
 // shortcut, the modifiers held, the size of the window, its closing, the
 // text of the clipboard
 // (`Elapsed`: time passed, a frame of an animation due)
-export type Ev = Moved(f32, f32) | Down(i64) | Up(i64) | Scroll(f32) | Typed(i64) | Pressed(i64) | Mods(i64) | Resized(i64, i64) | Scaled(f32) | Closed | Pasted(string) | Elapsed;
+export type Ev = Moved(f32, f32) | Down(i64) | Up(i64) | Scroll(f32) | Typed(i64) | Pressed(i64) | Mods(i64) | Resized(i64, i64) | Scaled(f32) | Closed | Pasted(string) | Elapsed | Activated(boolean);
 
 // what the library keeps of the interface: the size of the window, the
 // places of the frame shown and the offsets of its boxes that scroll, the
@@ -59,7 +59,10 @@ export type Ev = Moved(f32, f32) | Down(i64) | Up(i64) | Scroll(f32) | Typed(i64
 // entry under the pointer, -1: none; whether the field has a selection, to
 // cut or copy; the texts of its entries: cut, copy, paste, select all); a
 // frame to draw; the window closed; the height of the window last told to
-// the boxes that scroll (-1: none yet)
+// the boxes that scroll (-1: none yet); the window maximized; the areas of
+// a title the application draws last given to the window (`caption`: the
+// number of those that move it, then their rectangles, then those of the
+// places over them)
 export type Ui = {
     w: i64,
     h: i64,
@@ -105,6 +108,8 @@ export type Ui = {
     redraw: boolean,
     closed: boolean,
     toldH: i64,
+    maximized: boolean,
+    caption: i64[],
 };
 
 // the texts of the entries of the menu of a field, by default
@@ -122,7 +127,7 @@ export function interface(w: i64, h: i64, now: u64): Ui {
         pressed: -1, field: -1, px: 0.0f32, py: 0.0f32, bar: -1, grab: 0.0f32, hotBar: -1,
         clickTime: 0u64, clicks: 0, cx: 0.0f32, cy: 0.0f32, since: now, caret: false, caretOn: true,
         clipboard: "", asked: [], menu: false, menuX: 0.0f32, menuY: 0.0f32, menuHover: -1, menuCut: false, labels: englishMenu(), scale: 1.0f32, dead: -1, focus: -1, ring: false, atlas: emptyAtlas(), animating: false, tickAt: 0u64, hoverSince: now, tipDue: false, tipOff: false,
-        redraw: true, closed: false, toldH: -1,
+        redraw: true, closed: false, toldH: -1, maximized: false, caption: [],
     };
 }
 
@@ -140,7 +145,30 @@ function told<M>(ui: Ui, m: M, i: Input, update: (M, Input) => [M, Effect[]]): [
         _ => c,
     });
     const animates = count(fx, (e) => e == Animate) > 0;
-    return [{ ...ui, clipboard: copied, asked: concat(ui.asked, fx), redraw: true, animating: ui.animating || animates }, nm] as const;
+    // (the window closed by the application: its button drawn)
+    const closes = count(fx, (e) => e == CloseWindow) > 0;
+    // (a box that scrolls moved by the application, its offset in pixels)
+    // (a band revealed: the box scrolled as little as shows it, by the
+    // height of the box drawn last)
+    const offsets = map(iota(ui.offsets.length), (i) => fold(fx, ui.offsets[i], (o0, e) => match (e) {
+        ScrollTo(k, o) => k == i ? max(0.0f32, o * ui.scale) : o0,
+        Reveal(k, y, bh) => {
+            if (k != i) {
+                return o0;
+            }
+            const w = findIndex(ui.hits, (hh) => hh.kind == WHEEL && hh.id == k);
+            const box = w >= 0 ? ui.hits[w].h : f32(ui.h);
+            const top = y * ui.scale;
+            const bottom = (y + bh) * ui.scale;
+            return top < o0 ? top : (bottom > o0 + box ? bottom - box : o0);
+        },
+        _ => o0,
+    }));
+    return [{ ...ui, clipboard: copied, asked: concat(ui.asked, filter(fx, (e) => match (e) {
+        ScrollTo(k, o) => false,
+        Reveal(k, y, bh) => false,
+        _ => true,
+    })), redraw: true, animating: ui.animating || animates, closed: ui.closed || closes, offsets: offsets }, nm] as const;
 }
 
 // an effect that reads a file or a folder
@@ -148,6 +176,7 @@ function isFileAsk(e: Effect): boolean {
     return match (e) {
         ReadText(p) => true,
         ListFolder(p) => true,
+        WriteText(p, t) => true,
         _ => false,
     };
 }
@@ -180,6 +209,10 @@ action filesAnswered<M>(ui: Ui, m: M, asks: Effect[n], k: i64, update: (M, Input
                 return FolderListed(p, map(names, (x) => sys.isDir(p + sep + x) ? x + "/" : x), true);
             },
             Err(e) => FolderListed(p, [sys.message(e)], false),
+        },
+        WriteText(p, t) => match (sys.writeText(p, t)) {
+            Ok(_) => TextWritten(p, true, ""),
+            Err(e) => TextWritten(p, false, sys.message(e)),
         },
         _ => Tick(0),
     };
@@ -215,7 +248,7 @@ function activates(ui: Ui): boolean {
 // its centre
 function activated<M>(ui: Ui, m: M, update: (M, Input) => [M, Effect[]]): [Ui, M] {
     const h = ui.hits[focusIndex(ui.hits, ui.focus)];
-    const [u1, m1] = told(ui, m, Click(h.id, h.w * 0.5f32, h.h * 0.5f32, -1, 1, ui.mods), update);
+    const [u1, m1] = told(ui, m, Click(h.id, h.w * 0.5f32 / ui.scale, h.h * 0.5f32 / ui.scale, -1, 1, ui.mods), update);
     return told(u1, m1, Release(h.id), update);
 }
 
@@ -303,7 +336,7 @@ function movedTo<M>(ui: Ui, m: M, x: f32, y: f32, t: u64, update: (M, Input) => 
         return [{ ...at, offsets: offsetSet(ui.offsets, ui.bar, (y - ui.grab - h.y - 2.0f32 * ui.scale) / room * h.range, h.range), redraw: true }, m] as const;
     }
     const [u1, m1] = ui.pressed >= 0
-        ? told(at, m, Drag(ui.pressed, x - ui.px, y - ui.py, ui.field >= 0 && ui.field < ui.hits.length ? offsetAt(ui.hits[ui.field], x) : -1), update)
+        ? told(at, m, Drag(ui.pressed, (x - ui.px) / ui.scale, (y - ui.py) / ui.scale, ui.field >= 0 && ui.field < ui.hits.length ? offsetAt(ui.hits[ui.field], x) : -1), update)
         : [at, m] as const;
     const place = hitTest(u1.hits, x, y);
     // (the place under the pointer since `t`: its tooltip shown half a
@@ -349,7 +382,7 @@ function pressedAt<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect[]
     const reached = count(ui.hits, (h) => h.kind == FOCUS && h.id == p.id) > 0;
     // (a press hides the tooltip until the pointer comes to another place)
     const pressed = { ...ui, pressed: p.id, field: fi, px: p.x, py: p.y, clickTime: now, clicks: clicks, cx: ui.x, cy: ui.y, since: now, focus: reached ? p.id : -1, ring: false, tipOff: true, redraw: true };
-    return told(pressed, m, Click(p.id, ui.x - p.x, ui.y - p.y, at, clicks, ui.mods), update);
+    return told(pressed, m, Click(p.id, (ui.x - p.x) / ui.scale, (ui.y - p.y) / ui.scale, at, clicks, ui.mods), update);
 }
 
 // the entry of the menu at (x, y): its number, -1 for none (or one that
@@ -368,7 +401,7 @@ function menuOpened<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect[
     }
     const h = ui.hits[fi];
     const [u1, m1] = h.id == 0 && c >= 0
-        ? told({ ...ui, since: now }, m, Click(ui.hits[c].id, ui.x - ui.hits[c].x, ui.y - ui.hits[c].y, offsetAt(h, ui.x), 1, ui.mods), update)
+        ? told({ ...ui, since: now }, m, Click(ui.hits[c].id, (ui.x - ui.hits[c].x) / ui.scale, (ui.y - ui.hits[c].y) / ui.scale, offsetAt(h, ui.x), 1, ui.mods), update)
         : [ui, m] as const;
     return [{ ...u1, menu: true, menuX: ui.x, menuY: ui.y, menuHover: -1, menuCut: h.range > 0.0f32, cursor: ARROW, redraw: true }, m1] as const;
 }
@@ -442,6 +475,7 @@ function menuLaidOut(ui: Ui, fs: Font[nf]): [Primitive[], Hit[]] {
 export function step<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
     const told0 = ui.toldH;
     const before = ui.offsets;
+    const [w0, h0, k0] = [ui.w, ui.h, ui.scale] as const;
     const [u1, m1] = stepOnce(ui, m, ev, now, update);
     // (the height told changes with that of the window, not its width)
     const resized = match (ev) {
@@ -449,7 +483,15 @@ export function step<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M
         Scaled(k) => true,
         _ => false,
     };
-    return viewports({ ...u1, toldH: resized ? u1.h : u1.toldH }, m1, before, resized, 0, false, update);
+    // the size of the window told when it changes, the boxes that scroll
+    // after it (and `Viewport(-1, 0, 0)` always then)
+    const sized = match (ev) {
+        Resized(w, h) => w != w0 || h != h0,
+        Scaled(k) => k != k0,
+        _ => false,
+    };
+    const [u2, m2] = sized ? told(u1, m1, WindowSize(f32(u1.w) / u1.scale, f32(u1.h) / u1.scale), update) : [u1, m1] as const;
+    return viewports({ ...u2, toldH: resized ? u2.h : u2.toldH }, m2, before, resized, 0, sized, update);
 }
 
 // the model told where each box that scrolls is whose offset changed from
@@ -505,6 +547,9 @@ function stepOnce<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M, E
         Scaled(k) => [{ ...ui, scale: k, offsets: map(ui.offsets, (o) => o * k / ui.scale), redraw: true }, m] as const,
         Closed => [{ ...ui, closed: true }, m] as const,
         Pasted(s) => told({ ...ui, since: now }, m, Paste(s), update),
+        // the window active or not: the modifiers held forgotten (their
+        // releases go to another window)
+        Activated(z) => told({ ...ui, mods: 0, redraw: true }, m, WindowActive(z), update),
     };
 }
 
@@ -664,6 +709,67 @@ export action loadMonoFont(args: string[k]): Result<Font, string> {
     return firstFont(["DejaVuSansMono.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/TTF/DejaVuSansMono.ttf", "/usr/share/fonts/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf"], 0, "");
 }
 
+// the font of the file of `--OPTION=file` among `args`; else `file` beside
+// the program under Windows, in the current folder, in tests/fonts, then
+// at the places `system` (those of the system)
+action namedFont(args: string[k], option: string, file: string, system: string[n]): Result<Font, string> {
+    const flag = `--${option}=`;
+    const at = findIndex(args, (a) => a.startsWith(flag));
+    if (at >= 0) {
+        return firstFont([args[at].slice(flag.length, args[at].length)], 0, "");
+    }
+    const beside = sys.platform() == "windows" ? match (win.programPath()) {
+        Ok(p) => [`${p.slice(0, p.lastIndexOf("\\") + 1)}${file}`],
+        Err(e) => [],
+    } : [];
+    return firstFont(concat(concat(beside, [file, `tests/fonts/${file}`]), system), 0, "");
+}
+
+// the font of the icons of an application (its third, `font="icons"`):
+// codicon.ttf, the icons of Visual Studio Code (CC BY 4.0,
+// tests/fonts/codicon-LICENSE); `--icons=file`
+export action loadIconFont(args: string[k]): Result<Font, string> {
+    return namedFont(args, "icons", "codicon.ttf", []);
+}
+
+// the font of the icons of the files (its fourth, `font="seti"`): seti.ttf,
+// the theme Seti of Visual Studio Code (MIT, tests/fonts/seti-LICENSE);
+// `--seti=file`
+export action loadSetiFont(args: string[k]): Result<Font, string> {
+    return namedFont(args, "seti", "seti.ttf", []);
+}
+
+// the bold font of an application (its fifth, `font="bold"`): under
+// Windows Segoe UI Bold (that of its own titles), else DejaVu Sans Bold;
+// `--bold=file`
+// the font of the glyphs of the buttons of a window (`font="caption"`):
+// under Windows those of the system (Segoe Fluent Icons of Windows 11,
+// else Segoe MDL2 Assets of Windows 10: minimize U+E921, maximize U+E922,
+// restore U+E923, close U+E8BB), elsewhere none (`--caption=file`)
+export action loadCaptionFont(args: string[k]): Result<Font, string> {
+    const root = sys.env("WINDIR") ?? "C:\\Windows";
+    const system = sys.platform() == "windows" ? [`${root}\\Fonts\\SegoeIcons.ttf`, `${root}\\Fonts\\segmdl2.ttf`] : [];
+    const at = findIndex(args, (a) => a.startsWith("--caption="));
+    return at >= 0 ? firstFont([args[at].slice(10, args[at].length)], 0, "") : (system.length > 0 ? firstFont(system, 0, "") : Err("no font of the buttons of a window"));
+}
+
+// the font of a weight of 600 (`font="semibold"`): Segoe UI Semibold
+// under Windows (the titles of Visual Studio Code), else that of `bold`
+// (`--semibold=file`)
+export action loadSemiboldFont(args: string[k]): Result<Font, string> {
+    const root = sys.env("WINDIR") ?? "C:\\Windows";
+    const at = findIndex(args, (a) => a.startsWith("--semibold="));
+    return at >= 0 ? firstFont([args[at].slice(11, args[at].length)], 0, "")
+        : (sys.platform() == "windows" ? firstFont([`${root}\\Fonts\\seguisb.ttf`], 0, "") : loadBoldFont(args));
+}
+
+export action loadBoldFont(args: string[k]): Result<Font, string> {
+    const root = sys.env("WINDIR") ?? "C:\\Windows";
+    const system = sys.platform() == "windows" ? [`${root}\\Fonts\\segoeuib.ttf`] : ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"];
+    const at = findIndex(args, (a) => a.startsWith("--bold="));
+    return at >= 0 || sys.platform() != "windows" ? namedFont(args, "bold", "DejaVuSans-Bold.ttf", system) : firstFont(concat(system, ["DejaVuSans-Bold.ttf"]), 0, "");
+}
+
 // a failure of the application `title` shown: under Windows in a box of
 // messages (a program without a console has no other place to show it),
 // elsewhere printed
@@ -692,16 +798,40 @@ export action runWith<M>(title: string, width: i64, height: i64, labels: string[
 // `runWith` with the fonts `fs`: a text whose style has the face `k` drawn
 // with `fs[k]` (the first for a face beyond them)
 export action runWithFonts<M>(title: string, width: i64, height: i64, labels: string[], fs: Font[nf], m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+    return runWindow(windowOf(title, width, height), labels, fs, m, view, update);
+}
+
+// what a window is opened with: its title, the size of its inside in units
+// (pixels at a scale of 1), whether its edges resize it, whether it has its
+// button that minimizes it, that maximizes it (a window of a fixed size has
+// none that maximizes it)
+// (`drawn`: its title drawn by the application in its inside, the boxes
+// that move it marked `moves`, its buttons asking `Minimize`,
+// `ToggleMaximized`, `CloseWindow`: under Windows; elsewhere the title of
+// the system still)
+export type WindowSpec = { title: string, width: i64, height: i64, resizable: boolean, minimizable: boolean, maximizable: boolean, drawn: boolean };
+
+// a window titled `title`, `width` by `height` units, resized by its edges,
+// with its buttons that minimize and maximize it
+export function windowOf(title: string, width: i64, height: i64): WindowSpec {
+    return { title: title, width: width, height: height, resizable: true, minimizable: true, maximizable: true, drawn: false };
+}
+
+// `runWithFonts` in the window `spec`: under Windows its style; under X11
+// the functions the window manager offers (`_MOTIF_WM_HINTS`) and, of a
+// fixed size, its smallest and largest sizes; under Wayland, of a fixed
+// size, its smallest and largest sizes (its buttons are the compositor's)
+export action runWindow<M>(spec: WindowSpec, labels: string[], fs: Font[nf], m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
     if (sys.platform() == "windows") {
-        return runWindows(title, width, height, labels, fs, m, view, update);
+        return runWindows(spec, labels, fs, m, view, update);
     }
     // Wayland when its compositor is named, else X11 (the server of
     // DISPLAY), as GPUI chooses
     const wayland = sys.env("WAYLAND_DISPLAY") ?? "";
     if (wayland != "" || (sys.env("DISPLAY") ?? "") == "") {
-        return runWayland(title, width, height, labels, fs, m, view, update);
+        return runWayland(spec, labels, fs, m, view, update);
     }
-    return runX11(title, width, height, labels, fs, m, view, update);
+    return runX11(spec, labels, fs, m, view, update);
 }
 
 // ----- Windows ---------------------------------------------------------
@@ -716,11 +846,43 @@ action frame<M>(w: win.Window, fs: Font[nf], m: M, view: (M) => Element, ui: Ui,
     const [ps, next] = laidOutFonts(ui, fs, m, view, clock());
     const c = renderAgain(cv, ui.w, ui.h, rgb(0xFFFFFFu32), ps);
     const shown = win.show(w, c.pixels, ui.w, ui.h);
-    return [next, c] as const;
+    // the areas of a title the application draws given to the window when
+    // they changed: those that move it, the places over them that keep the
+    // pointer
+    const words = captionOf(next.hits);
+    if (words != next.caption) {
+        const n = words[0];
+        win.setCaption(w, words.slice(1, 1 + 4 * n), words.slice(1 + 4 * n, words.length));
+    }
+    return [{ ...next, caption: words }, c] as const;
 }
 
-action runWindows<M>(title: string, width: i64, height: i64, labels: string[], fs: Font[nf], m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
-    return match (win.open(title, width, height)) {
+// the areas of a title drawn among the places `hits`: the number of those
+// that move the window (`MOVE`), their rectangles, then those of the places
+// a click reaches (and the fields, the scrollbars) over them, in pixels
+function captionOf(hits: Hit[n]): i64[] {
+    const moves = filter(hits, (h) => h.kind == MOVE);
+    const over = (h: Hit) => count(moves, (m) => h.x < m.x + m.w && h.x + h.w > m.x && h.y < m.y + m.h && h.y + h.h > m.y) > 0;
+    const keeps = filter(hits, (h) => (h.kind == CLICK || h.kind == FIELD || h.kind == BAR) && over(h));
+    const rect = (h: Hit) => [i64(h.x), i64(h.y), i64(ceil(h.x + h.w)) - i64(h.x), i64(ceil(h.y + h.h)) - i64(h.y)];
+    const mw = map(iota(4 * moves.length), (k) => rect(moves[k / 4])[k % 4]);
+    const kw = map(iota(4 * keeps.length), (k) => rect(keeps[k / 4])[k % 4]);
+    return concat(concat([moves.length], mw), kw);
+}
+
+// the model told the window maximized or restored when it changed (a title
+// drawn shows the button that restores it)
+function windowTold<M>(ui: Ui, m: M, z: boolean, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    if (z == ui.maximized) {
+        return [ui, m] as const;
+    }
+    return told({ ...ui, maximized: z }, m, WindowState(z), update);
+}
+
+action runWindows<M>(spec: WindowSpec, labels: string[], fs: Font[nf], m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+    const title = spec.title;
+    const opened = spec.drawn ? win.openDrawn(title, spec.width, spec.height, spec.resizable, spec.minimizable, spec.maximizable) : win.openWith(title, spec.width, spec.height, spec.resizable, spec.minimizable, spec.maximizable);
+    return match (opened) {
         Ok(w) => {
             const [cw, ch] = win.clientSize(w);
             // the pixels of a unit: the density of its screen
@@ -739,7 +901,8 @@ action runWindows<M>(title: string, width: i64, height: i64, labels: string[], f
 // the key that edits of the virtual key `k` (0: none)
 function editKey(k: i64): i64 {
     return k == 8 ? BACKSPACE : (k == 9 ? TAB : (k == 13 ? ENTER : (k == 27 ? ESCAPE
-        : (k == 37 ? LEFT : (k == 38 ? UP : (k == 39 ? RIGHT : (k == 40 ? DOWN : (k == 46 ? DELETE : (k == 36 ? HOME : (k == 35 ? END : 0))))))))));
+        : (k == 37 ? LEFT : (k == 38 ? UP : (k == 39 ? RIGHT : (k == 40 ? DOWN : (k == 46 ? DELETE : (k == 36 ? HOME : (k == 35 ? END
+        : (k == 33 ? PAGE_UP : (k == 34 ? PAGE_DOWN : 0))))))))))));
 }
 
 // the bit of the modifier of the virtual key `k` (Shift 16, Ctrl 17, Alt
@@ -804,6 +967,8 @@ function readFrom(evs: win.Event[n], i: i64, out: Ev[], mods: i64, high: i64): [
         win.Close => readFrom(evs, i + 1, concat(out, [Closed]), mods, high),
         // another density of screen (the window resized by Windows)
         win.Dpi(d) => readFrom(evs, i + 1, concat(out, [Scaled(f32(d) / 96.0f32)]), mods, high),
+        // (the window active or not: the modifiers held then forgotten)
+        win.Focus(z) => readFrom(evs, i + 1, concat(out, [Activated(z)]), 0, high),
         _ => readFrom(evs, i + 1, out, mods, high),
     };
 }
@@ -846,8 +1011,17 @@ action askedWindows<M>(w: win.Window, ui: Ui, m: M, fx: Effect[n], k: i64, now: 
             const [u1, m1] = step(ui, m, Pasted(text), now, update);
             return askedWindows(w, { ...u1, asked: [] }, m1, fx, k + 1, now, update);
         },
+        // (the buttons of a title drawn)
+        Minimize => {
+            win.minimize(w);
+            return askedWindows(w, ui, m, fx, k + 1, now, update);
+        },
+        ToggleMaximized => {
+            win.toggleMaximized(w);
+            return askedWindows(w, ui, m, fx, k + 1, now, update);
+        },
         // (the frames of an animation: the loop asks them; the files read
-        // before, by `filesDone`)
+        // before, by `filesDone`; the window closed by `told`)
         _ => askedWindows(w, ui, m, fx, k + 1, now, update),
     };
 }
@@ -861,7 +1035,9 @@ action loopWindows<M>(w: win.Window, fs: Font[nf], m: M, ui: Ui, cv: Canvas, hig
         Ok(evs) => {
             const now = clock();
             const [ins, mods, nh] = fromWindows(evs, ui.mods, high);
-            const [u0, m0] = feedWindows(w, ui, m, ins, 0, now, update);
+            const [ua, ma] = feedWindows(w, ui, m, ins, 0, now, update);
+            // (maximized or restored: the model told)
+            const [u0, m0] = windowTold(ua, ma, win.maximized(w), update);
             if (u0.closed) {
                 return [m0, u0, cv] as const;
             }
@@ -906,6 +1082,8 @@ type State = {
     scale: i64,
     lw: i64,
     lh: i64,
+    // whether the window is active (told to the model when it changes)
+    active: boolean,
     // the devices of the seat asked (1 its pointer, 2 its keyboard)
     caps: u32,
     // the pixels of a unit (the integer scale, or the fractional one in
@@ -1112,7 +1290,10 @@ action keymapOf(fd: i32, bytes: i64): Keymap {
     return km;
 }
 
-action runWayland<M>(title: string, width: i64, height: i64, labels: string[], fs: Font[nf], m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+action runWayland<M>(spec: WindowSpec, labels: string[], fs: Font[nf], m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+    const title = spec.title;
+    const width = spec.width;
+    const height = spec.height;
     const path = wl.socketPath(sys.env("WAYLAND_DISPLAY") ?? "", sys.env("XDG_RUNTIME_DIR") ?? "/tmp");
     return match (unix.connect(path)) {
         Ok(c) => {
@@ -1122,7 +1303,9 @@ action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f
                 net.close(c);
                 return m;
             }
-            const made = net.write(c, wl.windowRequests(g, title));
+            // (a window of a fixed size: its smallest and largest sizes its
+            // own, in units)
+            const made = net.write(c, wl.windowRequests(g, title, spec.resizable ? 0 : width, spec.resizable ? 0 : height));
             // the shapes of the pointer: drawn by the compositor when it can
             // (ids 13 and 14), else three images drawn here (a surface, a
             // pool, three buffers: 13 to 17)
@@ -1140,7 +1323,7 @@ action runWayland<M>(title: string, width: i64, height: i64, labels: string[], f
                 pending: [], shown: false, next: g.cursorShape != 0u32 ? wl.POOL + 2u32 : wl.POOL + 5u32, pool: 0u32, buffer: 0u32,
                 keymap: parseKeymap(""), mods: 0u32, entry: 0u32, shape: -1,
                 shapes: g.cursorShape != 0u32 ? wl.POOL + 1u32 : 0u32, cursorSurface: wl.POOL, cursorFirst: wl.POOL + 2u32, cursorScale: 1,
-                output: 0u32, scale: 1, lw: width, lh: height, caps: 0u32, px: 1.0f32, viewport: 0u32, fraction: 0u32,
+                output: 0u32, scale: 1, lw: width, lh: height, active: true, caps: 0u32, px: 1.0f32, viewport: 0u32, fraction: 0u32,
                 manager: 0u32, device: 0u32, lastOffer: 0u32, lastMime: "", offer: 0u32, mime: "", source: 0u32, text: "", serial: 0u32, fds: [], fdAt: 0,
                 done: false, failed: "",
             };
@@ -1295,11 +1478,13 @@ action handle<M>(c: net.Conn, fs: Font[nf], m: M, evs: wl.Event[n], i: i64, ui: 
     const [nm, nu, ns] = match (wl.input(e)) {
         // (sizes and places in units of the compositor, the images in
         // pixels: times the scale of its screen)
-        wl.Size(w, h) => {
+        wl.Size(w, h, active) => {
+            // (the window active or not, told when it changes)
+            const [m0, u0, st0] = active == st.active ? [m, ui, st] as const : feedWayland(c, ui, m, now, { ...st, active: active }, update, Activated(active));
             if (w <= 0 || h <= 0) {
-                return [m, ui, st] as const;
+                return [m0, u0, st0] as const;
             }
-            const [mm, u, s2] = feedWayland(c, ui, m, now, st, update, Resized(i64(f32(w) * st.px + 0.5f32), i64(f32(h) * st.px + 0.5f32)));
+            const [mm, u, s2] = feedWayland(c, u0, m0, now, st0, update, Resized(i64(f32(w) * st.px + 0.5f32), i64(f32(h) * st.px + 0.5f32)));
             // (the images shown at the size in units)
             const shown = st.viewport != 0u32 ? net.write(c, wl.destinationRequest(st.viewport, w, h)) : Ok(());
             return [mm, u, { ...s2, lw: w, lh: h }] as const;
@@ -1374,7 +1559,7 @@ action handle<M>(c: net.Conn, fs: Font[nf], m: M, evs: wl.Event[n], i: i64, ui: 
 // ----- X11 ---------------------------------------------------------------
 
 // the atoms the window of X11 asks, in their order
-const ATOMS: string[] = ["WM_PROTOCOLS", "WM_DELETE_WINDOW", "_NET_WM_NAME", "UTF8_STRING", "CLIPBOARD", "TARGETS", "ISOCRON_PASTE", "INCR"];
+const ATOMS: string[] = ["WM_PROTOCOLS", "WM_DELETE_WINDOW", "_NET_WM_NAME", "UTF8_STRING", "CLIPBOARD", "TARGETS", "ISOCRON_PASTE", "INCR", "_MOTIF_WM_HINTS"];
 const A_PROTOCOLS: i64 = 0;
 const A_DELETE: i64 = 1;
 const A_NET_NAME: i64 = 2;
@@ -1391,6 +1576,25 @@ const XA_ATOM: u32 = 4u32;
 const XA_RESOURCE_MANAGER: u32 = 23u32;
 const XA_STRING: u32 = 31u32;
 const XA_WM_NAME: u32 = 39u32;
+const XA_WM_NORMAL_HINTS: u32 = 40u32;
+const XA_WM_SIZE_HINTS: u32 = 41u32;
+const A_MOTIF: i64 = 8;
+
+// what a window of `spec`, `pw` by `ph` pixels, tells its window manager
+// beyond its name: the functions it offers (`_MOTIF_WM_HINTS`: its flag of
+// functions, then moved, closed, resized when its edges resize it,
+// minimized, maximized when it is resized), and, of a fixed size, its
+// smallest and largest sizes (`WM_NORMAL_HINTS`, PMinSize | PMaxSize);
+// nothing for a window that offers them all
+function hintsX(spec: WindowSpec, window: u32, motif: u32, pw: i64, ph: i64): u8[] {
+    const all = spec.resizable && spec.minimizable && spec.maximizable;
+    const funcs = 4u32 | 32u32 | (spec.resizable ? 2u32 : 0u32) | (spec.minimizable ? 8u32 : 0u32) | (spec.resizable && spec.maximizable ? 16u32 : 0u32);
+    const functions = all ? [] : x11.changeProperty(window, motif, motif, 32, x11.words([1u32, funcs, 0u32, 0u32, 0u32]));
+    const w = u32(pw);
+    const h = u32(ph);
+    const sizes = spec.resizable ? [] : x11.changeProperty(window, XA_WM_NORMAL_HINTS, XA_WM_SIZE_HINTS, 32, x11.words([48u32, 0u32, 0u32, 0u32, 0u32, w, h, w, h, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32]));
+    return concat(functions, sizes);
+}
 
 // what the loop of X11 keeps: the server, the ids of the window, of its
 // context of drawing and of its three pointers, the shape shown, the table
@@ -1695,6 +1899,11 @@ action answerMessageX<M>(c: net.Conn, m: M, e: x11.Message, ui: Ui, st: XState, 
         const h = x11.u16At(b, 22);
         return w == ui.w && h == ui.h ? [m, ui, st] as const : feedX11(c, ui, m, now, st, update, Resized(w, h));
     }
+    // the window active or not (a change of the focus itself, not one of a
+    // grab of the keyboard: its mode Normal or WhileGrabbed)
+    if ((e.code == x11.FOCUS_IN || e.code == x11.FOCUS_OUT) && (b[8] == 0u8 || b[8] == 3u8)) {
+        return feedX11(c, ui, m, now, st, update, Activated(e.code == x11.FOCUS_IN));
+    }
     if (e.code == x11.EXPOSE) {
         return x11.u16At(b, 16) == 0 ? [m, { ...ui, redraw: true }, st] as const : [m, ui, st] as const;
     }
@@ -1780,7 +1989,10 @@ action connectX(display: string): Result<net.Conn, IoError> {
     return unix.connect(path);
 }
 
-action runX11<M>(title: string, width: i64, height: i64, labels: string[], fs: Font[nf], m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+action runX11<M>(spec: WindowSpec, labels: string[], fs: Font[nf], m: M, view: (M) => Element, update: (M, Input) => [M, Effect[]]): M {
+    const title = spec.title;
+    const width = spec.width;
+    const height = spec.height;
     const display = sys.env("DISPLAY") ?? "";
     return match (connectX(display)) {
         Ok(c) => {
@@ -1827,7 +2039,7 @@ action runX11<M>(title: string, width: i64, height: i64, labels: string[], fs: F
             const made = net.write(c, concat(concat(concat(concat(
                 x11.createWindow(window, setup.root, pw, ph, setup.white),
                 x11.changeProperty(window, XA_WM_NAME, XA_STRING, 8, name)),
-                concat(x11.changeProperty(window, atoms[A_NET_NAME], atoms[A_UTF8], 8, name), x11.changeProperty(window, atoms[A_PROTOCOLS], XA_ATOM, 32, x11.le32(atoms[A_DELETE])))),
+                concat(concat(x11.changeProperty(window, atoms[A_NET_NAME], atoms[A_UTF8], 8, name), x11.changeProperty(window, atoms[A_PROTOCOLS], XA_ATOM, 32, x11.le32(atoms[A_DELETE]))), hintsX(spec, window, atoms[A_MOTIF], pw, ph))),
                 concat(concat(x11.createGc(id(2), window), x11.openFont(id(3), "cursor")), x11.glyphCursors(id(4), id(3), glyphs, 0, []))),
                 concat(x11.setCursor(window, id(4)), x11.mapWindow(window))));
             const st = {

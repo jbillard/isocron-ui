@@ -85,7 +85,7 @@ action handle(c: net.Conn, evs: wl.Event[n], i: i64, st: State, frames: i64): St
         return st;
     }
     const next = match (wl.input(evs[i])) {
-        wl.Size(w, h) => w > 0 && h > 0 ? { ...st, w: w, h: h } : st,
+        wl.Size(w, h, active) => w > 0 && h > 0 ? { ...st, w: w, h: h } : st,
         wl.Configure(serial) => configured(c, serial, st),
         wl.Ping(serial) => {
             const pong = net.write(c, wl.request(wl.WM_BASE, 3u32, wl.le32(serial)));
@@ -148,7 +148,7 @@ action main(args: string[k]): i32 {
                 net.close(c);
                 return 1;
             }
-            const made = net.write(c, wl.windowRequests(g, "isocron-ui"));
+            const made = net.write(c, wl.windowRequests(g, "isocron-ui", 0, 0));
             const full = args.length > 1 && args[1] == "plate";
             const s = loop(c, { pending: [], shown: false, frames: 0, w: full ? 1280 : 480, h: full ? 1040 : 320, done: false, failed: "", plate: full }, frames);
             net.close(c);

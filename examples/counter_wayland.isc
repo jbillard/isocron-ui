@@ -78,7 +78,7 @@ action handle(c: net.Conn, f: Font, evs: wl.Event[n], i: i64, st: State): State 
         return st;
     }
     const next = match (wl.input(evs[i])) {
-        wl.Size(w, h) => w > 0 && h > 0 ? { ...st, w: w, h: h } : st,
+        wl.Size(w, h, active) => w > 0 && h > 0 ? { ...st, w: w, h: h } : st,
         wl.Configure(serial) => {
             const acked = net.write(c, wl.request(wl.XDG_SURFACE, 4u32, wl.le32(serial)));
             if (st.shown) {
@@ -141,7 +141,7 @@ action main(args: string[k]): i32 {
                     net.close(c);
                     return 1;
                 }
-                const made = net.write(c, wl.windowRequests(g, "Isocron : un compteur"));
+                const made = net.write(c, wl.windowRequests(g, "Isocron : un compteur", 0, 0));
                 const st = loop(c, f, { pending: [], w: 480, h: 320, shown: false, model: initial(), hits: [], x: 0.0, y: 0.0, images: 0, done: false, failed: "" });
                 net.close(c);
                 print([st.model.count, st.model.step] as const);

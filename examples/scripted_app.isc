@@ -2,11 +2,13 @@
 // nothing of it compiled (src/scripted.isc): its elements in XML, its
 // styles, its behaviour in Lua. What its Lua prints is written when its
 // window is closed.
-// usage: scripted_app [VIEW.ui.xml] [--font=file] [--mono=file]
+// usage: scripted_app [VIEW.ui.xml] [--font=file] [--mono=file] [--icons=file]
+//   [--seti=file] [--bold=file] [--caption=file] [--semibold=file]
 //   (app.ui.xml in the current folder by default)
 //   scripted_app examples/scripted/todo.ui.xml
-import { runWithFonts, loadFont, loadMonoFont, fail } from "../src/app";
+import { runWindow, loadFont, loadMonoFont, loadIconFont, loadSetiFont, loadBoldFont, loadCaptionFont, loadSemiboldFont, fail } from "../src/app";
 import * as sc from "../src/scripted";
+import { lineWidth } from "../src/text";
 
 action main(args: string[k]): i32 {
     const files = filter(args, (a) => !a.startsWith("--"));
@@ -14,13 +16,42 @@ action main(args: string[k]): i32 {
     return match (loadFont(args)) {
         Ok(f) => match (sc.load(path)) {
             Ok(a) => {
-                // (the texts in `mono` with the font of fixed width when
-                // there is one, else with the first)
-                const fonts = match (loadMonoFont(args)) {
-                    Ok(mono) => [f, mono],
-                    Err(e) => [f],
+                // (the texts in `mono` with the font of fixed width, those
+                // in `icons` with the font of the icons, when there are,
+                // else with the first)
+                const mono = match (loadMonoFont(args)) {
+                    Ok(m) => m,
+                    Err(e) => f,
                 };
-                const end = runWithFonts(a.title, a.width, a.height, a.menu, fonts, a, sc.view, sc.update);
+                const icons = match (loadIconFont(args)) {
+                    Ok(i) => i,
+                    Err(e) => f,
+                };
+                const seti = match (loadSetiFont(args)) {
+                    Ok(i) => i,
+                    Err(e) => f,
+                };
+                const bold = match (loadBoldFont(args)) {
+                    Ok(b) => b,
+                    Err(e) => f,
+                };
+                // (the glyphs of the buttons of a window: those of the
+                // system under Windows, else the icons)
+                const caption = match (loadCaptionFont(args)) {
+                    Ok(c) => c,
+                    Err(e) => icons,
+                };
+                const semibold = match (loadSemiboldFont(args)) {
+                    Ok(b) => b,
+                    Err(e) => bold,
+                };
+                const fonts = [f, mono, icons, seti, bold, caption, semibold];
+                // (the window its `<view>` describes: its title, its size,
+                // its edges and its buttons)
+                // (the width of a column of the code: that of the font of fixed
+                // width at 14 units)
+                const am = sc.measured(a, lineWidth(mono, 14.0f32, "0000000000") / 10.0f32);
+                const end = runWindow({ title: a.title, width: a.width, height: a.height, resizable: a.resizable, minimizable: a.minimizable, maximizable: a.maximizable, drawn: a.drawn }, a.menu, fonts, am, sc.view, sc.update);
                 const [e2, out] = sc.closed(end);
                 if (out.length > 0) {
                     print(join(out, "\n"));

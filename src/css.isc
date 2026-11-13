@@ -1,7 +1,7 @@
 // A reader of files of styles in the manner of CSS, for the interfaces read
 // at compile time (tools/uigen): rules of classes, `.name { property:
 // value; ... }`, several classes sharing a rule (`.a, .b { ... }`), a
-// class in a state (`.name:hover`, `.name:active`: the generic
+// class in a state (`.name:hover`, `.name:active`, `.name:focus`: the generic
 // application's, src/scripted.isc),
 // comments `/* ... */`. Each property keeps its line, for the faults told
 // with it; what a property means is the generator's (a name or a value it
@@ -50,14 +50,15 @@ function className(s: string): boolean {
 }
 
 // a class, or a class in a state: under the pointer (`name:hover`),
-// pressed (`name:active`)
+// pressed (`name:active`), with the focus of the keyboard (`name:focus`, a
+// field)
 function selectorName(s: string): boolean {
     const colon = s.indexOf(":");
     if (colon < 0) {
         return className(s);
     }
     const state = s.slice(colon + 1, s.length);
-    return className(s.slice(0, colon)) && (state == "hover" || state == "active");
+    return className(s.slice(0, colon)) && (state == "hover" || state == "active" || state == "focus");
 }
 
 // the file of styles `text`
@@ -89,7 +90,7 @@ function rulesFrom(s: string, at: i64, acc: Rule[]): Styles {
     const selectors = map(split(rest.slice(0, open), ","), (x) => x.trim());
     const bad = findIndex(selectors, (x) => !x.startsWith(".") || !selectorName(x.slice(1, x.length)));
     if (bad >= 0) {
-        return Bad(`\`${selectors[bad]}\` is not a class (\`.name\`, \`.name:hover\`, \`.name:active\`)`, lineOf(s, at + rest.indexOf(selectors[bad])));
+        return Bad(`\`${selectors[bad]}\` is not a class (\`.name\`, \`.name:hover\`, \`.name:active\`, \`.name:focus\`)`, lineOf(s, at + rest.indexOf(selectors[bad])));
     }
     const bodyAt = at + open + 1;
     return match (propsFrom(s, bodyAt, at + close, [])) {

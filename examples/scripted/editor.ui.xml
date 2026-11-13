@@ -1,140 +1,274 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- An editor of code in the manner of Visual Studio Code, read when the
-     generic application starts (examples/scripted_app.isc): its elements
-     here, its styles in editor.style, what it does in editor.lua (the
-     files of the current folder in a tree, opened in tabs, coloured).
+<!-- An editor of code in the manner of Visual Studio Code (its Modern UI,
+     its theme 2026 Dark), read when the generic application starts
+     (examples/scripted_app.isc): its elements here, its styles in
+     editor.style, what it does in editor.lua (the files of the current
+     folder in a tree, opened in tabs, coloured), its icons those of Visual
+     Studio Code (codicon.ttf, `font="icons"`; the theme Seti for files).
        scripted_app examples/scripted/editor.ui.xml
      Ctrl+P finds a file, Ctrl+B shows or hides the side bar, Ctrl+J the
      panel, Ctrl+W closes the tab; the side bar and the panel are resized
-     by their edges. -->
-<view title="Isocron : éditeur" width="1100" height="720"
-      styles="editor.style" script="editor.lua" onkey="return onKey(key, ctrl)"
-      images="icons/files.png icons/files_on.png icons/search.png icons/search_on.png icons/branch.png icons/branch_on.png icons/blocks.png icons/blocks_on.png icons/gear.png icons/closed.png icons/open.png icons/blank.png">
-  <column class="window">
-    <!-- the bar of the title: the menus, the name of the file -->
-    <row class="titlebar">
-      <each items="{menus}" as="m">
-        <row class="menu" onclick=""><text class="menuText">{m}</text></row>
-      </each>
-      <box width="fill"/>
-      <text class="titleText">{title()}</text>
-      <box width="fill"/>
+     by their edges; a click on a line of code makes it the current one. -->
+<view title="Isocron : éditeur" width="1100" height="720" titlebar="custom"
+      styles="editor.style" script="seti.lua editor.lua" onkey="return onKey(key, ctrl)">
+  <column class="window" background="{host.active and '#191A1B' or '#121314'}">
+    <!-- the bar of the title: at its left the mark and the menus (those
+         that do not fit under « … »), in its middle the arrows and the box
+         that finds a file, at its right the account, the buttons of the
+         layout and those of the window -->
+    <row class="titlebar" moves="true">
+      <row class="titleLeft" opacity="{host.active and 1 or 0.6}">
+        <box class="appIcon"><box class="mark"><text class="markText">I</text></box></box>
+        <row class="menubar">
+          <each items="{menus}" as="m">
+            <row class="menu" onclick=""><text class="menuText">{m}</text></row>
+          </each>
+          <row class="menu" onclick=""><text class="menuIcon" font="icons">{I.more}</text></row>
+        </row>
+      </row>
+      <row class="titleCenter" opacity="{host.active and 1 or 0.6}">
+        <row class="nav"><text class="navIcon" font="icons">{I.back}</text></row>
+        <row class="nav"><text class="navIcon" font="icons">{I.forward}</text></row>
+        <row class="command" width="{commandWidth()}" background="{host.active and '#191A1B' or 'transparent'}" onclick="togglePalette()" tip="Search files by name (Ctrl+P)">
+          <text class="commandText" color="{host.active and '#BFBFBF' or '#8C8C8C'}">{rootName()}</text>
+          <box width="fill"/>
+          <row class="chat">
+            <box class="tool"><text class="chatIcon" font="icons">{I.chat}</text></box>
+            <box width="18" height="22" justify="center" align="center" stretch="false"><text class="chatMore" font="icons">{I.down}</text></box>
+          </row>
+        </row>
+      </row>
+      <row class="titleRight">
+        <row class="account" opacity="{host.active and 1 or 0.6}">
+          <row class="tool" onclick=""><text class="toolIcon" font="icons">{I.copilot}</text></row>
+          <row class="signIn" onclick=""><text class="signInText">Sign In</text></row>
+        </row>
+        <box width="fill"/>
+        <row class="layoutTools" opacity="{host.active and 1 or 0.6}">
+          <row class="tool" onclick="" tip="Customize Layout..."><text class="toolIcon" font="icons">{I.layout}</text></row>
+          <row class="tool" onclick="sidebarShown = not sidebarShown" tip="Toggle Primary Side Bar (Ctrl+B)"><text class="toolIcon" font="icons">{sidebarShown and I.sidebarOn or I.sidebarOff}</text></row>
+          <row class="tool" onclick="panelShown = not panelShown" tip="Toggle Panel (Ctrl+J)"><text class="toolIcon" font="icons">{panelShown and I.panelOn or I.panelOff}</text></row>
+          <row class="tool" onclick="" tip="Toggle Secondary Side Bar"><text class="toolIcon" font="icons">{I.asideOff}</text></row>
+        </row>
+        <row class="winButton" onclick="host.minimize()"><text class="winIcon" font="{captionFont()}" size="{captionSize()}">{winGlyph('min')}</text></row>
+        <row class="winButton" onclick="host.toggleMaximized()"><text class="winIcon" font="{captionFont()}" size="{captionSize()}">{winGlyph('max')}</text></row>
+        <row class="winClose" onclick="host.close()"><text class="winIcon" font="{captionFont()}" size="{captionSize()}">{winGlyph('close')}</text></row>
+      </row>
     </row>
-    <row class="main">
-      <!-- the bar of the activities: each shows its view in the side bar -->
-      <column class="activity">
+    <row class="body">
+      <!-- the bar of the activities, a card joined to the side bar (round
+           at its right too when the side bar is hidden) -->
+      <column class="activity" radiusTopRight="{sidebarShown and 0 or 8}" radiusBottomRight="{sidebarShown and 0 or 8}">
         <each items="{activities}" as="v">
-          <box class="act" onclick="showView(v)" tip="{viewNames[v]}"><image src="icons/{icon(v)}" width="24" height="24"/></box>
+          <box class="act">
+            <box class="actOff" onclick="showView(v)" tip="{viewNames[v]}" background="{shown(v) and '#313233' or 'transparent'}">
+              <text class="actIcon" font="icons" color="{shown(v) and '#EDEDED' or '#8C8C8C'}">{I[v]}</text>
+            </box>
+          </box>
         </each>
         <box height="fill"/>
-        <box class="act" onclick=""><image src="icons/gear.png" width="24" height="24"/></box>
+        <box class="act"><box class="actOff" onclick="" tip="Accounts"><text class="actIcon" font="icons" color="#8C8C8C">{I.account}</text></box></box>
+        <box class="act"><box class="actOff" onclick="" tip="Manage"><text class="actIcon" font="icons" color="#8C8C8C">{I.gear}</text></box></box>
       </column>
       <!-- the side bar and its edge, which resizes it -->
       <each items="{sidebarShown and {1} or {}}" as="s">
-        <row class="sideRow">
+        <row height="fill" stretch="true">
           <column class="sidebar" width="{sidebarWidth}">
-            <row class="sideHeader"><text class="sideTitle">{viewTitle()}</text></row>
-            <!-- the explorer: the tree of the folder -->
+            <row class="sideHeader">
+              <box class="sideTitleBox"><text class="sideTitle">{viewTitle()}</text></box>
+              <box width="fill"/>
+              <row class="tool" onclick="" tip="Views and More Actions..."><text class="toolIcon" font="icons">{I.more}</text></row>
+            </row>
+            <!-- the explorer: the folder and its tree, then its sections -->
             <each items="{view == 'files' and {1} or {}}" as="v1">
               <column class="sideBody">
-                <row class="rootRow"><image src="icons/open.png" width="16" height="16"/><text class="rootText">{rootTitle()}</text></row>
+                <row class="sectionLine">
+                  <row class="section" onclick="rootNode.open = not rootNode.open">
+                    <box width="7" height="1"/>
+                    <box class="twistieBox"><text class="twistie" font="icons">{rootNode.open and I.down or I.right}</text></box>
+                    <box width="2" height="1"/>
+                    <text class="sectionText">{rootTitle()}</text>
+                  </row>
+                </row>
                 <box class="treeBox" scroll="0">
-                  <each items="{visibleNodes()}" as="n">
-                    <row class="node" onclick="clickNode(n)" background="{n.path == current and '#37373D' or 'transparent'}">
-                      <box width="{n.depth * 12 + 8}" height="1"/>
-                      <image src="{chevron(n)}" width="16" height="16"/>
-                      <box class="fileIcon" background="{n.dir and 'transparent' or fileColor(n.name)}"/>
-                      <text class="nodeText">{n.name}</text>
+                  <each items="{rootNode.open and visibleNodes() or {}}" as="n">
+                    <row class="node" onclick="clickNode(n)" background="{n.path == current and '#2C2D2E' or 'transparent'}">
+                      <box width="{n.depth * 8 + 11}" height="1"/>
+                      <box class="fileIcon">
+                        <each items="{n.dir and {1} or {}}" as="f">
+                          <text class="twistie" font="icons">{chevron(n)}</text>
+                        </each>
+                        <each items="{n.dir and {} or {1}}" as="f">
+                          <text size="{fileIconSize(n.name)}" font="{fileIconFont(n.name)}" color="{fileIconColor(n.name)}">{fileIcon(n.name)}</text>
+                        </each>
+                      </box>
+                      <box width="3" height="1"/>
+                      <text class="nodeText" color="{n.path == current and '#EDEDED' or '#BFBFBF'}">{n.name}</text>
                     </row>
                   </each>
                 </box>
+                <each items="{sections}" as="sec">
+                  <row class="sectionLine">
+                    <box class="sectionRule" floating="true"/>
+                    <row class="section" onclick="">
+                      <box width="7" height="1"/>
+                      <box class="twistieBox"><text class="twistie" font="icons">{I.right}</text></box>
+                      <box width="2" height="1"/>
+                      <text class="sectionText">{sec}</text>
+                    </row>
+                  </row>
+                </each>
+                <box width="1" height="4"/>
               </column>
             </each>
             <!-- the search: the files whose path holds the letters typed -->
             <each items="{view == 'search' and {1} or {}}" as="v2">
               <column class="sideBody">
-                <row class="searchRow"><field bind="search" hint="Rechercher" autofocus="true"/></row>
+                <row class="searchRow"><field class="input" bind="search" hint="Search" autofocus="true"/></row>
                 <box class="treeBox" scroll="3">
                   <each items="{found(search, 200)}" as="m">
-                    <row class="node" onclick="openFile(m)" background="{m == current and '#37373D' or 'transparent'}">
-                      <box width="12" height="1"/>
-                      <box class="fileIcon" background="{fileColor(m)}"/>
-                      <text class="nodeText">{rel(m)}</text>
+                    <row class="node" onclick="openFile(m)" background="{m == current and '#2C2D2E' or 'transparent'}">
+                      <box width="11" height="1"/>
+                      <box class="fileIcon"><text size="{fileIconSize(m)}" font="{fileIconFont(m)}" color="{fileIconColor(m)}">{fileIcon(m)}</text></box>
+                      <box width="3" height="1"/>
+                      <text class="nodeText" color="#BFBFBF">{rel(m)}</text>
                     </row>
                   </each>
                 </box>
               </column>
             </each>
-            <each items="{(view == 'branch' or view == 'blocks') and {1} or {}}" as="v3">
-              <column class="sideBody"><text class="placeholder">Cette vue reste à faire.</text></column>
+            <each items="{(view == 'branch' or view == 'debug' or view == 'blocks') and {1} or {}}" as="v3">
+              <column class="sideBody" padX="12"><text class="placeholder">Cette vue reste à faire.</text></column>
             </each>
           </column>
-          <box class="sashV" onclick="from = sidebarWidth" ondrag="sidebarWidth = math.max(170, math.min(480, from + dx))"/>
+          <box class="sashV" onclick="from = sidebarWidth" ondrag="sidebarWidth = math.max(170, math.min(600, from + dx))">
+            <box class="grip"/><box class="grip"/><box class="grip"/>
+          </box>
         </row>
+      </each>
+      <each items="{sidebarShown and {} or {1}}" as="g">
+        <box width="4" height="1"/>
       </each>
       <column class="center">
         <!-- the palette: a file found by the letters of its path -->
         <each items="{palette and {1} or {}}" as="p">
           <row class="paletteRow">
             <column class="palette">
-              <field bind="query" hint="Rechercher un fichier par son nom" autofocus="true" onenter="openChoice()" onchange="choice = 1"/>
+              <field class="qinput" bind="query" hint="Search files by name" autofocus="true" onenter="openChoice()" onchange="choice = 1"/>
               <each items="{matches()}" as="m" index="k">
-                <row class="match" onclick="choice = k; openChoice()" background="{k == choice and '#04395E' or 'transparent'}">
-                  <box class="fileIcon" background="{fileColor(m)}"/>
-                  <text class="matchText">{rel(m)}</text>
+                <row class="match" onclick="choice = k; openChoice()" background="{k == choice and '#297AA0' or 'transparent'}">
+                  <box class="fileIcon"><text size="{fileIconSize(m)}" font="{fileIconFont(m)}" color="{fileIconColor(m)}">{fileIcon(m)}</text></box>
+                  <text class="matchText" color="{k == choice and '#FFFFFF' or '#BFBFBF'}">{string.match(m, '([^/\\]+)$') or m}</text>
+                  <text class="matchPath" color="{k == choice and '#FFFFFF' or '#8C8C8C'}">{rel(m)}</text>
                 </row>
               </each>
             </column>
           </row>
         </each>
-        <!-- the tabs -->
-        <row class="tabs">
-          <each items="{tabs}" as="t" index="k">
-            <row class="tab" onclick="selectTab(k)" background="{k == active and '#1E1E1E' or '#2D2D2D'}">
-              <box class="fileIcon" background="{fileColor(t.name)}"/>
-              <text size="13" color="{k == active and '#FFFFFF' or '#969696'}">{t.name}</text>
-              <row class="close" onclick="closeTab(k)"><text class="closeText">×</text></row>
-            </row>
-          </each>
-        </row>
-        <row class="crumbs"><text class="crumb">{breadcrumb()}</text></row>
-        <!-- the code of the file of the tab, its lines numbered: those in
-             sight alone made, the others a space of their height -->
-        <box class="code" scroll="1">
-          <box height="{codeTop()}"/>
-          <each items="{codeRows()}" as="line">
-            <row class="line">
-              <box class="gutter"><text class="lineNo" font="mono">{line.num}</text></box>
-              <each items="{line.toks}" as="tok">
-                <text font="mono" size="13" color="{tok.color}">{tok.text}</text>
+        <column class="editorCard">
+          <!-- the tabs: the one shown joined to its editor -->
+          <each items="{#tabs > 0 and {1} or {}}" as="strip">
+            <column width="fill">
+            <row class="tabs">
+              <each items="{tabsView()}" as="t">
+                <row align="start" stretch="false">
+                  <each items="{t.active and {} or {1}}" as="x">
+                    <row class="tab" onclick="selectTab(t.k)">
+                      <each items="{t.divider and {1} or {}}" as="d"><row align="center" stretch="false"><box class="tabDivider"/><box width="5" height="1"/></row></each>
+                      <each items="{t.divider and {} or {1}}" as="d"><box class="tabPad"/></each>
+                      <box class="fileIcon"><text size="{fileIconSize(t.name)}" font="{fileIconFont(t.name)}" color="{fileIconColor(t.name)}">{fileIcon(t.name)}</text></box>
+                      <box class="tabGap"/>
+                      <text size="13" color="#8C8C8C">{t.name}</text>
+                      <box class="tabEnd"/>
+                    </row>
+                  </each>
+                  <each items="{t.active and {1} or {}}" as="x">
+                    <column class="tabOn" onclick="selectTab(t.k)">
+                      <column class="tabShape">
+                        <row class="capRow">
+                          <box class="capSide"/>
+                          <box class="cap" borderLeft="{t.first and 0 or 1}" radiusTopLeft="{t.first and 0 or 7}"/>
+                          <box class="capSide"/>
+                        </row>
+                        <row class="baseRow">
+                          <each items="{t.first and {} or {1}}" as="f"><box class="shoulder"><box class="shoulderLeft"/></box></each>
+                          <each items="{t.first and {1} or {}}" as="f"><box width="7" height="7"/></each>
+                          <box class="base"/>
+                          <box class="shoulder"><box class="shoulderRight"/></box>
+                        </row>
+                      </column>
+                      <row class="tabBody">
+                        <box class="tabPad"/>
+                        <box class="fileIcon"><text size="{fileIconSize(t.name)}" font="{fileIconFont(t.name)}" color="{fileIconColor(t.name)}">{fileIcon(t.name)}</text></box>
+                        <box class="tabGap"/>
+                        <text size="13" color="#EDEDED">{t.name}</text>
+                        <row class="tabEnd">
+                          <box width="4" height="1"/>
+                          <row class="close" onclick="closeTab(t.k)"><text class="closeIcon" font="icons">{t.dirty and I.dirty or I.close}</text></row>
+                        </row>
+                      </row>
+                      <box width="1" height="1"/>
+                    </column>
+                  </each>
+                </row>
+              </each>
+              <box width="fill"/>
+              <each items="{#tabs > 0 and {1} or {}}" as="e">
+                <row class="tabTools">
+                  <row class="tool" onclick="" tip="Split Editor Right"><text class="toolIcon" font="icons">{I.split}</text></row>
+                  <row class="tool" onclick="" tip="More Actions..."><text class="toolIcon" font="icons">{I.more}</text></row>
+                </row>
               </each>
             </row>
-          </each>
-          <box height="{codeBottom()}"/>
-          <each items="{more()}" as="m">
-            <row class="line"><box class="gutter"/><text class="more">{m}</text></row>
-          </each>
-          <each items="{#tabs == 0 and {1} or {}}" as="e">
-            <column class="welcome">
-              <text class="welcomeTitle">Isocron</text>
-              <text class="welcomeText">Ouvrez un fichier dans l'explorateur, ou Ctrl+P pour le chercher.</text>
-              <text class="welcomeText">Ctrl+B : la barre latérale · Ctrl+J : le panneau · Ctrl+W : fermer l'onglet</text>
+            <!-- the path of the file, its parts separated by chevrons -->
+            <row class="crumbs">
+              <each items="{crumbs()}" as="c">
+                <row class="crumb">
+                  <each items="{c.file and {1} or {}}" as="f">
+                    <box class="fileIcon"><text size="{fileIconSize(c.name)}" font="{fileIconFont(c.name)}" color="{fileIconColor(c.name)}">{fileIcon(c.name)}</text></box>
+                  </each>
+                  <each items="{c.icon ~= '' and {1} or {}}" as="f">
+                    <text class="crumbIcon" font="icons">{c.icon}</text>
+                  </each>
+                  <text class="crumbText">{c.name}</text>
+                  <each items="{c.last and {} or {1}}" as="f">
+                    <text class="crumbSep" font="icons">{I.right}</text>
+                  </each>
+                </row>
+              </each>
+            </row>
             </column>
           </each>
-        </box>
-        <!-- the panel and its edge, which resizes it -->
+          <!-- the code of the file of the tab, its lines numbered: those in
+               sight alone made, the others a space of their height; the
+               guides of its indentation, its brackets coloured; the line of
+               the cursor lit -->
+          <box class="code" scroll="1">
+            <code doc="{activePath()}" scroll="1"/>
+            <each items="{#tabs == 0 and {1} or {}}" as="e">
+              <column class="welcome">
+                <text class="welcomeTitle">Isocron</text>
+                <text class="welcomeText">Open a file in the explorer, or Ctrl+P to find it.</text>
+                <text class="welcomeText">Ctrl+B: the side bar · Ctrl+J: the panel · Ctrl+W: close the tab</text>
+              </column>
+            </each>
+          </box>
+        </column>
+        <!-- the panel, a card below the editor, and its edge, which
+             resizes it -->
         <each items="{panelShown and {1} or {}}" as="q">
           <column class="panelWrap">
             <box class="sashH" onclick="from = panelHeight" ondrag="panelHeight = math.max(60, math.min(400, from - dy))"/>
             <column class="panel" height="{panelHeight}">
               <row class="panelTabs">
-                <text class="panelTab">PROBLÈMES</text>
-                <text class="panelTabOn">SORTIE</text>
-                <text class="panelTab">TERMINAL</text>
+                <box class="panelTab"><text class="panelTabText">Problems</text></box>
+                <box class="panelTabOn"><text class="panelTabOnText">Output</text></box>
+                <box class="panelTab"><text class="panelTabText">Debug Console</text></box>
+                <box class="panelTab"><text class="panelTabText">Terminal</text></box>
               </row>
               <box class="panelBody" scroll="2">
                 <each items="{log}" as="l">
-                  <text font="mono" class="logText">{l}</text>
+                  <text class="logText">{l}</text>
                 </each>
               </box>
             </column>
@@ -142,12 +276,31 @@
         </each>
       </column>
     </row>
+    <box class="belowCards"/>
     <!-- the bar of the state -->
     <row class="status">
-      <text class="statusText">{rootTitle()}</text>
-      <text class="statusText">{#tabs} onglet{#tabs > 1 and 's' or ''}</text>
+      <row class="statusFirst" onclick=""><text class="statusIcon" font="icons">{I.remote}</text></row>
+      <box class="statusGap"/>
+      <row class="statusItem" onclick="">
+        <text class="statusIcon" font="icons">{I.error}</text><text class="statusText">0</text>
+        <text class="statusIcon" font="icons">{I.warning}</text><text class="statusText">0</text>
+      </row>
       <box width="fill"/>
-      <text class="statusText">{statusRight()}</text>
+      <each items="{statusItems()}" as="it">
+        <row align="center" stretch="false">
+          <row class="statusItem" onclick=""><text class="statusText">{it}</text></row>
+          <box class="statusGap"/>
+        </row>
+      </each>
+      <each items="{langName() ~= '' and {1} or {}}" as="e">
+        <row align="center" stretch="false">
+          <row class="statusItem" onclick=""><text class="statusIcon" font="icons">{I.braces}</text><text class="statusText">{langName()}</text></row>
+          <box class="statusGap"/>
+        </row>
+      </each>
+      <row class="statusItem" onclick=""><text class="statusIcon" font="icons">{I.copilot}</text></row>
+      <box class="statusGap"/>
+      <row class="statusFirst" onclick=""><text class="statusIcon" font="icons">{I.bell}</text></row>
     </row>
   </column>
 </view>

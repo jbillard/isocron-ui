@@ -432,10 +432,11 @@ export function symbolChar(sym: u32): i64 {
     return s == 0xFF08 ? 8 : (s == 0xFF09 ? 9 : (s == 0xFF0D || s == 0xFF8D ? 13 : (s == 0xFF1B ? 27
         : (s == 0xFFFF ? 0x110005 : (s == 0xFF51 ? 0x110001 : (s == 0xFF52 ? 0x110002 : (s == 0xFF53 ? 0x110003
         : (s == 0xFF54 ? 0x110004 : (s == 0xFF50 ? 0x110006 : (s == 0xFF57 ? 0x110007
+        : (s == 0xFF55 ? 0x110008 : (s == 0xFF56 ? 0x110009
         : (s == 0x20AC ? 0x20AC : (s == 0x13BD ? 0x153 : (s == 0x13BC ? 0x152 : (s == 0xFF80 ? 32
         // the dead keys (dead_grave to dead_cedilla): DEAD of input.isc plus
         // their accent
-        : (s >= 0xFE50 && s <= 0xFE5B ? 0xF0000 + (s - 0xFE50) : 0)))))))))))))));
+        : (s >= 0xFE50 && s <= 0xFE5B ? 0xF0000 + (s - 0xFE50) : 0)))))))))))))))));
 }
 
 // the table of the keyboard of the reply `m` to `keyboardMapping` from the
@@ -486,6 +487,7 @@ export const BUTTON_RELEASE: i64 = 5;
 export const MOTION: i64 = 6;
 export const ENTER: i64 = 7;
 export const FOCUS_IN: i64 = 9;
+export const FOCUS_OUT: i64 = 10;
 export const EXPOSE: i64 = 12;
 export const CONFIGURE: i64 = 22;
 export const SELECTION_CLEAR: i64 = 29;

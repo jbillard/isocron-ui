@@ -1,0 +1,726 @@
+// A document of the editor of code: the lines of a file, the cursor and
+// the other end of the selection (its anchor), what the hand does to them
+// as Visual Studio Code does it (the keys, the pointer, the clipboard, the
+// undo and the redo), and the colours of its lines kept up to date (each
+// line scanned again when it changes, src/code.isc). Positions are lines
+// and offsets of bytes of their UTF-8 at the starts of characters; a
+// column on the screen counts a character as one, a tab up to its next
+// stop (4).
+import { Input, Effect, Click, Drag, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, DELETE, TAB, ENTER, ESCAPE, LEFT, RIGHT, HOME, END, UP, DOWN, PAGE_UP, PAGE_DOWN } from "./input";
+import { Lang, Scan, scanLine, depthAfter, langOf } from "./code";
+import { utf8 } from "./edit";
+
+export type Pos = { line: i64, col: i64 };
+
+// what an undo brings back
+export type Snap = { lines: string[], cursor: Pos, anchor: Pos };
+
+export type Doc = {
+    path: string, lang: Lang, indent: i64, crlf: boolean,
+    lines: string[], scans: Scan[], depths: i64[],
+    cursor: Pos, anchor: Pos,
+    // the column on the screen the cursor keeps going up and down (-1:
+    // that of the cursor)
+    goal: i64,
+    undo: Snap[], redo: Snap[],
+    // the kind of the last change (1 typing, 2 deleting: the next one of the
+    // same kind joins it, as one undo; 0 another)
+    last: i64,
+    // its version, the one saved (a dot on its tab while they differ)
+    version: i64, saved: i64,
+    // what the last click took (0 a place, 1 a word, 2 a line) and its ends:
+    // a drag after it takes whole words or lines
+    unit: i64, from: Pos, to: Pos,
+    // the offset of its box that scrolls and the height it shows, in units
+    top: f32, height: f32,
+};
+
+export const TAB_SIZE: i64 = 4;
+export const LINE_HEIGHT: f32 = 19.0f32;
+
+function pos(line: i64, col: i64): Pos {
+    return { line: line, col: col };
+}
+
+function before(a: Pos, b: Pos): boolean {
+    return a.line < b.line || (a.line == b.line && a.col < b.col);
+}
+
+// the start and the end of the selection
+export function selection(d: Doc): [Pos, Pos] {
+    return before(d.anchor, d.cursor) ? [d.anchor, d.cursor] as const : [d.cursor, d.anchor] as const;
+}
+
+export function hasSelection(d: Doc): boolean {
+    return d.anchor.line != d.cursor.line || d.anchor.col != d.cursor.col;
+}
+
+export function dirty(d: Doc): boolean {
+    return d.version != d.saved;
+}
+
+// ----- the document made, written -----------------------------------------
+
+// the width of an indentation of the lines: the smallest one (2 or 4) of
+// their first 200 indented with spaces
+function indentOfLines(lines: string[n]): i64 {
+    const leads = map(iota(min(n, 200)), (k) => {
+        const b = bytes(lines[k]);
+        const sp = findIndex(iota(b.length), (j) => b[j] != 32u8);
+        return sp > 0 ? sp : 1000;
+    });
+    return fold(leads, 1000, (a, x) => min(a, x)) == 2 ? 2 : 4;
+}
+
+// the document of the file `path` holding `text`
+export function docOf(path: string, text: string): Doc {
+    const crlf = text.indexOf("\r\n") >= 0;
+    const raw = split(text, "\n");
+    const lines = map(raw, (l) => l.endsWith("\r") ? l.slice(0, l.length - 1) : l);
+    const l = langOf(path);
+    const [scans, depths] = scanned(lines, l, 0, false, 0, [], []);
+    return {
+        path: path, lang: l, indent: indentOfLines(lines), crlf: crlf,
+        lines: lines, scans: scans, depths: depths,
+        cursor: pos(0, 0), anchor: pos(0, 0), goal: -1,
+        undo: [], redo: [], last: 0, version: 0, saved: 0,
+        unit: 0, from: pos(0, 0), to: pos(0, 0), top: 0.0f32, height: 600.0f32,
+    };
+}
+
+// the lines from `k` scanned (`open` and `depth` at the start of the line
+// `k`): their scans, the depths of the brackets at their starts
+function scanned(lines: string[n], l: Lang, k: i64, open: boolean, depth: i64, scans: Scan[], depths: i64[]): [Scan[], i64[]] {
+    if (k >= n) {
+        return [scans, depths] as const;
+    }
+    const s = scanLine(lines[k], l, open);
+    return scanned(lines, l, k + 1, s.open, depthAfter(lines[k], s.raws, depth), concat(scans, [s]), concat(depths, [depth]));
+}
+
+// the text of the document, its lines ended as they were read
+export function textOf(d: Doc): string {
+    return join(d.lines, d.crlf ? "\r\n" : "\n");
+}
+
+// the document saved (its text written by the application)
+export function saved(d: Doc): Doc {
+    return { ...d, saved: d.version, last: 0 };
+}
+
+// ----- the characters of a line ------------------------------------------
+
+// the start of the character after the offset `i` of `b`
+function nextChar(b: u8[n], i: i64): i64 {
+    if (i >= n) {
+        return n;
+    }
+    const k = findIndex(iota(min(4, n - i - 1)), (j) => (b[i + 1 + j] & 0xC0u8) != 0x80u8);
+    return k < 0 ? min(n, i + 4) : i + 1 + k;
+}
+
+// the start of the character before the offset `i` of `b`
+function prevChar(b: u8[n], i: i64): i64 {
+    if (i <= 0) {
+        return 0;
+    }
+    const k = findIndex(iota(min(4, i)), (j) => (b[i - 1 - j] & 0xC0u8) != 0x80u8);
+    return k < 0 ? max(0, i - 4) : i - 1 - k;
+}
+
+// the column on the screen of the offset `col` of the line `text`
+export function columnOf(text: string, col: i64): i64 {
+    const b = bytes(text);
+    return columnFrom(b, 0, min(col, b.length), 0);
+}
+
+function columnFrom(b: u8[n], i: i64, end: i64, c: i64): i64 {
+    if (i >= end) {
+        return c;
+    }
+    return columnFrom(b, nextChar(b, i), end, b[i] == 9u8 ? (c / TAB_SIZE + 1) * TAB_SIZE : c + 1);
+}
+
+// the offset of the line `text` nearest the column `goal` (a tab or a
+// character taken by the side nearer)
+export function offsetOf(text: string, goal: i64): i64 {
+    const b = bytes(text);
+    return offsetFrom(b, 0, 0, goal);
+}
+
+function offsetFrom(b: u8[n], i: i64, c: i64, goal: i64): i64 {
+    if (i >= n || c >= goal) {
+        return i;
+    }
+    const next = b[i] == 9u8 ? (c / TAB_SIZE + 1) * TAB_SIZE : c + 1;
+    // (the boundary nearer the goal)
+    if (next > goal) {
+        return goal - c < next - goal ? i : nextChar(b, i);
+    }
+    return offsetFrom(b, nextChar(b, i), next, goal);
+}
+
+// the leading spaces and tabs of a line
+function leadOf(text: string): string {
+    const b = bytes(text);
+    const k = findIndex(iota(b.length), (j) => b[j] != 32u8 && b[j] != 9u8);
+    return text.slice(0, k < 0 ? b.length : k);
+}
+
+// the classes of a byte for the moves by words: 0 a space, 1 a character
+// of a word, 2 a separator (`~!@#$%^&*()-=+[{]}\|;:'",.<>/?)
+function classOf(c: u8): i64 {
+    if (c == 32u8 || c == 9u8) {
+        return 0;
+    }
+    const seps = bytes("`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?");
+    return findIndex(seps, (x) => x == c) >= 0 ? 2 : 1;
+}
+
+// the end of the word right of `i` (its spaces skipped first)
+function wordRight(b: u8[n], i: i64): i64 {
+    const s = findIndex(iota(n - i), (j) => classOf(b[i + j]) != 0);
+    const start = s < 0 ? n : i + s;
+    if (start >= n) {
+        return n;
+    }
+    const k = classOf(b[start]);
+    const e = findIndex(iota(n - start), (j) => classOf(b[start + j]) != k);
+    return e < 0 ? n : start + e;
+}
+
+// the start of the word left of `i` (its spaces skipped first)
+function wordLeft(b: u8[n], i: i64): i64 {
+    const s = findIndex(iota(i), (j) => classOf(b[i - 1 - j]) != 0);
+    const start = s < 0 ? 0 : i - s;
+    if (start <= 0) {
+        return 0;
+    }
+    const k = classOf(b[start - 1]);
+    const e = findIndex(iota(start), (j) => classOf(b[start - 1 - j]) != k);
+    return e < 0 ? 0 : start - e;
+}
+
+// the word holding the offset `i` of a line: its start and its end (a run
+// of spaces or of separators as one)
+function wordAround(text: string, i: i64): [i64, i64] {
+    const b = bytes(text);
+    const n = b.length;
+    if (n == 0) {
+        return [0, 0] as const;
+    }
+    const at = min(i, n - 1);
+    const k = classOf(b[at]);
+    const l = findIndex(iota(at), (j) => classOf(b[at - 1 - j]) != k);
+    const r = findIndex(iota(n - at), (j) => classOf(b[at + j]) != k);
+    return [l < 0 ? 0 : at - l, r < 0 ? n : at + r] as const;
+}
+
+// ----- changes ---------------------------------------------------------------
+
+// the text between the positions `a` and `b` (a before b)
+export function textBetween(d: Doc, a: Pos, b: Pos): string {
+    if (a.line == b.line) {
+        return d.lines[a.line].slice(a.col, b.col);
+    }
+    const first = d.lines[a.line].slice(a.col, d.lines[a.line].length);
+    const middle = map(iota(b.line - a.line - 1), (k) => d.lines[a.line + 1 + k]);
+    const last = d.lines[b.line].slice(0, b.col);
+    return join(concat(concat([first], middle), [last]), "\n");
+}
+
+// the text between `a` and `b` replaced by `text` (its lines at its "\n"),
+// the cursor after it; the colours of the lines changed and of those after
+// them whose comments it opens or closes scanned again; one change undone
+// at once, joined to the one before when both are of the kind `kind` (1
+// typing, 2 deleting)
+function replace(d: Doc, a: Pos, b: Pos, text: string, kind: i64): Doc {
+    const parts = split(join(split(text, "\r\n"), "\n"), "\n");
+    const headLine = d.lines[a.line].slice(0, a.col);
+    const tailLine = d.lines[b.line].slice(b.col, d.lines[b.line].length);
+    const n = parts.length;
+    const made = map(iota(n), (k) => (k == 0 ? headLine : "") + parts[k] + (k == n - 1 ? tailLine : ""));
+    const lines = concat(concat(map(iota(a.line), (k) => d.lines[k]), made), map(iota(d.lines.length - b.line - 1), (k) => d.lines[b.line + 1 + k]));
+    const end = pos(a.line + n - 1, n == 1 ? a.col + parts[0].length : parts[n - 1].length);
+    // (the undo: a change of another kind, or after a move, begins one)
+    const joins = kind != 0 && kind == d.last;
+    const snap = { lines: d.lines, cursor: d.cursor, anchor: d.anchor };
+    const undo = joins ? d.undo : concat(d.undo, [snap]);
+    const d1 = { ...d, lines: lines, cursor: end, anchor: end, goal: -1, undo: undo.length > 1000 ? map(iota(1000), (k) => undo[undo.length - 1000 + k]) : undo, redo: [], last: kind, version: d.version + 1 };
+    return rescanned(d1, d.scans, a.line, a.line + n, n - (b.line - a.line + 1));
+}
+
+// the lines from `from` scanned again: those of the change (to `changed`,
+// excluded), then those after it while the comment of a block open at
+// their start differs from before (`old` the scans before the change,
+// `shift` the lines it added); the others' scans kept; the depths of the
+// brackets made again from `from`
+function rescanned(d: Doc, old: Scan[m], from: i64, changed: i64, shift: i64): Doc {
+    const keep = min(from, d.lines.length);
+    const open = keep > 0 ? old[keep - 1].open : false;
+    const scans = rescanFrom(d.lines, d.lang, old, keep, changed, shift, open, map(iota(keep), (k) => old[k]));
+    const depths = depthsFrom(d.lines, scans, keep, keep > 0 ? depthAfter(d.lines[keep - 1], scans[keep - 1].raws, d.depths[keep - 1]) : 0, map(iota(keep), (k) => d.depths[k]));
+    return { ...d, scans: scans, depths: depths };
+}
+
+function rescanFrom(lines: string[n], l: Lang, old: Scan[m], k: i64, changed: i64, shift: i64, open: boolean, out: Scan[]): Scan[] {
+    if (k >= n) {
+        return out;
+    }
+    // (past the change, the same comment open at its start as before: the
+    // scans of the lines left kept as they were)
+    const j = k - shift;
+    const wasOpen = j > 0 && j - 1 < m ? old[j - 1].open : false;
+    if (k >= changed && j >= 0 && j < m && open == wasOpen) {
+        return concat(out, map(iota(n - k), (i) => old[j + i]));
+    }
+    const s = scanLine(lines[k], l, open);
+    return rescanFrom(lines, l, old, k + 1, changed, shift, s.open, concat(out, [s]));
+}
+
+function depthsFrom(lines: string[n], scans: Scan[m], k: i64, depth: i64, out: i64[]): i64[] {
+    if (k >= n) {
+        return out;
+    }
+    return depthsFrom(lines, scans, k + 1, depthAfter(lines[k], scans[k].raws, depth), concat(out, [depth]));
+}
+
+// every line scanned again (an undo, a redo)
+function rescannedAll(d: Doc): Doc {
+    const [scans, depths] = scanned(d.lines, d.lang, 0, false, 0, [], []);
+    return { ...d, scans: scans, depths: depths };
+}
+
+// the selection removed (nothing when there is none)
+function cut(d: Doc, kind: i64): Doc {
+    const [a, b] = selection(d);
+    return hasSelection(d) ? replace(d, a, b, "", kind) : d;
+}
+
+// the text `s` typed: the selection replaced by it
+export function typed(d: Doc, s: string): Doc {
+    const [a, b] = selection(d);
+    return replace(d, a, b, s, s == " " || s == "\t" ? 0 : 1);
+}
+
+// the pairs closed by themselves (VS Code: autoClosingBrackets and quotes)
+const OPENS: string = "([{\"'`";
+const CLOSES: string = ")]}\"'`";
+
+// a character typed as VS Code does: over the closing bracket or quote it
+// would insert (it moves past it), a bracket or a quote opened with its
+// closing one after it when the next character is a space, the end of
+// the line or a closing one
+function typedChar(d: Doc, c: i64): Doc {
+    const ch = stringOf(utf8(c));
+    const line = d.lines[d.cursor.line];
+    const next = d.cursor.col < line.length ? line.slice(d.cursor.col, d.cursor.col + 1) : "";
+    if (!hasSelection(d) && next == ch && CLOSES.indexOf(ch) >= 0) {
+        const p = pos(d.cursor.line, d.cursor.col + 1);
+        return { ...d, cursor: p, anchor: p, goal: -1, last: 1 };
+    }
+    const k = OPENS.indexOf(ch);
+    const prev = d.cursor.col > 0 ? line.slice(d.cursor.col - 1, d.cursor.col) : "";
+    // (a quote after a letter is an apostrophe: not closed)
+    const word = prev != "" && classOf(bytes(prev)[0]) == 1;
+    const quote = k >= 3;
+    const closes = k >= 0 && !hasSelection(d) && (next == "" || next == " " || CLOSES.indexOf(next) >= 0) && !(quote && word);
+    if (closes) {
+        const d1 = replace(d, d.cursor, d.cursor, ch + CLOSES.slice(k, k + 1), 1);
+        const p = pos(d1.cursor.line, d1.cursor.col - 1);
+        return { ...d1, cursor: p, anchor: p };
+    }
+    return typed(d, ch);
+}
+
+// Enter: a new line with the indentation of the cursor's; one more after
+// an opening bracket, its closing bracket on a line of its own after it
+function newline(d: Doc): Doc {
+    const [a, b] = selection(d);
+    const line = d.lines[a.line];
+    const lead = leadOf(line).slice(0, min(leadOf(line).length, a.col));
+    const prev = a.col > 0 ? line.slice(a.col - 1, a.col) : "";
+    const nextLine = d.lines[b.line];
+    const next = b.col < nextLine.length ? nextLine.slice(b.col, b.col + 1) : "";
+    const opens = prev == "{" || prev == "[" || prev == "(";
+    const step = join(map(iota(d.indent), (k) => " "), "");
+    if (opens && (next == "}" || next == "]" || next == ")")) {
+        const d1 = replace(d, a, b, "\n" + lead + step + "\n" + lead, 0);
+        const p = pos(a.line + 1, lead.length + step.length);
+        return { ...d1, cursor: p, anchor: p };
+    }
+    return replace(d, a, b, "\n" + lead + (opens ? step : ""), 0);
+}
+
+// Tab: spaces to the next stop of the indentation; the lines of a selection
+// over several lines indented
+function tabbed(d: Doc, outdent: boolean): Doc {
+    const [a, b] = selection(d);
+    if (!outdent && a.line == b.line) {
+        const c = columnOf(d.lines[a.line], a.col);
+        const n = d.indent - c % d.indent;
+        return typed(d, join(map(iota(n), (k) => " "), ""));
+    }
+    // (the lines of the selection, the last one unless the selection ends
+    // at its start)
+    const last = b.line > a.line && b.col == 0 ? b.line - 1 : b.line;
+    const step = join(map(iota(d.indent), (k) => " "), "");
+    const lines = map(iota(d.lines.length), (k) => {
+        if (k < a.line || k > last) {
+            return d.lines[k];
+        }
+        const l = d.lines[k];
+        if (!outdent) {
+            return l == "" ? l : step + l;
+        }
+        const lead = leadOf(l);
+        const drop = min(lead.length, l.startsWith("\t") ? 1 : d.indent);
+        return l.slice(drop, l.length);
+    });
+    const shift = (p: Pos) => {
+        if (p.line < a.line || p.line > last) {
+            return p;
+        }
+        const delta = lines[p.line].length - d.lines[p.line].length;
+        return pos(p.line, max(0, p.col + delta));
+    };
+    const snap = { lines: d.lines, cursor: d.cursor, anchor: d.anchor };
+    const d1 = { ...d, lines: lines, cursor: shift(d.cursor), anchor: shift(d.anchor), undo: concat(d.undo, [snap]), redo: [], last: 0, version: d.version + 1, goal: -1 };
+    return rescanned(d1, d.scans, a.line, last + 1, 0);
+}
+
+// Backspace: the selection removed, else the character before the cursor
+// (in the indentation, back to its previous stop; between a pair closed by
+// itself, both), else the line joined to the one before
+function backspaced(d: Doc): Doc {
+    if (hasSelection(d)) {
+        return cut(d, 2);
+    }
+    const p = d.cursor;
+    if (p.col == 0) {
+        return p.line == 0 ? d : replace(d, pos(p.line - 1, d.lines[p.line - 1].length), p, "", 2);
+    }
+    const line = d.lines[p.line];
+    const b = bytes(line);
+    const lead = leadOf(line);
+    if (p.col <= lead.length && b[p.col - 1] == 32u8) {
+        const c = columnOf(line, p.col);
+        const stop = (c - 1) / d.indent * d.indent;
+        const from = offsetOf(line, stop);
+        return replace(d, pos(p.line, from), p, "", 2);
+    }
+    const prev = line.slice(prevChar(b, p.col), p.col);
+    const next = p.col < b.length ? line.slice(p.col, nextChar(b, p.col)) : "";
+    const k = OPENS.indexOf(prev);
+    const pair = k >= 0 && prev.length == 1 && next == CLOSES.slice(k, k + 1);
+    return replace(d, pos(p.line, prevChar(b, p.col)), pos(p.line, pair ? p.col + 1 : p.col), "", 2);
+}
+
+// Delete: the selection removed, else the character after the cursor, else
+// the next line joined
+function deleted(d: Doc): Doc {
+    if (hasSelection(d)) {
+        return cut(d, 2);
+    }
+    const p = d.cursor;
+    const line = d.lines[p.line];
+    if (p.col >= line.length) {
+        return p.line + 1 >= d.lines.length ? d : replace(d, p, pos(p.line + 1, 0), "", 2);
+    }
+    return replace(d, p, pos(p.line, nextChar(bytes(line), p.col)), "", 2);
+}
+
+// ----- moves -------------------------------------------------------------------
+
+// the cursor moved to `p`, the selection kept from the anchor when `extend`
+// (the column it goes up and down by kept when `keepGoal`)
+function moved(d: Doc, p: Pos, extend: boolean, keepGoal: boolean): Doc {
+    return { ...d, cursor: p, anchor: extend ? d.anchor : p, goal: keepGoal ? d.goal : -1, last: 0 };
+}
+
+// the cursor `lines` lines up (negative) or down, at the column it keeps
+function vertical(d: Doc, lines: i64, extend: boolean): Doc {
+    const goal = d.goal >= 0 ? d.goal : columnOf(d.lines[d.cursor.line], d.cursor.col);
+    const target = d.cursor.line + lines;
+    if (target < 0) {
+        return { ...moved(d, pos(0, 0), extend, false), goal: goal };
+    }
+    if (target >= d.lines.length) {
+        const last = d.lines.length - 1;
+        return { ...moved(d, pos(last, d.lines[last].length), extend, false), goal: goal };
+    }
+    return { ...moved(d, pos(target, offsetOf(d.lines[target], goal)), extend, false), goal: goal };
+}
+
+// the lines a page holds
+function page(d: Doc): i64 {
+    return max(1, i64(d.height / LINE_HEIGHT) - 1);
+}
+
+// a key held with Ctrl, or one that edits or moves: the document after it,
+// and what it asks (a text copied, the clipboard read)
+export function keyed(d: Doc, k: i64, mods: i64): [Doc, Effect[]] {
+    const shift = (mods & WITH_SHIFT) != 0;
+    const ctrl = (mods & WITH_CTRL) != 0;
+    const p = d.cursor;
+    const line = d.lines[p.line];
+    const b = bytes(line);
+    const [a, z] = selection(d);
+    if (ctrl && k == 97) {
+        const last = d.lines.length - 1;
+        return [{ ...d, anchor: pos(0, 0), cursor: pos(last, d.lines[last].length), last: 0 }, []] as const;
+    }
+    if (ctrl && (k == 99 || k == 120)) {
+        // (no selection: the whole line, its end of line with it)
+        const text = hasSelection(d) ? textBetween(d, a, z) : line + "\n";
+        if (k == 99) {
+            return [d, [Copy(text)]] as const;
+        }
+        const d1 = hasSelection(d) ? cut(d, 0)
+            : (d.lines.length > 1 ? removedLine(d, p.line) : replace(d, pos(0, 0), pos(0, line.length), "", 0));
+        return [d1, [Copy(text)]] as const;
+    }
+    if (ctrl && k == 118) {
+        return [d, [AskPaste]] as const;
+    }
+    if (ctrl && k == 122 && !shift) {
+        return [undone(d), []] as const;
+    }
+    if (ctrl && (k == 121 || (k == 122 && shift))) {
+        return [redone(d), []] as const;
+    }
+    if (k == LEFT) {
+        if (!shift && hasSelection(d) && !ctrl) {
+            return [moved(d, a, false, false), []] as const;
+        }
+        const to = p.col > 0 ? pos(p.line, ctrl ? wordLeft(b, p.col) : prevChar(b, p.col)) : (p.line > 0 ? pos(p.line - 1, d.lines[p.line - 1].length) : p);
+        return [moved(d, to, shift, false), []] as const;
+    }
+    if (k == RIGHT) {
+        if (!shift && hasSelection(d) && !ctrl) {
+            return [moved(d, z, false, false), []] as const;
+        }
+        const to = p.col < b.length ? pos(p.line, ctrl ? wordRight(b, p.col) : nextChar(b, p.col)) : (p.line + 1 < d.lines.length ? pos(p.line + 1, 0) : p);
+        return [moved(d, to, shift, false), []] as const;
+    }
+    if (k == UP || k == DOWN) {
+        if (!shift && hasSelection(d)) {
+            const from = k == UP ? a : z;
+            return [vertical(moved(d, from, false, false), k == UP ? -1 : 1, false), []] as const;
+        }
+        return [vertical(d, k == UP ? -1 : 1, shift), []] as const;
+    }
+    if (k == PAGE_UP || k == PAGE_DOWN) {
+        return [vertical(d, k == PAGE_UP ? -page(d) : page(d), shift), []] as const;
+    }
+    if (k == HOME) {
+        if (ctrl) {
+            return [moved(d, pos(0, 0), shift, false), []] as const;
+        }
+        // (the first character that is not a space, then the start of the line)
+        const first = leadOf(line).length;
+        return [moved(d, pos(p.line, p.col == first ? 0 : first), shift, false), []] as const;
+    }
+    if (k == END) {
+        if (ctrl) {
+            const last = d.lines.length - 1;
+            return [moved(d, pos(last, d.lines[last].length), shift, false), []] as const;
+        }
+        return [moved(d, pos(p.line, b.length), shift, false), []] as const;
+    }
+    if (k == BACKSPACE) {
+        if (ctrl && !hasSelection(d) && p.col > 0) {
+            return [replace(d, pos(p.line, wordLeft(b, p.col)), p, "", 0), []] as const;
+        }
+        return [backspaced(d), []] as const;
+    }
+    if (k == DELETE) {
+        if (ctrl && !hasSelection(d) && p.col < b.length) {
+            return [replace(d, p, pos(p.line, wordRight(b, p.col)), "", 0), []] as const;
+        }
+        return [deleted(d), []] as const;
+    }
+    if (k == ENTER) {
+        if (ctrl) {
+            // (a line inserted below, the cursor on it)
+            const end = pos(p.line, line.length);
+            return [newline(moved(d, end, false, false)), []] as const;
+        }
+        return [newline(d), []] as const;
+    }
+    if (k == TAB) {
+        return [tabbed(d, shift), []] as const;
+    }
+    if (k == ESCAPE) {
+        return [moved(d, p, false, false), []] as const;
+    }
+    return [d, []] as const;
+}
+
+
+// the line `k` removed (Ctrl+X without a selection), the cursor at the
+// start of the line after it
+function removedLine(d: Doc, k: i64): Doc {
+    const last = k + 1 >= d.lines.length;
+    const d1 = last ? replace(d, pos(k - 1, d.lines[k - 1].length), pos(k, d.lines[k].length), "", 0) : replace(d, pos(k, 0), pos(k + 1, 0), "", 0);
+    return d1;
+}
+
+// the change undone: the lines and the cursor before it
+function undone(d: Doc): Doc {
+    if (d.undo.length == 0) {
+        return d;
+    }
+    const s = d.undo[d.undo.length - 1];
+    const now = { lines: d.lines, cursor: d.cursor, anchor: d.anchor };
+    const d1 = { ...d, lines: s.lines, cursor: s.cursor, anchor: s.anchor, undo: map(iota(d.undo.length - 1), (k) => d.undo[k]), redo: concat(d.redo, [now]), last: 0, version: d.version + 1, goal: -1 };
+    return rescannedAll(d1);
+}
+
+// the change redone
+function redone(d: Doc): Doc {
+    if (d.redo.length == 0) {
+        return d;
+    }
+    const s = d.redo[d.redo.length - 1];
+    const now = { lines: d.lines, cursor: d.cursor, anchor: d.anchor };
+    const d1 = { ...d, lines: s.lines, cursor: s.cursor, anchor: s.anchor, redo: map(iota(d.redo.length - 1), (k) => d.redo[k]), undo: concat(d.undo, [now]), last: 0, version: d.version + 1, goal: -1 };
+    return rescannedAll(d1);
+}
+
+// the text of the clipboard pasted over the selection
+export function pasted(d: Doc, s: string): Doc {
+    const [a, b] = selection(d);
+    return replace(d, a, b, s, 0);
+}
+
+// a character typed (a code point, a space or above)
+export function typedCode(d: Doc, c: i64): Doc {
+    return typedChar(d, c);
+}
+
+// ----- the pointer ----------------------------------------------------------------
+
+// the position at the line `line` and the column on the screen `column`
+export function positionAt(d: Doc, line: i64, column: i64): Pos {
+    if (line < 0) {
+        return pos(0, 0);
+    }
+    if (line >= d.lines.length) {
+        const last = d.lines.length - 1;
+        return pos(last, d.lines[last].length);
+    }
+    return pos(line, offsetOf(d.lines[line], max(0, column)));
+}
+
+// a click at the line `line` and the column `column`, `clicks` its count:
+// the cursor there (Shift: the selection to it), a word taken by a double
+// click, the line by a triple one
+export function clickedAt(d: Doc, line: i64, column: i64, clicks: i64, shift: boolean): Doc {
+    const p = positionAt(d, line, column);
+    if (clicks >= 3) {
+        const end = p.line + 1 < d.lines.length ? pos(p.line + 1, 0) : pos(p.line, d.lines[p.line].length);
+        return { ...d, anchor: pos(p.line, 0), cursor: end, unit: 2, from: pos(p.line, 0), to: end, goal: -1, last: 0 };
+    }
+    if (clicks == 2) {
+        const [l, r] = wordAround(d.lines[p.line], p.col);
+        return { ...d, anchor: pos(p.line, l), cursor: pos(p.line, r), unit: 1, from: pos(p.line, l), to: pos(p.line, r), goal: -1, last: 0 };
+    }
+    return { ...moved(d, p, shift, false), unit: 0, from: p, to: p };
+}
+
+// a drag to the line `line` and the column `column` after a click: the
+// selection from where it was to there (by words after a double click, by
+// lines after a triple one)
+export function draggedTo(d: Doc, line: i64, column: i64): Doc {
+    const p = positionAt(d, line, column);
+    if (d.unit == 2) {
+        const end = p.line + 1 < d.lines.length ? pos(p.line + 1, 0) : pos(p.line, d.lines[p.line].length);
+        return before(p, d.from) ? { ...d, anchor: d.to, cursor: pos(p.line, 0) } : { ...d, anchor: d.from, cursor: end };
+    }
+    if (d.unit == 1) {
+        const [l, r] = wordAround(d.lines[p.line], p.col);
+        return before(p, d.from) ? { ...d, anchor: d.to, cursor: pos(p.line, l) } : { ...d, anchor: d.from, cursor: before(d.to, pos(p.line, r)) ? pos(p.line, r) : d.to };
+    }
+    return { ...d, cursor: p, goal: -1 };
+}
+
+// the offset of the box that scrolls the document and the height it shows
+export function viewed(d: Doc, top: f32, height: f32): Doc {
+    return { ...d, top: top, height: height };
+}
+
+// the band of the line of the cursor in the content of its box: its top and
+// its height (`Reveal` shows it)
+export function cursorBand(d: Doc): [f32, f32] {
+    return [f32(d.cursor.line) * LINE_HEIGHT, LINE_HEIGHT] as const;
+}
+
+// the offset the box should scroll to so that the cursor is in sight (its
+// offset when it is)
+export function topFor(d: Doc): f32 {
+    const y = f32(d.cursor.line) * LINE_HEIGHT;
+    if (y < d.top) {
+        return y;
+    }
+    if (y + LINE_HEIGHT > d.top + d.height) {
+        return y + LINE_HEIGHT - d.height;
+    }
+    return d.top;
+}
+
+// ----- the outline ---------------------------------------------------------
+
+// a symbol around the cursor: its name, whether it is an array (`[ ]`; else
+// an object `{ }`)
+export type Symbol = { name: string, array: boolean };
+
+// the columns of the indentation of a line
+function leadColumnsOf(text: string): i64 {
+    const b = bytes(text);
+    const k = findIndex(iota(b.length), (j) => b[j] != 32u8 && b[j] != 9u8);
+    return columnOf(text, k < 0 ? b.length : k);
+}
+
+// the symbols around the line of the cursor in a JSON (its outline, as the
+// breadcrumbs of Visual Studio Code show them): each block that holds it,
+// by indentation, the outermost first: a member (its name) or an element of
+// an array (its index); the root left out; none in another language
+export function symbolsAt(d: Doc): Symbol[] {
+    if (d.lang.name != "JSON") {
+        return [];
+    }
+    const c = d.cursor.line;
+    return symbolsFrom(d.lines, c - 1, leadColumnsOf(d.lines[c]), []);
+}
+
+function symbolsFrom(lines: string[n], k: i64, level: i64, out: Symbol[]): Symbol[] {
+    if (k < 0 || level == 0) {
+        return out;
+    }
+    const g = leadColumnsOf(lines[k]);
+    if (g >= level) {
+        return symbolsFrom(lines, k - 1, level, out);
+    }
+    const text = lines[k].trim();
+    const b = bytes(text);
+    // (a member: `"name": {` or `"name": [`)
+    const close = b.length > 1 && b[0] == 34u8 ? findIndex(iota(b.length - 1), (i) => b[i + 1] == 34u8) + 1 : -1;
+    const rest = close > 0 ? text.slice(close + 1, text.length).trim() : "";
+    const member = close > 0 && rest.startsWith(":") && (rest.endsWith("{") || rest.endsWith("["));
+    const element = !member && g > 0 && (text.startsWith("{") || text.startsWith("["));
+    const found: Symbol[] = member ? [{ name: text.slice(1, close), array: rest.endsWith("[") }]
+        : (element ? [{ name: `${elementIndex(lines, k - 1, g, 0)}`, array: text.startsWith("[") }] : []);
+    return symbolsFrom(lines, k - 1, g, concat(found, out));
+}
+
+// the index of the element at the indentation `g` that the line after `k`
+// opens: the elements before it in its array
+function elementIndex(lines: string[n], k: i64, g: i64, count: i64): i64 {
+    if (k < 0 || leadColumnsOf(lines[k]) < g) {
+        return count;
+    }
+    const t = lines[k].trim();
+    const opens = leadColumnsOf(lines[k]) == g && t != "" && !t.startsWith("]") && !t.startsWith("}");
+    return elementIndex(lines, k - 1, g, opens ? count + 1 : count);
+}

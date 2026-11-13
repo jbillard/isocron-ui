@@ -1,0 +1,1416 @@
+// Made by tools/uigen from examples/editor/editor.ui.xml and examples/editor/../scripted/editor.style: not to be edited
+import { rgb, rgba } from "../../src/paint";
+import { Element, Div, Label, Px, Fill, Auto, Row, Column, Packed, Between, style, textStyle, Style, TextStyle, ARROW, POINTER, TEXT } from "../../src/ui";
+import { Start, Center, End } from "../../src/text";
+import { editing } from "../../src/edit";
+import { button, iconButton, textField, checkbox, toggleAt, progress, restyled, retexted } from "../../src/widgets";
+import { Editor, Node, Tab, visibleNodes, when, viewTitle, shown, commandWidth, winGlyph, captionFace, captionSize, chevron, rel, crumbs, codeArea, tabDirty, found, matches, baseName, statusItems, langName, divided, FILES, NOTHING, MENU_MORE, COMMAND, CHAT, COPILOT, SIGN_IN, LAYOUT, TOGGLE_SIDEBAR, TOGGLE_PANEL, ASIDE, MINIMIZE, MAXIMIZE, CLOSE_WINDOW, ACCOUNTS, MANAGE, SIDE_MORE, ROOT_SECTION, SASH_V, SASH_H, SPLIT, TAB_MORE, QUERY, SEARCH, REMOTE, PROBLEMS, BELL, STATUS_COPILOT, LANGUAGE, MENU, ACTIVITY, SECTION, STATUS, TAB, CLOSE_TAB, MATCH, NODE, FOUND, LINE, MENUS, SECTIONS, ACTIVITY_ICONS, ACTIVITY_TIPS, I_MORE, I_BACK, I_FORWARD, I_CHAT, I_DOWN, I_RIGHT, I_COPILOT, I_LAYOUT, I_SIDEBAR_ON, I_SIDEBAR_OFF, I_PANEL_ON, I_PANEL_OFF, I_ASIDE_OFF, I_ACCOUNT, I_GEAR, I_CLOSE, I_DIRTY, I_SPLIT, I_ERROR, I_WARNING, I_BELL, I_REMOTE, I_BRACES, ICONS, SETI, MONO } from "./editor";
+import { fileIcon, fileIconColor } from "./icons";
+
+function cls_window(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Fill(1.0f32), background: rgb(0x191A1Bu32), cursor: ARROW };
+}
+
+function text_window(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_titlebar(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(35.0f32), direction: Row, align: Center, stretch: false };
+}
+
+function text_titlebar(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_titleLeft(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(35.0f32), direction: Row, align: Center, stretch: false, clip: true };
+}
+
+function text_titleLeft(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_appIcon(s: Style): Style {
+    return { ...s, width: Px(35.0f32), height: Px(35.0f32), justify: Packed(Center), align: Center, stretch: false };
+}
+
+function text_appIcon(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_mark(s: Style): Style {
+    return { ...s, width: Px(16.0f32), height: Px(16.0f32), radius: 3.0f32, background: rgb(0x297AA0u32), justify: Packed(Center), align: Center, stretch: false };
+}
+
+function text_mark(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_markText(s: Style): Style {
+    return s;
+}
+
+function text_markText(s: TextStyle): TextStyle {
+    return { ...s, em: 11.0f32, color: rgb(0xFFFFFFu32) };
+}
+
+function cls_menubar(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(35.0f32), direction: Row, align: Center, stretch: false, folds: true };
+}
+
+function text_menubar(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_menu(s: Style): Style {
+    return { ...s, height: Px(22.0f32), padX: 8.0f32, radius: 5.0f32, justify: Packed(Center), align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_menu(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_menu__hover(s: Style): Style {
+    return { ...s, background: rgb(0x242526u32) };
+}
+
+function text_menu__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_menuText(s: Style): Style {
+    return s;
+}
+
+function text_menuText(s: TextStyle): TextStyle {
+    return { ...s, em: 13.0f32, color: rgb(0x8C8C8Cu32) };
+}
+
+function cls_menuIcon(s: Style): Style {
+    return s;
+}
+
+function text_menuIcon(s: TextStyle): TextStyle {
+    return { ...s, em: 16.0f32, color: rgb(0x8C8C8Cu32) };
+}
+
+function cls_titleCenter(s: Style): Style {
+    return { ...s, height: Px(35.0f32), padX: 10.0f32, gap: 4.0f32, direction: Row, align: Center, stretch: false };
+}
+
+function text_titleCenter(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_nav(s: Style): Style {
+    return { ...s, width: Px(22.0f32), height: Px(22.0f32), radius: 4.0f32, justify: Packed(Center), align: Center, stretch: false };
+}
+
+function text_nav(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_navIcon(s: Style): Style {
+    return s;
+}
+
+function text_navIcon(s: TextStyle): TextStyle {
+    return { ...s, em: 16.0f32, color: rgb(0x555555u32) };
+}
+
+function cls_command(s: Style): Style {
+    return { ...s, height: Px(24.0f32), radius: 6.0f32, background: rgb(0x191A1Bu32), border: 1.0f32, borderColor: rgb(0x2E3031u32), padX: 9.0f32, direction: Row, align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_command(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_command__hover(s: Style): Style {
+    return { ...s, background: rgba(1.0f32, 1.0f32, 1.0f32, 0.06f32), borderColor: rgb(0x333536u32) };
+}
+
+function text_command__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_commandText(s: Style): Style {
+    return s;
+}
+
+function text_commandText(s: TextStyle): TextStyle {
+    return { ...s, em: 12.0f32, color: rgb(0xBFBFBFu32) };
+}
+
+function cls_chat(s: Style): Style {
+    return { ...s, height: Px(22.0f32), direction: Row, align: Center, stretch: false };
+}
+
+function text_chat(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_chatIcon(s: Style): Style {
+    return s;
+}
+
+function text_chatIcon(s: TextStyle): TextStyle {
+    return { ...s, em: 16.0f32, color: rgb(0xBFBFBFu32) };
+}
+
+function cls_chatMore(s: Style): Style {
+    return s;
+}
+
+function text_chatMore(s: TextStyle): TextStyle {
+    return { ...s, em: 12.0f32, color: rgb(0xBFBFBFu32) };
+}
+
+function cls_titleRight(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(35.0f32), minWidth: 330.0f32, direction: Row, align: Center, stretch: false };
+}
+
+function text_titleRight(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_account(s: Style): Style {
+    return { ...s, height: Px(35.0f32), gap: 5.0f32, direction: Row, align: Center, stretch: false };
+}
+
+function text_account(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_signIn(s: Style): Style {
+    return { ...s, height: Px(22.0f32), padX: 8.0f32, radius: 4.0f32, background: rgb(0x297AA0u32), justify: Packed(Center), align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_signIn(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_signIn__hover(s: Style): Style {
+    return { ...s, background: rgb(0x2B7DA3u32) };
+}
+
+function text_signIn__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_signInText(s: Style): Style {
+    return s;
+}
+
+function text_signInText(s: TextStyle): TextStyle {
+    return { ...s, em: 12.0f32, color: rgb(0xFFFFFFu32) };
+}
+
+function cls_layoutTools(s: Style): Style {
+    return { ...s, height: Px(35.0f32), padX: 4.0f32, gap: 4.0f32, direction: Row, align: Center, stretch: false };
+}
+
+function text_layoutTools(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_tool(s: Style): Style {
+    return { ...s, width: Px(22.0f32), height: Px(22.0f32), radius: 4.0f32, justify: Packed(Center), align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_tool(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_tool__hover(s: Style): Style {
+    return { ...s, background: rgba(0.35294117647058826f32, 0.36470588235294116f32, 0.3686274509803922f32, 0.31f32) };
+}
+
+function text_tool__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_toolIcon(s: Style): Style {
+    return s;
+}
+
+function text_toolIcon(s: TextStyle): TextStyle {
+    return { ...s, em: 16.0f32, color: rgb(0x8C8C8Cu32) };
+}
+
+function cls_winButton(s: Style): Style {
+    return { ...s, width: Px(46.0f32), height: Px(35.0f32), justify: Packed(Center), align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_winButton(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_winButton__hover(s: Style): Style {
+    return { ...s, background: rgba(1.0f32, 1.0f32, 1.0f32, 0.1f32) };
+}
+
+function text_winButton__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_winClose(s: Style): Style {
+    return { ...s, width: Px(46.0f32), height: Px(35.0f32), justify: Packed(Center), align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_winClose(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_winClose__hover(s: Style): Style {
+    return { ...s, background: rgba(0.9098039215686274f32, 0.06666666666666667f32, 0.13725490196078433f32, 0.9f32) };
+}
+
+function text_winClose__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_winIcon(s: Style): Style {
+    return s;
+}
+
+function text_winIcon(s: TextStyle): TextStyle {
+    return { ...s, color: rgb(0x8C8C8Cu32) };
+}
+
+function cls_body(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Fill(1.0f32), padX: 4.0f32, direction: Row, stretch: true };
+}
+
+function text_body(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_belowCards(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(4.0f32) };
+}
+
+function text_belowCards(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_activity(s: Style): Style {
+    return { ...s, width: Px(44.0f32), height: Fill(1.0f32), padY: 3.0f32, gap: 8.0f32, background: rgb(0x191A1Bu32), border: 1.0f32, borderColor: rgb(0x252526u32), radiusTopLeft: 8.0f32, radiusBottomLeft: 8.0f32, radiusTopRight: 0.0f32, radiusBottomRight: 0.0f32, align: Center, stretch: false };
+}
+
+function text_activity(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_act(s: Style): Style {
+    return { ...s, width: Px(36.0f32), height: Px(36.0f32), justify: Packed(Center), align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_act(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_actOn(s: Style): Style {
+    return { ...s, width: Px(32.0f32), height: Px(32.0f32), radius: 4.0f32, background: rgb(0x313233u32), justify: Packed(Center), align: Center, stretch: false };
+}
+
+function text_actOn(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_actOff(s: Style): Style {
+    return { ...s, width: Px(32.0f32), height: Px(32.0f32), radius: 4.0f32, justify: Packed(Center), align: Center, stretch: false };
+}
+
+function text_actOff(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_actOff__hover(s: Style): Style {
+    return { ...s, background: rgba(1.0f32, 1.0f32, 1.0f32, 0.067f32) };
+}
+
+function text_actOff__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_actIcon(s: Style): Style {
+    return s;
+}
+
+function text_actIcon(s: TextStyle): TextStyle {
+    return { ...s, em: 24.0f32 };
+}
+
+function cls_sidebar(s: Style): Style {
+    return { ...s, height: Fill(1.0f32), background: rgb(0x191A1Bu32), border: 1.0f32, borderLeft: 0.0f32, borderColor: rgb(0x2A2B2Cu32), radiusTopRight: 8.0f32, radiusBottomRight: 8.0f32, radiusTopLeft: 0.0f32, radiusBottomLeft: 0.0f32, padY: 0.0f32 };
+}
+
+function text_sidebar(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sideBody(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Fill(1.0f32) };
+}
+
+function text_sideBody(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sideHeader(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(32.0f32), padX: 4.0f32, direction: Row, align: Center, stretch: false };
+}
+
+function text_sideHeader(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sideTitleBox(s: Style): Style {
+    return { ...s, padX: 8.0f32 };
+}
+
+function text_sideTitleBox(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sideTitle(s: Style): Style {
+    return s;
+}
+
+function text_sideTitle(s: TextStyle): TextStyle {
+    return { ...s, em: 12.0f32, face: 6, color: rgb(0xBFBFBFu32) };
+}
+
+function cls_sectionRow(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(28.0f32), padX: 4.0f32, stretch: true };
+}
+
+function text_sectionRow(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sectionLine(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(28.0f32), padX: 4.0f32 };
+}
+
+function text_sectionLine(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_section(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(28.0f32), radius: 4.0f32, direction: Row, align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_section(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_section__hover(s: Style): Style {
+    return { ...s, background: rgba(1.0f32, 1.0f32, 1.0f32, 0.078f32) };
+}
+
+function text_section__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sectionRule(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(1.0f32), background: rgb(0x2A2B2Cu32) };
+}
+
+function text_sectionRule(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sectionText(s: Style): Style {
+    return s;
+}
+
+function text_sectionText(s: TextStyle): TextStyle {
+    return { ...s, em: 12.0f32, face: 6, color: rgb(0xBFBFBFu32) };
+}
+
+function cls_twistieBox(s: Style): Style {
+    return { ...s, width: Px(16.0f32), height: Px(16.0f32), justify: Packed(Center), align: Center, stretch: false };
+}
+
+function text_twistieBox(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_twistie(s: Style): Style {
+    return s;
+}
+
+function text_twistie(s: TextStyle): TextStyle {
+    return { ...s, em: 16.0f32, color: rgb(0xBFBFBFu32) };
+}
+
+function cls_searchRow(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), padX: 12.0f32, padY: 6.0f32 };
+}
+
+function text_searchRow(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_treeBox(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Fill(1.0f32), padX: 4.0f32, barWidth: 8.0f32, barColor: rgba(0.6588235294117647f32, 0.6627450980392157f32, 0.6666666666666666f32, 0.52f32), barHoverColor: rgba(0.6588235294117647f32, 0.6627450980392157f32, 0.6666666666666666f32, 0.565f32), barRadius: 4.0f32, barInset: 0.0f32 };
+}
+
+function text_treeBox(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_node(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(22.0f32), radius: 4.0f32, direction: Row, align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_node(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_node__hover(s: Style): Style {
+    return { ...s, background: rgba(1.0f32, 1.0f32, 1.0f32, 0.078f32) };
+}
+
+function text_node__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_nodeText(s: Style): Style {
+    return s;
+}
+
+function text_nodeText(s: TextStyle): TextStyle {
+    return { ...s, em: 13.0f32 };
+}
+
+function cls_placeholder(s: Style): Style {
+    return s;
+}
+
+function text_placeholder(s: TextStyle): TextStyle {
+    return { ...s, em: 13.0f32, color: rgb(0x8C8C8Cu32) };
+}
+
+function cls_fileIcon(s: Style): Style {
+    return { ...s, width: Px(16.0f32), height: Px(22.0f32), justify: Packed(Center), align: Center, stretch: false };
+}
+
+function text_fileIcon(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sashV(s: Style): Style {
+    return { ...s, width: Px(4.0f32), height: Fill(1.0f32), justify: Packed(Center), align: Center, gap: 3.0f32, stretch: false, radius: 2.0f32, cursor: ARROW };
+}
+
+function text_sashV(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sashV__hover(s: Style): Style {
+    return { ...s, background: rgba(0.2235294117647059f32, 0.5803921568627451f32, 0.7372549019607844f32, 0.7f32) };
+}
+
+function text_sashV__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sashV__active(s: Style): Style {
+    return { ...s, background: rgba(0.2235294117647059f32, 0.5803921568627451f32, 0.7372549019607844f32, 0.7f32) };
+}
+
+function text_sashV__active(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_grip(s: Style): Style {
+    return { ...s, width: Px(2.0f32), height: Px(2.0f32), radius: 1.0f32, background: rgba(0.7490196078431373f32, 0.7490196078431373f32, 0.7490196078431373f32, 0.4f32) };
+}
+
+function text_grip(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sashH(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(4.0f32), radius: 2.0f32, cursor: ARROW };
+}
+
+function text_sashH(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sashH__hover(s: Style): Style {
+    return { ...s, background: rgba(0.2235294117647059f32, 0.5803921568627451f32, 0.7372549019607844f32, 0.7f32) };
+}
+
+function text_sashH__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sashH__active(s: Style): Style {
+    return { ...s, background: rgba(0.2235294117647059f32, 0.5803921568627451f32, 0.7372549019607844f32, 0.7f32) };
+}
+
+function text_sashH__active(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_center(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Fill(1.0f32) };
+}
+
+function text_center(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_editorCard(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Fill(1.0f32), background: rgb(0x121314u32), border: 1.0f32, borderColor: rgb(0x2A2B2Cu32), radius: 8.0f32, clip: true };
+}
+
+function text_editorCard(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_tabs(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(32.0f32), background: rgb(0x202122u32), borderBottom: 1.0f32, borderColor: rgb(0x2A2B2Cu32), direction: Row, align: Start, stretch: false };
+}
+
+function text_tabs(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_tab(s: Style): Style {
+    return { ...s, height: Px(31.0f32), direction: Row, align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_tab(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_tab__hover(s: Style): Style {
+    return { ...s, background: rgb(0x2A2A2Bu32) };
+}
+
+function text_tab__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_tabOn(s: Style): Style {
+    return { ...s, height: Px(32.0f32), stretch: false, cursor: ARROW };
+}
+
+function text_tabOn(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_tabShape(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(32.0f32), floating: true, under: true, spreadX: 7.0f32 };
+}
+
+function text_tabShape(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_capRow(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(25.0f32), direction: Row, stretch: true };
+}
+
+function text_capRow(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_capSide(s: Style): Style {
+    return { ...s, width: Px(7.0f32), height: Px(25.0f32) };
+}
+
+function text_capSide(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_cap(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(25.0f32), background: rgb(0x121314u32), borderLeft: 1.0f32, borderRight: 1.0f32, borderColor: rgb(0x2A2B2Cu32), radiusTopLeft: 7.0f32, radiusTopRight: 7.0f32 };
+}
+
+function text_cap(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_baseRow(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(7.0f32), direction: Row, stretch: true };
+}
+
+function text_baseRow(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_base(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(7.0f32), background: rgb(0x121314u32) };
+}
+
+function text_base(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_shoulder(s: Style): Style {
+    return { ...s, width: Px(8.0f32), height: Px(7.0f32), background: rgb(0x121314u32) };
+}
+
+function text_shoulder(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_shoulderLeft(s: Style): Style {
+    return { ...s, width: Px(8.0f32), height: Px(7.0f32), background: rgb(0x202122u32), borderRight: 1.0f32, borderBottom: 1.0f32, borderColor: rgb(0x2A2B2Cu32), radiusBottomRight: 7.0f32 };
+}
+
+function text_shoulderLeft(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_shoulderRight(s: Style): Style {
+    return { ...s, width: Px(8.0f32), height: Px(7.0f32), background: rgb(0x202122u32), borderLeft: 1.0f32, borderBottom: 1.0f32, borderColor: rgb(0x2A2B2Cu32), radiusBottomLeft: 7.0f32 };
+}
+
+function text_shoulderRight(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_tabBody(s: Style): Style {
+    return { ...s, height: Px(31.0f32), direction: Row, align: Center, stretch: false };
+}
+
+function text_tabBody(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_tabPad(s: Style): Style {
+    return { ...s, width: Px(6.0f32), height: Px(1.0f32) };
+}
+
+function text_tabPad(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_tabGap(s: Style): Style {
+    return { ...s, width: Px(6.0f32), height: Px(1.0f32) };
+}
+
+function text_tabGap(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_tabEnd(s: Style): Style {
+    return { ...s, width: Px(30.5f32), height: Px(31.0f32), direction: Row, align: Center, stretch: false };
+}
+
+function text_tabEnd(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_tabDivider(s: Style): Style {
+    return { ...s, width: Px(1.0f32), height: Px(16.0f32), background: rgb(0x2A2B2Cu32) };
+}
+
+function text_tabDivider(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_close(s: Style): Style {
+    return { ...s, width: Px(20.0f32), height: Px(20.0f32), radius: 4.0f32, justify: Packed(Center), align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_close(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_close__hover(s: Style): Style {
+    return { ...s, background: rgba(0.35294117647058826f32, 0.36470588235294116f32, 0.3686274509803922f32, 0.31f32) };
+}
+
+function text_close__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_closeIcon(s: Style): Style {
+    return s;
+}
+
+function text_closeIcon(s: TextStyle): TextStyle {
+    return { ...s, em: 16.0f32, color: rgb(0xBFBFBFu32) };
+}
+
+function cls_tabTools(s: Style): Style {
+    return { ...s, height: Px(31.0f32), padX: 4.0f32, gap: 4.0f32, direction: Row, align: Center, stretch: false };
+}
+
+function text_tabTools(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_crumbs(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(22.0f32), padX: 18.0f32, direction: Row, align: Center, stretch: false };
+}
+
+function text_crumbs(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_crumb(s: Style): Style {
+    return { ...s, gap: 4.0f32, direction: Row, align: Center, stretch: false };
+}
+
+function text_crumb(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_crumbText(s: Style): Style {
+    return s;
+}
+
+function text_crumbText(s: TextStyle): TextStyle {
+    return { ...s, em: 13.0f32, color: rgb(0x8C8C8Cu32) };
+}
+
+function cls_crumbIcon(s: Style): Style {
+    return s;
+}
+
+function text_crumbIcon(s: TextStyle): TextStyle {
+    return { ...s, em: 16.0f32, color: rgb(0xBFBFBFu32) };
+}
+
+function cls_crumbSep(s: Style): Style {
+    return s;
+}
+
+function text_crumbSep(s: TextStyle): TextStyle {
+    return { ...s, em: 16.0f32, color: rgb(0x8C8C8Cu32) };
+}
+
+function cls_code(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Fill(1.0f32), clip: true, barWidth: 13.0f32, barColor: rgba(0.6588235294117647f32, 0.6627450980392157f32, 0.6666666666666666f32, 0.52f32), barHoverColor: rgba(0.6588235294117647f32, 0.6627450980392157f32, 0.6666666666666666f32, 0.565f32), barRadius: 4.0f32, barInset: 0.0f32 };
+}
+
+function text_code(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_sticky(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), background: rgb(0x121314u32), borderBottom: 1.0f32, borderColor: rgb(0x2A2B2Cu32), shadowBlur: 3.0f32, shadowY: 2.0f32, shadowColor: rgba(0.09803921568627451f32, 0.10588235294117647f32, 0.11372549019607843f32, 0.3f32) };
+}
+
+function text_sticky(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_line(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(19.0f32), direction: Row, align: Center, stretch: false };
+}
+
+function text_line(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_gutter(s: Style): Style {
+    return { ...s, width: Px(42.4f32), height: Px(19.0f32), justify: Packed(End), align: Center, stretch: false };
+}
+
+function text_gutter(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_gutterGap(s: Style): Style {
+    return { ...s, width: Px(25.6f32), height: Px(1.0f32) };
+}
+
+function text_gutterGap(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_lineNo(s: Style): Style {
+    return s;
+}
+
+function text_lineNo(s: TextStyle): TextStyle {
+    return { ...s, em: 14.0f32, face: 1, align: End };
+}
+
+function cls_codeLine(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(19.0f32), direction: Row, align: Center, stretch: false };
+}
+
+function text_codeLine(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_guide(s: Style): Style {
+    return { ...s, borderLeft: 1.0f32, borderColor: rgba(0.5137254901960784f32, 0.5176470588235295f32, 0.5215686274509804f32, 0.3f32), height: Px(19.0f32), align: Center, stretch: false };
+}
+
+function text_guide(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_more(s: Style): Style {
+    return s;
+}
+
+function text_more(s: TextStyle): TextStyle {
+    return { ...s, em: 12.0f32, color: rgb(0x8C8C8Cu32) };
+}
+
+function cls_welcome(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), padding: 80.0f32, gap: 12.0f32, align: Center, stretch: false };
+}
+
+function text_welcome(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_welcomeTitle(s: Style): Style {
+    return s;
+}
+
+function text_welcomeTitle(s: TextStyle): TextStyle {
+    return { ...s, em: 26.0f32, face: 6, color: rgb(0x3C3C3Cu32) };
+}
+
+function cls_welcomeText(s: Style): Style {
+    return s;
+}
+
+function text_welcomeText(s: TextStyle): TextStyle {
+    return { ...s, em: 13.0f32, color: rgb(0x8C8C8Cu32) };
+}
+
+function cls_input(s: Style): Style {
+    return { ...s, height: Px(26.0f32), radius: 4.0f32, background: rgb(0x191A1Bu32), border: 1.0f32, borderColor: rgb(0x333536u32), outline: 0.0f32, padX: 6.0f32 };
+}
+
+function text_input(s: TextStyle): TextStyle {
+    return { ...s, color: rgb(0xBFBFBFu32), caret: rgb(0xBBBEBFu32) };
+}
+
+function cls_input__focus(s: Style): Style {
+    return { ...s, borderColor: rgba(0.2235294117647059f32, 0.5803921568627451f32, 0.7372549019607844f32, 0.7f32) };
+}
+
+function text_input__focus(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_paletteRow(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), justify: Packed(Center), padY: 0.0f32, stretch: false, floating: true };
+}
+
+function text_paletteRow(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_palette(s: Style): Style {
+    return { ...s, width: Px(600.0f32), padding: 6.0f32, gap: 4.0f32, radius: 8.0f32, background: rgb(0x202122u32), border: 1.0f32, borderColor: rgb(0x2A2B2Cu32), shadowBlur: 8.0f32, shadowY: 2.0f32, shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.36f32) };
+}
+
+function text_palette(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_qinput(s: Style): Style {
+    return { ...s, height: Px(26.0f32), radius: 4.0f32, background: rgb(0x191A1Bu32), border: 1.0f32, borderColor: rgb(0x333536u32), outline: 0.0f32, padX: 6.0f32 };
+}
+
+function text_qinput(s: TextStyle): TextStyle {
+    return { ...s, color: rgb(0xBFBFBFu32), caret: rgb(0xBBBEBFu32) };
+}
+
+function cls_qinput__focus(s: Style): Style {
+    return { ...s, borderColor: rgba(0.2235294117647059f32, 0.5803921568627451f32, 0.7372549019607844f32, 0.7f32) };
+}
+
+function text_qinput__focus(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_match(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(22.0f32), padX: 6.0f32, gap: 6.0f32, radius: 4.0f32, direction: Row, align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_match(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_match__hover(s: Style): Style {
+    return { ...s, background: rgba(1.0f32, 1.0f32, 1.0f32, 0.078f32) };
+}
+
+function text_match__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_matchText(s: Style): Style {
+    return s;
+}
+
+function text_matchText(s: TextStyle): TextStyle {
+    return { ...s, em: 13.0f32 };
+}
+
+function cls_matchPath(s: Style): Style {
+    return s;
+}
+
+function text_matchPath(s: TextStyle): TextStyle {
+    return { ...s, em: 12.0f32 };
+}
+
+function cls_panelWrap(s: Style): Style {
+    return { ...s, width: Fill(1.0f32) };
+}
+
+function text_panelWrap(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_panel(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), background: rgb(0x191A1Bu32), border: 1.0f32, borderColor: rgb(0x2A2B2Cu32), radius: 8.0f32, clip: true };
+}
+
+function text_panel(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_panelTabs(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(32.0f32), background: rgb(0x202122u32), borderBottom: 1.0f32, borderColor: rgb(0x2A2B2Cu32), direction: Row, align: Center, stretch: false };
+}
+
+function text_panelTabs(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_panelTab(s: Style): Style {
+    return { ...s, height: Px(31.0f32), padX: 16.0f32, justify: Packed(Center), align: Center, stretch: false };
+}
+
+function text_panelTab(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_panelTabText(s: Style): Style {
+    return s;
+}
+
+function text_panelTabText(s: TextStyle): TextStyle {
+    return { ...s, em: 13.0f32, color: rgb(0x8C8C8Cu32) };
+}
+
+function cls_panelTabOn(s: Style): Style {
+    return { ...s, height: Px(31.0f32), padX: 16.0f32, background: rgb(0x191A1Bu32), borderLeft: 1.0f32, borderRight: 1.0f32, borderColor: rgb(0x2A2B2Cu32), radiusTopLeft: 7.0f32, radiusTopRight: 7.0f32, justify: Packed(Center), align: Center, stretch: false };
+}
+
+function text_panelTabOn(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_panelTabOnText(s: Style): Style {
+    return s;
+}
+
+function text_panelTabOnText(s: TextStyle): TextStyle {
+    return { ...s, em: 13.0f32, color: rgb(0xEDEDEDu32) };
+}
+
+function cls_panelBody(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Fill(1.0f32), padX: 16.0f32 };
+}
+
+function text_panelBody(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_logText(s: Style): Style {
+    return s;
+}
+
+function text_logText(s: TextStyle): TextStyle {
+    return { ...s, em: 12.0f32, face: 1, color: rgb(0xBFBFBFu32) };
+}
+
+function cls_status(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(26.0f32), padX: 12.0f32, padY: 2.0f32, direction: Row, align: Center, stretch: false };
+}
+
+function text_status(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_statusFirst(s: Style): Style {
+    return { ...s, height: Px(22.0f32), padX: 6.0f32, gap: 3.0f32, radius: 4.0f32, direction: Row, align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_statusFirst(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_statusFirst__hover(s: Style): Style {
+    return { ...s, background: rgb(0x323233u32) };
+}
+
+function text_statusFirst__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_statusItem(s: Style): Style {
+    return { ...s, height: Px(22.0f32), padX: 5.0f32, gap: 3.0f32, radius: 4.0f32, direction: Row, align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_statusItem(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_statusItem__hover(s: Style): Style {
+    return { ...s, background: rgb(0x323233u32) };
+}
+
+function text_statusItem__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_statusGap(s: Style): Style {
+    return { ...s, width: Px(6.0f32), height: Px(1.0f32) };
+}
+
+function text_statusGap(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_statusText(s: Style): Style {
+    return s;
+}
+
+function text_statusText(s: TextStyle): TextStyle {
+    return { ...s, em: 12.0f32, color: rgb(0x8C8C8Cu32) };
+}
+
+function cls_statusIcon(s: Style): Style {
+    return s;
+}
+
+function text_statusIcon(s: TextStyle): TextStyle {
+    return { ...s, em: 14.0f32, color: rgb(0x8C8C8Cu32) };
+}
+
+export function view(m: Editor): Element {
+    return 
+        /* examples/editor/editor.ui.xml:10 */ Div({ ...cls_window({ ...style(), direction: Column }), background: (m.windowActive ? rgb(0x191A1Bu32) : rgb(0x121314u32)) }, concat(concat(concat([
+        /* examples/editor/editor.ui.xml:11 */ Div({ ...cls_titlebar({ ...style(), direction: Row }), moves: true }, concat(concat([
+        /* examples/editor/editor.ui.xml:12 */ Div({ ...cls_titleLeft({ ...style(), direction: Row }), opacity: (m.windowActive ? 1.0f32 : 0.6f32) }, concat([
+        /* examples/editor/editor.ui.xml:13 */ Div(cls_appIcon(style()), [
+        /* examples/editor/editor.ui.xml:13 */ Div(cls_mark(style()), [
+        /* examples/editor/editor.ui.xml:13 */ Label(text_markText(textStyle(14.0f32, rgb(0x111827u32))), `I`)])])], [
+        /* examples/editor/editor.ui.xml:14 */ Div(cls_menubar({ ...style(), direction: Row }), concat(map(iota((MENUS).length), (k) => {
+        const name = (MENUS)[k];
+        return 
+        /* examples/editor/editor.ui.xml:16 */ Div((m.pressed == ((MENU + k)) ? (m.hover == ((MENU + k)) ? { ...cls_menu__hover(cls_menu({ ...style(), direction: Row })), onClick: (MENU + k) } : { ...cls_menu({ ...style(), direction: Row }), onClick: (MENU + k) }) : (m.hover == ((MENU + k)) ? { ...cls_menu__hover(cls_menu({ ...style(), direction: Row })), onClick: (MENU + k) } : { ...cls_menu({ ...style(), direction: Row }), onClick: (MENU + k) })), [
+        /* examples/editor/editor.ui.xml:16 */ Label(text_menuText(textStyle(14.0f32, rgb(0x111827u32))), `${name}`)]);
+    }), [
+        /* examples/editor/editor.ui.xml:18 */ Div((m.pressed == ((MENU_MORE)) ? (m.hover == ((MENU_MORE)) ? { ...cls_menu__hover(cls_menu({ ...style(), direction: Row })), onClick: (MENU_MORE) } : { ...cls_menu({ ...style(), direction: Row }), onClick: (MENU_MORE) }) : (m.hover == ((MENU_MORE)) ? { ...cls_menu__hover(cls_menu({ ...style(), direction: Row })), onClick: (MENU_MORE) } : { ...cls_menu({ ...style(), direction: Row }), onClick: (MENU_MORE) })), [
+        /* examples/editor/editor.ui.xml:18 */ Label({ ...text_menuIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_MORE}`)])]))]))], [
+        /* examples/editor/editor.ui.xml:21 */ Div({ ...cls_titleCenter({ ...style(), direction: Row }), opacity: (m.windowActive ? 1.0f32 : 0.6f32) }, concat(concat([
+        /* examples/editor/editor.ui.xml:22 */ Div(cls_nav({ ...style(), direction: Row }), [
+        /* examples/editor/editor.ui.xml:22 */ Label({ ...text_navIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_BACK}`)])], [
+        /* examples/editor/editor.ui.xml:23 */ Div(cls_nav({ ...style(), direction: Row }), [
+        /* examples/editor/editor.ui.xml:23 */ Label({ ...text_navIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_FORWARD}`)])]), [
+        /* examples/editor/editor.ui.xml:24 */ Div((m.pressed == ((COMMAND)) ? (m.hover == ((COMMAND)) ? { ...cls_command__hover(cls_command({ ...style(), direction: Row })), width: (Px(commandWidth(m))), background: (m.windowActive ? rgb(0x191A1Bu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), tip: "Search files by name (Ctrl+P)", onClick: (COMMAND) } : { ...cls_command({ ...style(), direction: Row }), width: (Px(commandWidth(m))), background: (m.windowActive ? rgb(0x191A1Bu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), tip: "Search files by name (Ctrl+P)", onClick: (COMMAND) }) : (m.hover == ((COMMAND)) ? { ...cls_command__hover(cls_command({ ...style(), direction: Row })), width: (Px(commandWidth(m))), background: (m.windowActive ? rgb(0x191A1Bu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), tip: "Search files by name (Ctrl+P)", onClick: (COMMAND) } : { ...cls_command({ ...style(), direction: Row }), width: (Px(commandWidth(m))), background: (m.windowActive ? rgb(0x191A1Bu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), tip: "Search files by name (Ctrl+P)", onClick: (COMMAND) })), concat(concat([
+        /* examples/editor/editor.ui.xml:25 */ Label({ ...text_commandText(textStyle(14.0f32, (m.windowActive ? rgb(0xBFBFBFu32) : rgb(0x8C8C8Cu32)))), color: (m.windowActive ? rgb(0xBFBFBFu32) : rgb(0x8C8C8Cu32)) }, `${m.rootName}`)], [
+        /* examples/editor/editor.ui.xml:26 */ Div({ ...style(), width: Fill(1.0f32) }, [])]), [
+        /* examples/editor/editor.ui.xml:27 */ Div(cls_chat({ ...style(), direction: Row }), concat([
+        /* examples/editor/editor.ui.xml:28 */ Div(cls_tool(style()), [
+        /* examples/editor/editor.ui.xml:28 */ Label({ ...text_chatIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_CHAT}`)])], [
+        /* examples/editor/editor.ui.xml:29 */ Div({ ...style(), width: Px(18.0f32), height: Px(22.0f32), justify: Packed(Center), align: Center, stretch: false }, [
+        /* examples/editor/editor.ui.xml:29 */ Label({ ...text_chatMore({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_DOWN}`)])]))]))]))]), [
+        /* examples/editor/editor.ui.xml:33 */ Div(cls_titleRight({ ...style(), direction: Row }), concat(concat(concat(concat(concat([
+        /* examples/editor/editor.ui.xml:34 */ Div({ ...cls_account({ ...style(), direction: Row }), opacity: (m.windowActive ? 1.0f32 : 0.6f32) }, concat([
+        /* examples/editor/editor.ui.xml:35 */ Div((m.pressed == ((COPILOT)) ? (m.hover == ((COPILOT)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), onClick: (COPILOT) } : { ...cls_tool({ ...style(), direction: Row }), onClick: (COPILOT) }) : (m.hover == ((COPILOT)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), onClick: (COPILOT) } : { ...cls_tool({ ...style(), direction: Row }), onClick: (COPILOT) })), [
+        /* examples/editor/editor.ui.xml:35 */ Label({ ...text_toolIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_COPILOT}`)])], [
+        /* examples/editor/editor.ui.xml:36 */ Div((m.pressed == ((SIGN_IN)) ? (m.hover == ((SIGN_IN)) ? { ...cls_signIn__hover(cls_signIn({ ...style(), direction: Row })), onClick: (SIGN_IN) } : { ...cls_signIn({ ...style(), direction: Row }), onClick: (SIGN_IN) }) : (m.hover == ((SIGN_IN)) ? { ...cls_signIn__hover(cls_signIn({ ...style(), direction: Row })), onClick: (SIGN_IN) } : { ...cls_signIn({ ...style(), direction: Row }), onClick: (SIGN_IN) })), [
+        /* examples/editor/editor.ui.xml:36 */ Label(text_signInText(textStyle(14.0f32, rgb(0x111827u32))), `Sign In`)])]))], [
+        /* examples/editor/editor.ui.xml:38 */ Div({ ...style(), width: Fill(1.0f32) }, [])]), [
+        /* examples/editor/editor.ui.xml:39 */ Div({ ...cls_layoutTools({ ...style(), direction: Row }), opacity: (m.windowActive ? 1.0f32 : 0.6f32) }, concat(concat(concat([
+        /* examples/editor/editor.ui.xml:40 */ Div((m.pressed == ((LAYOUT)) ? (m.hover == ((LAYOUT)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Customize Layout...", onClick: (LAYOUT) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Customize Layout...", onClick: (LAYOUT) }) : (m.hover == ((LAYOUT)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Customize Layout...", onClick: (LAYOUT) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Customize Layout...", onClick: (LAYOUT) })), [
+        /* examples/editor/editor.ui.xml:40 */ Label({ ...text_toolIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_LAYOUT}`)])], [
+        /* examples/editor/editor.ui.xml:41 */ Div((m.pressed == ((TOGGLE_SIDEBAR)) ? (m.hover == ((TOGGLE_SIDEBAR)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Toggle Primary Side Bar (Ctrl+B)", onClick: (TOGGLE_SIDEBAR) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Toggle Primary Side Bar (Ctrl+B)", onClick: (TOGGLE_SIDEBAR) }) : (m.hover == ((TOGGLE_SIDEBAR)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Toggle Primary Side Bar (Ctrl+B)", onClick: (TOGGLE_SIDEBAR) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Toggle Primary Side Bar (Ctrl+B)", onClick: (TOGGLE_SIDEBAR) })), [
+        /* examples/editor/editor.ui.xml:41 */ Label({ ...text_toolIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${m.sidebarShown ? I_SIDEBAR_ON : I_SIDEBAR_OFF}`)])]), [
+        /* examples/editor/editor.ui.xml:42 */ Div((m.pressed == ((TOGGLE_PANEL)) ? (m.hover == ((TOGGLE_PANEL)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Toggle Panel (Ctrl+J)", onClick: (TOGGLE_PANEL) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Toggle Panel (Ctrl+J)", onClick: (TOGGLE_PANEL) }) : (m.hover == ((TOGGLE_PANEL)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Toggle Panel (Ctrl+J)", onClick: (TOGGLE_PANEL) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Toggle Panel (Ctrl+J)", onClick: (TOGGLE_PANEL) })), [
+        /* examples/editor/editor.ui.xml:42 */ Label({ ...text_toolIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${m.panelShown ? I_PANEL_ON : I_PANEL_OFF}`)])]), [
+        /* examples/editor/editor.ui.xml:43 */ Div((m.pressed == ((ASIDE)) ? (m.hover == ((ASIDE)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Toggle Secondary Side Bar", onClick: (ASIDE) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Toggle Secondary Side Bar", onClick: (ASIDE) }) : (m.hover == ((ASIDE)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Toggle Secondary Side Bar", onClick: (ASIDE) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Toggle Secondary Side Bar", onClick: (ASIDE) })), [
+        /* examples/editor/editor.ui.xml:43 */ Label({ ...text_toolIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_ASIDE_OFF}`)])]))]), [
+        /* examples/editor/editor.ui.xml:45 */ Div((m.pressed == ((MINIMIZE)) ? (m.hover == ((MINIMIZE)) ? { ...cls_winButton__hover(cls_winButton({ ...style(), direction: Row })), onClick: (MINIMIZE) } : { ...cls_winButton({ ...style(), direction: Row }), onClick: (MINIMIZE) }) : (m.hover == ((MINIMIZE)) ? { ...cls_winButton__hover(cls_winButton({ ...style(), direction: Row })), onClick: (MINIMIZE) } : { ...cls_winButton({ ...style(), direction: Row }), onClick: (MINIMIZE) })), [
+        /* examples/editor/editor.ui.xml:45 */ Label({ ...text_winIcon({ ...textStyle((captionSize(m)), rgb(0x111827u32)), face: (captionFace(m)) }), em: (captionSize(m)), face: (captionFace(m)) }, `${winGlyph(m, 0)}`)])]), [
+        /* examples/editor/editor.ui.xml:46 */ Div((m.pressed == ((MAXIMIZE)) ? (m.hover == ((MAXIMIZE)) ? { ...cls_winButton__hover(cls_winButton({ ...style(), direction: Row })), onClick: (MAXIMIZE) } : { ...cls_winButton({ ...style(), direction: Row }), onClick: (MAXIMIZE) }) : (m.hover == ((MAXIMIZE)) ? { ...cls_winButton__hover(cls_winButton({ ...style(), direction: Row })), onClick: (MAXIMIZE) } : { ...cls_winButton({ ...style(), direction: Row }), onClick: (MAXIMIZE) })), [
+        /* examples/editor/editor.ui.xml:46 */ Label({ ...text_winIcon({ ...textStyle((captionSize(m)), rgb(0x111827u32)), face: (captionFace(m)) }), em: (captionSize(m)), face: (captionFace(m)) }, `${winGlyph(m, 1)}`)])]), [
+        /* examples/editor/editor.ui.xml:47 */ Div((m.pressed == ((CLOSE_WINDOW)) ? (m.hover == ((CLOSE_WINDOW)) ? { ...cls_winClose__hover(cls_winClose({ ...style(), direction: Row })), onClick: (CLOSE_WINDOW) } : { ...cls_winClose({ ...style(), direction: Row }), onClick: (CLOSE_WINDOW) }) : (m.hover == ((CLOSE_WINDOW)) ? { ...cls_winClose__hover(cls_winClose({ ...style(), direction: Row })), onClick: (CLOSE_WINDOW) } : { ...cls_winClose({ ...style(), direction: Row }), onClick: (CLOSE_WINDOW) })), [
+        /* examples/editor/editor.ui.xml:47 */ Label({ ...text_winIcon({ ...textStyle((captionSize(m)), rgb(0x111827u32)), face: (captionFace(m)) }), em: (captionSize(m)), face: (captionFace(m)) }, `${winGlyph(m, 3)}`)])]))]))], [
+        /* examples/editor/editor.ui.xml:50 */ Div(cls_body({ ...style(), direction: Row }), concat(concat(concat([
+        /* examples/editor/editor.ui.xml:51 */ Div({ ...cls_activity({ ...style(), direction: Column }), radiusTopRight: (m.sidebarShown ? 0.0f32 : 8.0f32), radiusBottomRight: (m.sidebarShown ? 0.0f32 : 8.0f32) }, concat(concat(concat(map(iota((ACTIVITY_ICONS).length), (v) => {
+        const icon = (ACTIVITY_ICONS)[v];
+        return 
+        /* examples/editor/editor.ui.xml:53 */ Div(cls_act(style()), [
+        /* examples/editor/editor.ui.xml:54 */ Div((m.pressed == ((ACTIVITY + v)) ? (m.hover == ((ACTIVITY + v)) ? { ...cls_actOff__hover(cls_actOff(style())), tip: (ACTIVITY_TIPS[v]), background: (shown(m, v) ? rgb(0x313233u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (ACTIVITY + v) } : { ...cls_actOff(style()), tip: (ACTIVITY_TIPS[v]), background: (shown(m, v) ? rgb(0x313233u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (ACTIVITY + v) }) : (m.hover == ((ACTIVITY + v)) ? { ...cls_actOff__hover(cls_actOff(style())), tip: (ACTIVITY_TIPS[v]), background: (shown(m, v) ? rgb(0x313233u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (ACTIVITY + v) } : { ...cls_actOff(style()), tip: (ACTIVITY_TIPS[v]), background: (shown(m, v) ? rgb(0x313233u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (ACTIVITY + v) })), [
+        /* examples/editor/editor.ui.xml:55 */ Label({ ...text_actIcon({ ...textStyle(14.0f32, (shown(m, v) ? rgb(0xEDEDEDu32) : rgb(0x8C8C8Cu32))), face: (ICONS) }), color: (shown(m, v) ? rgb(0xEDEDEDu32) : rgb(0x8C8C8Cu32)), face: (ICONS) }, `${icon}`)])]);
+    }), [
+        /* examples/editor/editor.ui.xml:59 */ Div({ ...style(), height: Fill(1.0f32) }, [])]), [
+        /* examples/editor/editor.ui.xml:60 */ Div(cls_act(style()), [
+        /* examples/editor/editor.ui.xml:60 */ Div((m.pressed == ((ACCOUNTS)) ? (m.hover == ((ACCOUNTS)) ? { ...cls_actOff__hover(cls_actOff(style())), tip: "Accounts", onClick: (ACCOUNTS) } : { ...cls_actOff(style()), tip: "Accounts", onClick: (ACCOUNTS) }) : (m.hover == ((ACCOUNTS)) ? { ...cls_actOff__hover(cls_actOff(style())), tip: "Accounts", onClick: (ACCOUNTS) } : { ...cls_actOff(style()), tip: "Accounts", onClick: (ACCOUNTS) })), [
+        /* examples/editor/editor.ui.xml:60 */ Label({ ...text_actIcon({ ...textStyle(14.0f32, rgb(0x8C8C8Cu32)), face: (ICONS) }), color: rgb(0x8C8C8Cu32), face: (ICONS) }, `${I_ACCOUNT}`)])])]), [
+        /* examples/editor/editor.ui.xml:61 */ Div(cls_act(style()), [
+        /* examples/editor/editor.ui.xml:61 */ Div((m.pressed == ((MANAGE)) ? (m.hover == ((MANAGE)) ? { ...cls_actOff__hover(cls_actOff(style())), tip: "Manage", onClick: (MANAGE) } : { ...cls_actOff(style()), tip: "Manage", onClick: (MANAGE) }) : (m.hover == ((MANAGE)) ? { ...cls_actOff__hover(cls_actOff(style())), tip: "Manage", onClick: (MANAGE) } : { ...cls_actOff(style()), tip: "Manage", onClick: (MANAGE) })), [
+        /* examples/editor/editor.ui.xml:61 */ Label({ ...text_actIcon({ ...textStyle(14.0f32, rgb(0x8C8C8Cu32)), face: (ICONS) }), color: rgb(0x8C8C8Cu32), face: (ICONS) }, `${I_GEAR}`)])])]))], map(iota((when(m.sidebarShown)).length), (index) => {
+        const s = (when(m.sidebarShown))[index];
+        return 
+        /* examples/editor/editor.ui.xml:64 */ Div({ ...{ ...style(), direction: Row }, height: Fill(1.0f32), stretch: true }, concat([
+        /* examples/editor/editor.ui.xml:65 */ Div({ ...cls_sidebar({ ...style(), direction: Column }), width: (Px(m.sidebarWidth)) }, concat(concat(concat([
+        /* examples/editor/editor.ui.xml:66 */ Div(cls_sideHeader({ ...style(), direction: Row }), concat(concat([
+        /* examples/editor/editor.ui.xml:67 */ Div(cls_sideTitleBox(style()), [
+        /* examples/editor/editor.ui.xml:67 */ Label(text_sideTitle(textStyle(14.0f32, rgb(0x111827u32))), `${viewTitle(m)}`)])], [
+        /* examples/editor/editor.ui.xml:68 */ Div({ ...style(), width: Fill(1.0f32) }, [])]), [
+        /* examples/editor/editor.ui.xml:69 */ Div((m.pressed == ((SIDE_MORE)) ? (m.hover == ((SIDE_MORE)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Views and More Actions...", onClick: (SIDE_MORE) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Views and More Actions...", onClick: (SIDE_MORE) }) : (m.hover == ((SIDE_MORE)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Views and More Actions...", onClick: (SIDE_MORE) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Views and More Actions...", onClick: (SIDE_MORE) })), [
+        /* examples/editor/editor.ui.xml:69 */ Label({ ...text_toolIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_MORE}`)])]))], map(iota((when(m.view == FILES)).length), (index) => {
+        const v1 = (when(m.view == FILES))[index];
+        return 
+        /* examples/editor/editor.ui.xml:72 */ Div(cls_sideBody({ ...style(), direction: Column }), concat(concat(concat([
+        /* examples/editor/editor.ui.xml:73 */ Div(cls_sectionLine({ ...style(), direction: Row }), [
+        /* examples/editor/editor.ui.xml:74 */ Div((m.pressed == ((ROOT_SECTION)) ? (m.hover == ((ROOT_SECTION)) ? { ...cls_section__hover(cls_section({ ...style(), direction: Row })), onClick: (ROOT_SECTION) } : { ...cls_section({ ...style(), direction: Row }), onClick: (ROOT_SECTION) }) : (m.hover == ((ROOT_SECTION)) ? { ...cls_section__hover(cls_section({ ...style(), direction: Row })), onClick: (ROOT_SECTION) } : { ...cls_section({ ...style(), direction: Row }), onClick: (ROOT_SECTION) })), concat(concat(concat([
+        /* examples/editor/editor.ui.xml:75 */ Div({ ...style(), width: Px(7.0f32), height: Px(1.0f32) }, [])], [
+        /* examples/editor/editor.ui.xml:76 */ Div(cls_twistieBox(style()), [
+        /* examples/editor/editor.ui.xml:76 */ Label({ ...text_twistie({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${m.rootOpen ? I_DOWN : I_RIGHT}`)])]), [
+        /* examples/editor/editor.ui.xml:77 */ Div({ ...style(), width: Px(2.0f32), height: Px(1.0f32) }, [])]), [
+        /* examples/editor/editor.ui.xml:78 */ Label(text_sectionText(textStyle(14.0f32, rgb(0x111827u32))), `${m.rootName}`)]))])], [
+        /* examples/editor/editor.ui.xml:81 */ Div({ ...cls_treeBox(style()), scroll: 0 }, map(iota((visibleNodes(m)).length), (index) => {
+        const ix = (visibleNodes(m))[index];
+        return 
+        /* examples/editor/editor.ui.xml:83 */ Div((m.pressed == ((NODE + ix)) ? (m.hover == ((NODE + ix)) ? { ...cls_node__hover(cls_node({ ...style(), direction: Row })), background: (m.nodes[ix].path == m.current ? rgb(0x2C2D2Eu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (NODE + ix) } : { ...cls_node({ ...style(), direction: Row }), background: (m.nodes[ix].path == m.current ? rgb(0x2C2D2Eu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (NODE + ix) }) : (m.hover == ((NODE + ix)) ? { ...cls_node__hover(cls_node({ ...style(), direction: Row })), background: (m.nodes[ix].path == m.current ? rgb(0x2C2D2Eu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (NODE + ix) } : { ...cls_node({ ...style(), direction: Row }), background: (m.nodes[ix].path == m.current ? rgb(0x2C2D2Eu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (NODE + ix) })), concat(concat(concat([
+        /* examples/editor/editor.ui.xml:84 */ Div({ ...style(), width: (Px(f32(m.nodes[ix].depth * 8 + 11))), height: Px(1.0f32) }, [])], [
+        /* examples/editor/editor.ui.xml:85 */ Div(cls_fileIcon(style()), concat(map(iota((when(m.nodes[ix].dir)).length), (index) => {
+        const f = (when(m.nodes[ix].dir))[index];
+        return 
+        /* examples/editor/editor.ui.xml:87 */ Label({ ...text_twistie({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${chevron(m.nodes[ix])}`);
+    }), map(iota((when(!m.nodes[ix].dir)).length), (index) => {
+        const f = (when(!m.nodes[ix].dir))[index];
+        return 
+        /* examples/editor/editor.ui.xml:90 */ Label({ ...textStyle(19.5f32, (fileIconColor(m.nodes[ix].name))), face: (SETI) }, `${fileIcon(m.nodes[ix].name)}`);
+    })))]), [
+        /* examples/editor/editor.ui.xml:93 */ Div({ ...style(), width: Px(3.0f32), height: Px(1.0f32) }, [])]), [
+        /* examples/editor/editor.ui.xml:94 */ Label({ ...text_nodeText(textStyle(14.0f32, (m.nodes[ix].path == m.current ? rgb(0xEDEDEDu32) : rgb(0xBFBFBFu32)))), color: (m.nodes[ix].path == m.current ? rgb(0xEDEDEDu32) : rgb(0xBFBFBFu32)) }, `${m.nodes[ix].name}`)]));
+    }))]), map(iota((SECTIONS).length), (k) => {
+        const sec = (SECTIONS)[k];
+        return 
+        /* examples/editor/editor.ui.xml:99 */ Div(cls_sectionLine({ ...style(), direction: Row }), concat([
+        /* examples/editor/editor.ui.xml:100 */ Div({ ...cls_sectionRule(style()), floating: true }, [])], [
+        /* examples/editor/editor.ui.xml:101 */ Div((m.pressed == ((SECTION + k)) ? (m.hover == ((SECTION + k)) ? { ...cls_section__hover(cls_section({ ...style(), direction: Row })), onClick: (SECTION + k) } : { ...cls_section({ ...style(), direction: Row }), onClick: (SECTION + k) }) : (m.hover == ((SECTION + k)) ? { ...cls_section__hover(cls_section({ ...style(), direction: Row })), onClick: (SECTION + k) } : { ...cls_section({ ...style(), direction: Row }), onClick: (SECTION + k) })), concat(concat(concat([
+        /* examples/editor/editor.ui.xml:102 */ Div({ ...style(), width: Px(7.0f32), height: Px(1.0f32) }, [])], [
+        /* examples/editor/editor.ui.xml:103 */ Div(cls_twistieBox(style()), [
+        /* examples/editor/editor.ui.xml:103 */ Label({ ...text_twistie({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_RIGHT}`)])]), [
+        /* examples/editor/editor.ui.xml:104 */ Div({ ...style(), width: Px(2.0f32), height: Px(1.0f32) }, [])]), [
+        /* examples/editor/editor.ui.xml:105 */ Label(text_sectionText(textStyle(14.0f32, rgb(0x111827u32))), `${sec}`)]))]));
+    })), [
+        /* examples/editor/editor.ui.xml:109 */ Div({ ...style(), width: Px(1.0f32), height: Px(4.0f32) }, [])]));
+    })), map(iota((when(m.view == 1)).length), (index) => {
+        const v2 = (when(m.view == 1))[index];
+        return 
+        /* examples/editor/editor.ui.xml:113 */ Div(cls_sideBody({ ...style(), direction: Column }), concat([
+        /* examples/editor/editor.ui.xml:114 */ Div(cls_searchRow({ ...style(), direction: Row }), [
+        /* examples/editor/editor.ui.xml:114 */ retexted(restyled(textField((m.search), (m.field == SEARCH), "Search", (SEARCH), Fill(1.0f32)), (s) => ((m.field == SEARCH) ? cls_input__focus(cls_input(s)) : cls_input(s))), (t) => text_input(t))])], [
+        /* examples/editor/editor.ui.xml:115 */ Div({ ...cls_treeBox(style()), scroll: 3 }, map(iota((found(m, m.search.text, 200)).length), (k) => {
+        const p = (found(m, m.search.text, 200))[k];
+        return 
+        /* examples/editor/editor.ui.xml:117 */ Div((m.pressed == ((FOUND + k)) ? (m.hover == ((FOUND + k)) ? { ...cls_node__hover(cls_node({ ...style(), direction: Row })), background: (p == m.current ? rgb(0x2C2D2Eu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (FOUND + k) } : { ...cls_node({ ...style(), direction: Row }), background: (p == m.current ? rgb(0x2C2D2Eu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (FOUND + k) }) : (m.hover == ((FOUND + k)) ? { ...cls_node__hover(cls_node({ ...style(), direction: Row })), background: (p == m.current ? rgb(0x2C2D2Eu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (FOUND + k) } : { ...cls_node({ ...style(), direction: Row }), background: (p == m.current ? rgb(0x2C2D2Eu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (FOUND + k) })), concat(concat(concat([
+        /* examples/editor/editor.ui.xml:118 */ Div({ ...style(), width: Px(11.0f32), height: Px(1.0f32) }, [])], [
+        /* examples/editor/editor.ui.xml:119 */ Div(cls_fileIcon(style()), [
+        /* examples/editor/editor.ui.xml:119 */ Label({ ...textStyle(19.5f32, (fileIconColor(p))), face: (SETI) }, `${fileIcon(p)}`)])]), [
+        /* examples/editor/editor.ui.xml:120 */ Div({ ...style(), width: Px(3.0f32), height: Px(1.0f32) }, [])]), [
+        /* examples/editor/editor.ui.xml:121 */ Label({ ...text_nodeText(textStyle(14.0f32, rgb(0xBFBFBFu32))), color: rgb(0xBFBFBFu32) }, `${rel(m, p)}`)]));
+    }))]));
+    })), map(iota((when(m.view >= 2)).length), (index) => {
+        const v3 = (when(m.view >= 2))[index];
+        return 
+        /* examples/editor/editor.ui.xml:128 */ Div({ ...cls_sideBody({ ...style(), direction: Column }), padX: 12.0f32 }, [
+        /* examples/editor/editor.ui.xml:128 */ Label(text_placeholder(textStyle(14.0f32, rgb(0x111827u32))), `Cette vue reste à faire.`)]);
+    })))], [
+        /* examples/editor/editor.ui.xml:131 */ Div((m.pressed == ((SASH_V)) ? (m.hover == ((SASH_V)) ? { ...cls_sashV__active(cls_sashV__hover(cls_sashV(style()))), onClick: (SASH_V) } : { ...cls_sashV__active(cls_sashV(style())), onClick: (SASH_V) }) : (m.hover == ((SASH_V)) ? { ...cls_sashV__hover(cls_sashV(style())), onClick: (SASH_V) } : { ...cls_sashV(style()), onClick: (SASH_V) })), concat(concat([
+        /* examples/editor/editor.ui.xml:132 */ Div(cls_grip(style()), [])], [
+        /* examples/editor/editor.ui.xml:132 */ Div(cls_grip(style()), [])]), [
+        /* examples/editor/editor.ui.xml:132 */ Div(cls_grip(style()), [])]))]));
+    })), map(iota((when(!m.sidebarShown)).length), (index) => {
+        const g = (when(!m.sidebarShown))[index];
+        return 
+        /* examples/editor/editor.ui.xml:137 */ Div({ ...style(), width: Px(4.0f32), height: Px(1.0f32) }, []);
+    })), [
+        /* examples/editor/editor.ui.xml:139 */ Div(cls_center({ ...style(), direction: Column }), concat(concat(map(iota((when(m.palette)).length), (index) => {
+        const pal = (when(m.palette))[index];
+        return 
+        /* examples/editor/editor.ui.xml:141 */ Div(cls_paletteRow({ ...style(), direction: Row }), [
+        /* examples/editor/editor.ui.xml:142 */ Div(cls_palette({ ...style(), direction: Column }), concat([
+        /* examples/editor/editor.ui.xml:143 */ retexted(restyled(textField((m.query), (m.field == QUERY), "Search files by name", (QUERY), Fill(1.0f32)), (s) => ((m.field == QUERY) ? cls_qinput__focus(cls_qinput(s)) : cls_qinput(s))), (t) => text_qinput(t))], map(iota((matches(m)).length), (k) => {
+        const p = (matches(m))[k];
+        return 
+        /* examples/editor/editor.ui.xml:145 */ Div((m.pressed == ((MATCH + k)) ? (m.hover == ((MATCH + k)) ? { ...cls_match__hover(cls_match({ ...style(), direction: Row })), background: (k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (MATCH + k) } : { ...cls_match({ ...style(), direction: Row }), background: (k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (MATCH + k) }) : (m.hover == ((MATCH + k)) ? { ...cls_match__hover(cls_match({ ...style(), direction: Row })), background: (k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (MATCH + k) } : { ...cls_match({ ...style(), direction: Row }), background: (k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (MATCH + k) })), concat(concat([
+        /* examples/editor/editor.ui.xml:146 */ Div(cls_fileIcon(style()), [
+        /* examples/editor/editor.ui.xml:146 */ Label({ ...textStyle(19.5f32, (fileIconColor(p))), face: (SETI) }, `${fileIcon(p)}`)])], [
+        /* examples/editor/editor.ui.xml:147 */ Label({ ...text_matchText(textStyle(14.0f32, (k == m.choice ? rgb(0xFFFFFFu32) : rgb(0xBFBFBFu32)))), color: (k == m.choice ? rgb(0xFFFFFFu32) : rgb(0xBFBFBFu32)) }, `${baseName(p)}`)]), [
+        /* examples/editor/editor.ui.xml:148 */ Label({ ...text_matchPath(textStyle(14.0f32, (k == m.choice ? rgb(0xFFFFFFu32) : rgb(0x8C8C8Cu32)))), color: (k == m.choice ? rgb(0xFFFFFFu32) : rgb(0x8C8C8Cu32)) }, `${rel(m, p)}`)]));
+    })))]);
+    }), [
+        /* examples/editor/editor.ui.xml:154 */ Div(cls_editorCard({ ...style(), direction: Column }), concat(map(iota((when(m.tabs.length > 0)).length), (index) => {
+        const strip = (when(m.tabs.length > 0))[index];
+        return 
+        /* examples/editor/editor.ui.xml:156 */ Div({ ...{ ...style(), direction: Column }, width: Fill(1.0f32) }, concat([
+        /* examples/editor/editor.ui.xml:157 */ Div(cls_tabs({ ...style(), direction: Row }), concat(concat(map(iota((m.tabs).length), (k) => {
+        const t = (m.tabs)[k];
+        return 
+        /* examples/editor/editor.ui.xml:159 */ Div({ ...style(), direction: Column }, concat(map(iota((when(k != m.active)).length), (index) => {
+        const x = (when(k != m.active))[index];
+        return 
+        /* examples/editor/editor.ui.xml:161 */ Div((m.pressed == ((TAB + k)) ? (m.hover == ((TAB + k)) ? { ...cls_tab__hover(cls_tab({ ...style(), direction: Row })), onClick: (TAB + k) } : { ...cls_tab({ ...style(), direction: Row }), onClick: (TAB + k) }) : (m.hover == ((TAB + k)) ? { ...cls_tab__hover(cls_tab({ ...style(), direction: Row })), onClick: (TAB + k) } : { ...cls_tab({ ...style(), direction: Row }), onClick: (TAB + k) })), concat(concat(concat(concat(concat(map(iota((when(divided(m, k))).length), (index) => {
+        const d = (when(divided(m, k)))[index];
+        return 
+        /* examples/editor/editor.ui.xml:162 */ Div({ ...{ ...style(), direction: Row }, align: Center, stretch: false }, concat([
+        /* examples/editor/editor.ui.xml:162 */ Div(cls_tabDivider(style()), [])], [
+        /* examples/editor/editor.ui.xml:162 */ Div({ ...style(), width: Px(5.0f32), height: Px(1.0f32) }, [])]));
+    }), map(iota((when(!divided(m, k))).length), (index) => {
+        const d = (when(!divided(m, k)))[index];
+        return 
+        /* examples/editor/editor.ui.xml:163 */ Div(cls_tabPad(style()), []);
+    })), [
+        /* examples/editor/editor.ui.xml:164 */ Div(cls_fileIcon(style()), [
+        /* examples/editor/editor.ui.xml:164 */ Label({ ...textStyle(19.5f32, (fileIconColor(t.name))), face: (SETI) }, `${fileIcon(t.name)}`)])]), [
+        /* examples/editor/editor.ui.xml:165 */ Div(cls_tabGap(style()), [])]), [
+        /* examples/editor/editor.ui.xml:166 */ Label(textStyle(13.0f32, rgb(0x8C8C8Cu32)), `${t.name}`)]), [
+        /* examples/editor/editor.ui.xml:167 */ Div(cls_tabEnd(style()), [])]));
+    }), map(iota((when(k == m.active)).length), (index) => {
+        const x = (when(k == m.active))[index];
+        return 
+        /* examples/editor/editor.ui.xml:171 */ Div({ ...cls_tabOn({ ...style(), direction: Column }), onClick: (TAB + k) }, concat(concat([
+        /* examples/editor/editor.ui.xml:172 */ Div(cls_tabShape({ ...style(), direction: Column }), concat([
+        /* examples/editor/editor.ui.xml:173 */ Div(cls_capRow({ ...style(), direction: Row }), concat(concat([
+        /* examples/editor/editor.ui.xml:174 */ Div(cls_capSide(style()), [])], [
+        /* examples/editor/editor.ui.xml:175 */ Div({ ...cls_cap(style()), borderLeft: (k == 0 ? 0.0f32 : 1.0f32), radiusTopLeft: (k == 0 ? 0.0f32 : 7.0f32) }, [])]), [
+        /* examples/editor/editor.ui.xml:176 */ Div(cls_capSide(style()), [])]))], [
+        /* examples/editor/editor.ui.xml:178 */ Div(cls_baseRow({ ...style(), direction: Row }), concat(concat(concat(map(iota((when(k != 0)).length), (index) => {
+        const f = (when(k != 0))[index];
+        return 
+        /* examples/editor/editor.ui.xml:179 */ Div(cls_shoulder(style()), [
+        /* examples/editor/editor.ui.xml:179 */ Div(cls_shoulderLeft(style()), [])]);
+    }), map(iota((when(k == 0)).length), (index) => {
+        const f = (when(k == 0))[index];
+        return 
+        /* examples/editor/editor.ui.xml:180 */ Div({ ...style(), width: Px(7.0f32), height: Px(7.0f32) }, []);
+    })), [
+        /* examples/editor/editor.ui.xml:181 */ Div(cls_base(style()), [])]), [
+        /* examples/editor/editor.ui.xml:182 */ Div(cls_shoulder(style()), [
+        /* examples/editor/editor.ui.xml:182 */ Div(cls_shoulderRight(style()), [])])]))]))], [
+        /* examples/editor/editor.ui.xml:185 */ Div(cls_tabBody({ ...style(), direction: Row }), concat(concat(concat(concat([
+        /* examples/editor/editor.ui.xml:186 */ Div(cls_tabPad(style()), [])], [
+        /* examples/editor/editor.ui.xml:187 */ Div(cls_fileIcon(style()), [
+        /* examples/editor/editor.ui.xml:187 */ Label({ ...textStyle(19.5f32, (fileIconColor(t.name))), face: (SETI) }, `${fileIcon(t.name)}`)])]), [
+        /* examples/editor/editor.ui.xml:188 */ Div(cls_tabGap(style()), [])]), [
+        /* examples/editor/editor.ui.xml:189 */ Label(textStyle(13.0f32, rgb(0xEDEDEDu32)), `${t.name}`)]), [
+        /* examples/editor/editor.ui.xml:190 */ Div(cls_tabEnd({ ...style(), direction: Row }), concat([
+        /* examples/editor/editor.ui.xml:191 */ Div({ ...style(), width: Px(4.0f32), height: Px(1.0f32) }, [])], [
+        /* examples/editor/editor.ui.xml:192 */ Div((m.pressed == ((CLOSE_TAB + k)) ? (m.hover == ((CLOSE_TAB + k)) ? { ...cls_close__hover(cls_close({ ...style(), direction: Row })), onClick: (CLOSE_TAB + k) } : { ...cls_close({ ...style(), direction: Row }), onClick: (CLOSE_TAB + k) }) : (m.hover == ((CLOSE_TAB + k)) ? { ...cls_close__hover(cls_close({ ...style(), direction: Row })), onClick: (CLOSE_TAB + k) } : { ...cls_close({ ...style(), direction: Row }), onClick: (CLOSE_TAB + k) })), [
+        /* examples/editor/editor.ui.xml:192 */ Label({ ...text_closeIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${tabDirty(m, k) && m.hover != CLOSE_TAB + k ? I_DIRTY : I_CLOSE}`)])]))]))]), [
+        /* examples/editor/editor.ui.xml:195 */ Div({ ...style(), width: Px(1.0f32), height: Px(1.0f32) }, [])]));
+    })));
+    }), [
+        /* examples/editor/editor.ui.xml:200 */ Div({ ...style(), width: Fill(1.0f32) }, [])]), map(iota((when(m.tabs.length > 0)).length), (index) => {
+        const e = (when(m.tabs.length > 0))[index];
+        return 
+        /* examples/editor/editor.ui.xml:202 */ Div(cls_tabTools({ ...style(), direction: Row }), concat([
+        /* examples/editor/editor.ui.xml:203 */ Div((m.pressed == ((SPLIT)) ? (m.hover == ((SPLIT)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Split Editor Right", onClick: (SPLIT) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Split Editor Right", onClick: (SPLIT) }) : (m.hover == ((SPLIT)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Split Editor Right", onClick: (SPLIT) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Split Editor Right", onClick: (SPLIT) })), [
+        /* examples/editor/editor.ui.xml:203 */ Label({ ...text_toolIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_SPLIT}`)])], [
+        /* examples/editor/editor.ui.xml:204 */ Div((m.pressed == ((TAB_MORE)) ? (m.hover == ((TAB_MORE)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "More Actions...", onClick: (TAB_MORE) } : { ...cls_tool({ ...style(), direction: Row }), tip: "More Actions...", onClick: (TAB_MORE) }) : (m.hover == ((TAB_MORE)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "More Actions...", onClick: (TAB_MORE) } : { ...cls_tool({ ...style(), direction: Row }), tip: "More Actions...", onClick: (TAB_MORE) })), [
+        /* examples/editor/editor.ui.xml:204 */ Label({ ...text_toolIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_MORE}`)])]));
+    })))], [
+        /* examples/editor/editor.ui.xml:208 */ Div(cls_crumbs({ ...style(), direction: Row }), map(iota((crumbs(m)).length), (index) => {
+        const c = (crumbs(m))[index];
+        return 
+        /* examples/editor/editor.ui.xml:210 */ Div(cls_crumb({ ...style(), direction: Row }), concat(concat(concat(map(iota((when(c.file)).length), (index) => {
+        const f = (when(c.file))[index];
+        return 
+        /* examples/editor/editor.ui.xml:212 */ Div(cls_fileIcon(style()), [
+        /* examples/editor/editor.ui.xml:212 */ Label({ ...textStyle(19.5f32, (fileIconColor(c.name))), face: (SETI) }, `${fileIcon(c.name)}`)]);
+    }), map(iota((when(c.icon != "")).length), (index) => {
+        const f = (when(c.icon != ""))[index];
+        return 
+        /* examples/editor/editor.ui.xml:215 */ Label({ ...text_crumbIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${c.icon}`);
+    })), [
+        /* examples/editor/editor.ui.xml:217 */ Label(text_crumbText(textStyle(14.0f32, rgb(0x111827u32))), `${c.name}`)]), map(iota((when(!c.last)).length), (index) => {
+        const f = (when(!c.last))[index];
+        return 
+        /* examples/editor/editor.ui.xml:219 */ Label({ ...text_crumbSep({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_RIGHT}`);
+    })));
+    }))]));
+    }), [
+        /* examples/editor/editor.ui.xml:226 */ Div({ ...cls_code(style()), scroll: 1 }, concat((codeArea(m)), map(iota((when(m.tabs.length == 0)).length), (index) => {
+        const e = (when(m.tabs.length == 0))[index];
+        return 
+        /* examples/editor/editor.ui.xml:229 */ Div(cls_welcome({ ...style(), direction: Column }), concat(concat([
+        /* examples/editor/editor.ui.xml:230 */ Label(text_welcomeTitle(textStyle(14.0f32, rgb(0x111827u32))), `Isocron`)], [
+        /* examples/editor/editor.ui.xml:231 */ Label(text_welcomeText(textStyle(14.0f32, rgb(0x111827u32))), `Open a file in the explorer, or Ctrl+P to find it.`)]), [
+        /* examples/editor/editor.ui.xml:232 */ Label(text_welcomeText(textStyle(14.0f32, rgb(0x111827u32))), `Ctrl+B: the side bar · Ctrl+J: the panel · Ctrl+W: close the tab`)]));
+    })))]))]), map(iota((when(m.panelShown)).length), (index) => {
+        const q = (when(m.panelShown))[index];
+        return 
+        /* examples/editor/editor.ui.xml:238 */ Div(cls_panelWrap({ ...style(), direction: Column }), concat([
+        /* examples/editor/editor.ui.xml:239 */ Div((m.pressed == ((SASH_H)) ? (m.hover == ((SASH_H)) ? { ...cls_sashH__active(cls_sashH__hover(cls_sashH(style()))), onClick: (SASH_H) } : { ...cls_sashH__active(cls_sashH(style())), onClick: (SASH_H) }) : (m.hover == ((SASH_H)) ? { ...cls_sashH__hover(cls_sashH(style())), onClick: (SASH_H) } : { ...cls_sashH(style()), onClick: (SASH_H) })), [])], [
+        /* examples/editor/editor.ui.xml:240 */ Div({ ...cls_panel({ ...style(), direction: Column }), height: (Px(m.panelHeight)) }, concat([
+        /* examples/editor/editor.ui.xml:241 */ Div(cls_panelTabs({ ...style(), direction: Row }), concat(concat(concat([
+        /* examples/editor/editor.ui.xml:242 */ Div(cls_panelTab(style()), [
+        /* examples/editor/editor.ui.xml:242 */ Label(text_panelTabText(textStyle(14.0f32, rgb(0x111827u32))), `Problems`)])], [
+        /* examples/editor/editor.ui.xml:243 */ Div(cls_panelTabOn(style()), [
+        /* examples/editor/editor.ui.xml:243 */ Label(text_panelTabOnText(textStyle(14.0f32, rgb(0x111827u32))), `Output`)])]), [
+        /* examples/editor/editor.ui.xml:244 */ Div(cls_panelTab(style()), [
+        /* examples/editor/editor.ui.xml:244 */ Label(text_panelTabText(textStyle(14.0f32, rgb(0x111827u32))), `Debug Console`)])]), [
+        /* examples/editor/editor.ui.xml:245 */ Div(cls_panelTab(style()), [
+        /* examples/editor/editor.ui.xml:245 */ Label(text_panelTabText(textStyle(14.0f32, rgb(0x111827u32))), `Terminal`)])]))], [
+        /* examples/editor/editor.ui.xml:247 */ Div({ ...cls_panelBody(style()), scroll: 2 }, map(iota((m.log).length), (index) => {
+        const l = (m.log)[index];
+        return 
+        /* examples/editor/editor.ui.xml:249 */ Label(text_logText(textStyle(14.0f32, rgb(0x111827u32))), `${l}`);
+    }))]))]));
+    })))]))]), [
+        /* examples/editor/editor.ui.xml:257 */ Div(cls_belowCards(style()), [])]), [
+        /* examples/editor/editor.ui.xml:258 */ Div(cls_status({ ...style(), direction: Row }), concat(concat(concat(concat(concat(concat(concat(concat([
+        /* examples/editor/editor.ui.xml:259 */ Div((m.pressed == ((REMOTE)) ? (m.hover == ((REMOTE)) ? { ...cls_statusFirst__hover(cls_statusFirst({ ...style(), direction: Row })), onClick: (REMOTE) } : { ...cls_statusFirst({ ...style(), direction: Row }), onClick: (REMOTE) }) : (m.hover == ((REMOTE)) ? { ...cls_statusFirst__hover(cls_statusFirst({ ...style(), direction: Row })), onClick: (REMOTE) } : { ...cls_statusFirst({ ...style(), direction: Row }), onClick: (REMOTE) })), [
+        /* examples/editor/editor.ui.xml:259 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_REMOTE}`)])], [
+        /* examples/editor/editor.ui.xml:260 */ Div(cls_statusGap(style()), [])]), [
+        /* examples/editor/editor.ui.xml:261 */ Div((m.pressed == ((PROBLEMS)) ? (m.hover == ((PROBLEMS)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (PROBLEMS) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (PROBLEMS) }) : (m.hover == ((PROBLEMS)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (PROBLEMS) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (PROBLEMS) })), concat(concat(concat([
+        /* examples/editor/editor.ui.xml:262 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_ERROR}`)], [
+        /* examples/editor/editor.ui.xml:262 */ Label(text_statusText(textStyle(14.0f32, rgb(0x111827u32))), `0`)]), [
+        /* examples/editor/editor.ui.xml:263 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_WARNING}`)]), [
+        /* examples/editor/editor.ui.xml:263 */ Label(text_statusText(textStyle(14.0f32, rgb(0x111827u32))), `0`)]))]), [
+        /* examples/editor/editor.ui.xml:265 */ Div({ ...style(), width: Fill(1.0f32) }, [])]), map(iota((statusItems(m)).length), (k) => {
+        const it = (statusItems(m))[k];
+        return 
+        /* examples/editor/editor.ui.xml:267 */ Div({ ...{ ...style(), direction: Row }, align: Center, stretch: false }, concat([
+        /* examples/editor/editor.ui.xml:268 */ Div((m.pressed == ((STATUS + k)) ? (m.hover == ((STATUS + k)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (STATUS + k) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (STATUS + k) }) : (m.hover == ((STATUS + k)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (STATUS + k) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (STATUS + k) })), [
+        /* examples/editor/editor.ui.xml:268 */ Label(text_statusText(textStyle(14.0f32, rgb(0x111827u32))), `${it}`)])], [
+        /* examples/editor/editor.ui.xml:269 */ Div(cls_statusGap(style()), [])]));
+    })), map(iota((when(langName(m) != "")).length), (index) => {
+        const e = (when(langName(m) != ""))[index];
+        return 
+        /* examples/editor/editor.ui.xml:273 */ Div({ ...{ ...style(), direction: Row }, align: Center, stretch: false }, concat([
+        /* examples/editor/editor.ui.xml:274 */ Div((m.pressed == ((LANGUAGE)) ? (m.hover == ((LANGUAGE)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (LANGUAGE) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (LANGUAGE) }) : (m.hover == ((LANGUAGE)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (LANGUAGE) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (LANGUAGE) })), concat([
+        /* examples/editor/editor.ui.xml:274 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_BRACES}`)], [
+        /* examples/editor/editor.ui.xml:274 */ Label(text_statusText(textStyle(14.0f32, rgb(0x111827u32))), `${langName(m)}`)]))], [
+        /* examples/editor/editor.ui.xml:275 */ Div(cls_statusGap(style()), [])]));
+    })), [
+        /* examples/editor/editor.ui.xml:278 */ Div((m.pressed == ((STATUS_COPILOT)) ? (m.hover == ((STATUS_COPILOT)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (STATUS_COPILOT) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (STATUS_COPILOT) }) : (m.hover == ((STATUS_COPILOT)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (STATUS_COPILOT) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (STATUS_COPILOT) })), [
+        /* examples/editor/editor.ui.xml:278 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_COPILOT}`)])]), [
+        /* examples/editor/editor.ui.xml:279 */ Div(cls_statusGap(style()), [])]), [
+        /* examples/editor/editor.ui.xml:280 */ Div((m.pressed == ((BELL)) ? (m.hover == ((BELL)) ? { ...cls_statusFirst__hover(cls_statusFirst({ ...style(), direction: Row })), onClick: (BELL) } : { ...cls_statusFirst({ ...style(), direction: Row }), onClick: (BELL) }) : (m.hover == ((BELL)) ? { ...cls_statusFirst__hover(cls_statusFirst({ ...style(), direction: Row })), onClick: (BELL) } : { ...cls_statusFirst({ ...style(), direction: Row }), onClick: (BELL) })), [
+        /* examples/editor/editor.ui.xml:280 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_BELL}`)])]))]));
+}

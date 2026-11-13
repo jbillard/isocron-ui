@@ -1,0 +1,20 @@
+// The view of tests/uigen/hover.ui.xml (made by tests/uigen.sh into
+// hover_view.isc) built for the model of the list of tasks, the pointer
+// over its first box: that box takes the state :hover of its class.
+import { view } from "./hover_view";
+import { initial } from "../../examples/todo";
+import { Element, Div } from "../../src/ui";
+
+action main(args: string[k]): i32 {
+    const e = view({ ...initial(), hover: 7 });
+    const seen = match (e) {
+        Div(st, cs) => match (cs[0]) {
+            Div(a, x) => [a.background.r, a.gap] as const,
+            _ => [0.0f32, 0.0f32] as const,
+        },
+        _ => [0.0f32, 0.0f32] as const,
+    };
+    const [r, gap] = seen;
+    print(`${i64(r * 255.0f32 + 0.5f32)} ${gap}`);
+    return 0;
+}

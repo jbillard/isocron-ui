@@ -1,0 +1,71 @@
+// A click and a drag in the code of the editor (examples/editor) through the
+// loop of the window (src/app.isc), the pointer in pixels, at the scales 1,
+// 1.25 and 1.5: the cursor at the line and the column under the pointer at
+// each (the places told in units, not in pixels).
+import { parse, Font } from "../src/font";
+import { lineWidth } from "../src/text";
+import { CLICK } from "../src/ui";
+import { Moved, Down, Up, interface, steps, laidOutFonts } from "../src/app";
+import { Input, Effect, WindowSize, Viewport, TextRead } from "../src/input";
+import { Editor, Node, initial, update, LINE } from "../examples/editor/editor";
+import { view } from "../examples/editor/editor_view";
+
+const MS: u64 = 1000000u64;
+
+function fed(m: Editor, i: Input): Editor {
+    const [m1, fx] = update(m, i);
+    return m1;
+}
+
+// at the scale `k`: a click at the column 10 of the line 2, then a drag
+// from there to the column 14 of the line 3; the cursor and the anchor
+function played(fonts: Font[nf], advance: f32, k: f32): string {
+    const w = 1100;
+    const h = 700;
+    const nodes: Node[] = [];
+    const files: string[] = [];
+    const m0 = initial("demo", "demo", "linux", nodes, files, advance);
+    const m1 = fed(fed(fed(m0, WindowSize(f32(w) / k, f32(h) / k)), Viewport(1, 0.0f32, 600.0f32)), Viewport(-1, 0.0f32, 0.0f32));
+    const m2 = fed(m1, TextRead("demo/a.lua", "local alpha = 1\nlocal beta = alpha + 2\nprint(beta, alpha * 3)\n", true));
+    const [ps, u1] = laidOutFonts({ ...interface(w, h, 0u64), scale: k }, fonts, m2, view, 0u64);
+    const i = findIndex(u1.hits, (hh) => hh.kind == CLICK && hh.id == LINE + 1);
+    if (i < 0) {
+        return "no line 2";
+    }
+    const x = u1.hits[i].x + (68.0f32 + 10.0f32 * advance) * k;
+    const y = u1.hits[i].y + u1.hits[i].h * 0.5f32;
+    const [u2, m3] = steps(u1, m2, [Moved(x, y), Down(0), Up(0)], 1000u64 * MS, update);
+    const d3 = m3.tabs[m3.active].doc;
+    const [u4, m4] = steps(u1, m2, [Moved(x, y), Down(0), Moved(x + 4.0f32 * advance * k, y + 19.0f32 * k), Up(0)], 1000u64 * MS, update);
+    const d4 = m4.tabs[m4.active].doc;
+    return `${k}: click ${d3.cursor.line}:${d3.cursor.col}, drag ${d4.anchor.line}:${d4.anchor.col} to ${d4.cursor.line}:${d4.cursor.col}`;
+}
+
+action main(args: string[k]): i32 {
+    return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+        Ok(f) => match (parse(readBytes("tests/fonts/DejaVuSansMono.ttf"))) {
+            Err(e) => {
+                print(e);
+                return 1;
+            },
+            Ok(mono) => match (parse(readBytes("tests/fonts/codicon.ttf"))) {
+                Err(e) => {
+                    print(e);
+                    return 1;
+                },
+                Ok(icons) => {
+                    const fonts = [f, mono, icons, icons, f, icons, f];
+                    const advance = lineWidth(mono, 14.0f32, "0000000000") / 10.0f32;
+                    print(played(fonts, advance, 1.0f32));
+                    print(played(fonts, advance, 1.25f32));
+                    print(played(fonts, advance, 1.5f32));
+                    return 0;
+                },
+            },
+        },
+    };
+}

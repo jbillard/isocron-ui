@@ -1,0 +1,16 @@
+.a {
+    gap: 2;
+    background: #202122;
+}
+
+.a:hover {
+    background: #2A2A2B;
+}
+
+.a:active {
+    gap: 4;
+}
+
+.b {
+    padX: 3;
+}

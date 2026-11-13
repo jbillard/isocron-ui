@@ -37,7 +37,7 @@ const NAMES: string[] = [
     "division", "oslash", "ugrave", "uacute", "ucircumflex", "udiaeresis", "yacute", "thorn",
     "ydiaeresis", "EuroSign", "oe", "OE",
     "BackSpace", "Tab", "Return", "KP_Enter", "Escape", "Delete", "Left", "Up",
-    "Right", "Down", "Home", "End", "KP_Space",
+    "Right", "Down", "Home", "End", "KP_Space", "Prior", "Next", "Page_Up", "Page_Down",
     "dead_grave", "dead_acute", "dead_circumflex", "dead_tilde", "dead_macron", "dead_breve", "dead_abovedot", "dead_diaeresis",
     "dead_abovering", "dead_doubleacute", "dead_caron", "dead_cedilla",
 ];
@@ -61,7 +61,7 @@ const CODES: i64[] = [
     247, 248, 249, 250, 251, 252, 253, 254,
     255, 0x20AC, 0x153, 0x152,
     8, 9, 13, 13, 27, 0x110005, 0x110001, 0x110002,
-    0x110003, 0x110004, 0x110006, 0x110007, 32,
+    0x110003, 0x110004, 0x110006, 0x110007, 32, 0x110008, 0x110009, 0x110008, 0x110009,
     // the dead keys: DEAD of input.isc plus their accent
     0xF0000, 0xF0001, 0xF0002, 0xF0003, 0xF0004, 0xF0005, 0xF0006, 0xF0007,
     0xF0008, 0xF0009, 0xF000A, 0xF000B,

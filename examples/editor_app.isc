@@ -1,0 +1,52 @@
+// The editor of code in the manner of Visual Studio Code, compiled: its
+// view made by tools/uigen from examples/editor/editor.ui.xml and the
+// styles of the one read at run time (examples/scripted/editor.style), what
+// it does in examples/editor/editor.isc. The folder given (the current one
+// by default) read at the start, shown in its tree.
+// usage: editor_app [FOLDER] [--font=file] [--mono=file] [--icons=file]
+//   [--seti=file] [--bold=file] [--caption=file] [--semibold=file]
+//   iscc run tools/uigen/uigen.isc examples/editor/editor.ui.xml examples/editor/editor_view.isc
+//   iscc build examples/editor_app.isc -o editor_app
+import { runWindow, loadFont, loadMonoFont, loadIconFont, loadSetiFont, loadBoldFont, loadCaptionFont, loadSemiboldFont, fail } from "../src/app";
+import { Font } from "../src/font";
+import { lineWidth } from "../src/text";
+import { initial, update, treeOf } from "./editor/editor";
+import { view } from "./editor/editor_view";
+import * as sys from "sys";
+
+action main(args: string[k]): i32 {
+    const folders = filter(args, (a) => !a.startsWith("--"));
+    const root = folders.length > 0 ? folders[0] : ".";
+    return match (loadFont(args)) {
+        Err(e) => {
+            fail("Isocron", e);
+            return 1;
+        },
+        Ok(f) => {
+            const orElse = (r: Result<Font, string>, d: Font) => match (r) {
+                Ok(x) => x,
+                Err(e) => d,
+            };
+            const iconFont = orElse(loadIconFont(args), f);
+            const bold = orElse(loadBoldFont(args), f);
+            // (the faces of editor.isc: sans, mono, icons, seti, bold,
+            // caption, semibold)
+            const mono = orElse(loadMonoFont(args), f);
+            const fonts = [f, mono, iconFont, orElse(loadSetiFont(args), f), bold, orElse(loadCaptionFont(args), iconFont), orElse(loadSemiboldFont(args), bold)];
+            // (the width of a column of the code: Consolas or DejaVu Sans Mono
+            // at 14 units)
+            const advance = lineWidth(mono, 14.0f32, "0000000000") / 10.0f32;
+            // (the name of the folder: that of the current one for ".")
+            const full = root == "." ? match (sys.cwd()) {
+                Ok(c) => c,
+                Err(e) => ".",
+            } : root;
+            const cut = max(full.lastIndexOf("/"), full.lastIndexOf("\\"));
+            const name = cut >= 0 && cut < full.length - 1 ? full.slice(cut + 1, full.length) : full;
+            const [nodes, files] = treeOf(root, 0, []);
+            const m = initial(root, name, sys.platform(), nodes, files, advance);
+            const end = runWindow({ title: "Isocron : éditeur", width: 1100, height: 720, resizable: true, minimizable: true, maximizable: true, drawn: true }, ["Couper", "Copier", "Coller", "Tout sélectionner"], fonts, m, view, update);
+            return 0;
+        },
+    };
+}

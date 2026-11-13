@@ -23,6 +23,8 @@ export const DOWN: i64 = 0x110004;
 export const DELETE: i64 = 0x110005;
 export const HOME: i64 = 0x110006;
 export const END: i64 = 0x110007;
+export const PAGE_UP: i64 = 0x110008;
+export const PAGE_DOWN: i64 = 0x110009;
 
 // a dead key (an accent typed before its letter, `^` then `e`: `ê`), as a
 // character of the hand: DEAD plus its accent, in the order of the symbols
@@ -62,12 +64,14 @@ export function spacingAccent(k: i64): i64 {
 
 // the input of the hand:
 // - `Click(place, x, y, at, clicks, mods)`: the left button pressed on the
-//   place whose message is `place`, at (x, y) from its top left corner;
+//   place whose message is `place`, at (x, y) units from its top left
+//   corner (pixels divided by the density of the screen);
 //   `at`, the offset in the text of a field under it where a caret would go
 //   (-1: no field); `clicks`, 1, 2 for a double click, 3 for a triple one;
 //   the modifiers held
 // - `Drag(place, x, y, at)`: the pointer moved, the button held since a
-//   click on `place` (x, y and `at` as for that place, beyond it too)
+//   click on `place` (x, y in units and `at` as for that place, beyond it
+//   too)
 // - `Release(place)`: the button released after a click on `place`
 // - `Hover(place)`: the place under the pointer changed (-1: none)
 // - `Text(c)`: a character typed (a code point, a space or above)
@@ -92,7 +96,21 @@ export function spacingAccent(k: i64): i64 {
 // - `FolderListed(path, names, ok)`: the names in the folder `path` asked
 //   by `ListFolder`, those of folders ending with `/` (`ok` false: none,
 //   the reason as the only name)
-export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i64) | Release(i64) | Hover(i64) | Text(i64) | Key(i64, i64) | Paste(string) | Focus(i64) | Viewport(i64, f32, f32) | Tick(i64) | TextRead(string, string, boolean) | FolderListed(string, string[], boolean);
+// - `WindowState(maximized)`: the window maximized or not, told when it
+//   changes (a title the application draws shows its button that restores
+//   it then)
+// - `WindowSize(width, height)`: the size of the inside of the window, in
+//   units, told when it or the density changes, before the boxes that
+//   scroll (a `Viewport(-1, 0, 0)` always after it: an application that
+//   makes its view again waits for it); a bar laid out after the width (a
+//   box 38 % of the window wide, Visual Studio Code)
+// - `TextWritten(path, ok, reason)`: the text asked written by `WriteText`
+//   written (`ok`), or the reason it was not
+// - `WindowActive(active)`: the window the keyboard goes to or not, told
+//   when it changes (Visual Studio Code dims its bar of the title in a
+//   window inactive); under Windows, X11 (FocusIn, FocusOut) and Wayland
+//   (the state `activated` of its configuration)
+export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i64) | Release(i64) | Hover(i64) | Text(i64) | Key(i64, i64) | Paste(string) | Focus(i64) | Viewport(i64, f32, f32) | Tick(i64) | TextRead(string, string, boolean) | FolderListed(string, string[], boolean) | WindowState(boolean) | WindowSize(f32, f32) | WindowActive(boolean) | TextWritten(string, boolean, string);
 
 // what an application asks after an input: a text copied to the clipboard,
 // the text of the clipboard (it comes as `Paste`), the next frame of an
@@ -100,4 +118,11 @@ export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i6
 // `Tick` while the animation lasts, the window drawn again each time), the
 // text of a file (it comes as `TextRead`), the names in a folder (as
 // `FolderListed`), each answered in the order asked
-export type Effect = Copy(string) | AskPaste | Animate | ReadText(string) | ListFolder(string);
+// (`Minimize`, `ToggleMaximized`, `CloseWindow`: what the buttons of a
+// title the application draws ask, `WindowSpec.drawn`)
+// (`WriteText(path, text)`: the file written, `TextWritten` after;
+// `ScrollTo(box, offset)`: the box that scrolls `box` at `offset` units
+// from its top; `Reveal(box, y, height)`: that box scrolled as little as
+// shows the band of `height` units at `y` from the top of its content,
+// whole (the line of the cursor of an editor in sight))
+export type Effect = Copy(string) | AskPaste | Animate | ReadText(string) | ListFolder(string) | Minimize | ToggleMaximized | CloseWindow | WriteText(string, string) | ScrollTo(i64, f32) | Reveal(i64, f32, f32);

@@ -7,7 +7,7 @@
 // draw them, and the places the pointer reaches, the last drawn first: a
 // click, the wheel, a scrollbar, the characters of a field, the shape of
 // the pointer.
-import { Primitive, Box, Blur, Clip, Unclip, Raster, Color, quad, rounded, bordered, transparent, rgb, rgba, movedBy } from "./paint";
+import { Primitive, Box, Blur, Glyph, Pending, Clip, Unclip, Raster, Color, quad, rounded, bordered, transparent, rgb, rgba, movedBy } from "./paint";
 import { Font } from "./font";
 import { Align, Start, Center, End, paragraph, paragraphAs, measureParagraph, line, lineAs, lineWidth, stops } from "./text";
 import { Editing, selection } from "./edit";
@@ -47,6 +47,9 @@ function tipAmong(cs: Element[n], id: i64, k: i64): string {
 // message `id`, the radius of its corners as its `range` (its ring drawn
 // around it)
 export const FOCUS: i64 = 6;
+// a place that moves the window when dragged: a title the application
+// draws, a free part of its bar (`moves` of a box)
+export const MOVE: i64 = 7;
 
 // a size along an axis: as its content, a number of pixels, or a share of
 // the room its siblings leave (`Fill(1.0)` and `Fill(2.0)`: a third and two)
@@ -102,11 +105,60 @@ export type Style = {
     // none) and colour, its corners those of the box widened by it
     outline: f32,
     outlineColor: Color,
+    // the width of the border of one side when not that of `border` (-1):
+    // the line under a title, the edge of a tab
+    borderTop: f32,
+    borderRight: f32,
+    borderBottom: f32,
+    borderLeft: f32,
+    // a box over its siblings, out of their flow: placed at the top of its
+    // parent's inside (its width its own, `Fill` that of the parent), drawn
+    // and reached after them (a palette, a menu)
+    floating: boolean,
+    // a box that moves the window when dragged where none of its children
+    // takes the pointer: a title the application draws (`WindowSpec.drawn`)
+    moves: boolean,
+    // its width never under `minWidth` nor past `maxWidth` (-1: no limit),
+    // whatever its parent gives it (a share of a row, the room of a column
+    // that stretches it): the buttons of a title that the zone around them
+    // keeps, a box at most 600 units wide
+    minWidth: f32,
+    maxWidth: f32,
+    // a row whose children past its width are hidden, its last child (a
+    // button « … ») shown after those that fit when some are and hidden
+    // when all fit: the menus of a bar that folds (Visual Studio Code)
+    folds: boolean,
+    // the radius of one corner when not that of `radius` (-1): a tab
+    // rounded at its top alone, the shoulder of a tab joined to its editor
+    radiusTopLeft: f32,
+    radiusTopRight: f32,
+    radiusBottomRight: f32,
+    radiusBottomLeft: f32,
+    // a box over its siblings (`floating`) drawn under them rather than over
+    // them, and wider than its parent's inside by `spreadX` units on each
+    // side: the shape of a tab behind its text, its shoulders over its
+    // neighbours (Visual Studio Code)
+    under: boolean,
+    spreadX: f32,
+    // the scrollbar of a box that scrolls: the width of its thumb (-1: 6
+    // units, 8 under the pointer), its colours (transparent: a black of
+    // 28 %, 45 % under the pointer), its corners (-1: half its width), its
+    // room from the right edge (-1: 2 units): the slider of Visual Studio
+    // Code, 13 units of #A8A9AA85 at the edge, corners of 4
+    barWidth: f32,
+    barColor: Color,
+    barHoverColor: Color,
+    barRadius: f32,
+    barInset: f32,
+    // the box and all it draws faded to this opacity (1: as they are): the
+    // bar of the title of Visual Studio Code while its window is inactive
+    opacity: f32,
 };
 
 // how a text looks: its size (`em`, pixels a em), its colour, how its lines are
 // placed in its width, the height of a line
-export type TextStyle = { em: f32, color: Color, align: Align, lineHeight: f32, face: i64 };
+// (`caret`: the colour of the caret of a field holding the text)
+export type TextStyle = { em: f32, color: Color, align: Align, lineHeight: f32, face: i64, caret: Color };
 
 // an element: a box and its children, a text, or the line of a field (its
 // text, caret and selection; with the focus, its caret and its selection
@@ -116,7 +168,9 @@ export type TextStyle = { em: f32, color: Color, align: Align, lineHeight: f32, 
 // (`Canvas(w, h, ps)`: the primitives `ps` drawn in a box of `w` by `h`,
 // their (0, 0) its corner, in pixels: not enlarged with the density, as
 // GPUI's `canvas`)
-export type Element = Div(Style, Element[k]) | Label(TextStyle, string) | Input(TextStyle, Editing, boolean, string) | Image(Picture, f32, f32) | Canvas(f32, f32, Primitive[]);
+// (`Caret(w, h, c)`: the caret of an editor, `w` by `h` of the colour `c`,
+// drawn while the carets blink on; it takes no width among its siblings)
+export type Element = Div(Style, Element[k]) | Label(TextStyle, string) | Input(TextStyle, Editing, boolean, string) | Image(Picture, f32, f32) | Canvas(f32, f32, Primitive[]) | Caret(f32, f32, Color);
 
 // a place the pointer reaches, by its `kind`: CLICK (a box and its message
 // `id`), WHEEL (a box that scrolls: the number of its offset as `id`, as
@@ -153,6 +207,12 @@ function scaledText(ts: TextStyle, k: f32): TextStyle {
 // corners, shadows, rings and texts (the view in units of 96 dots per inch
 // laid out in the pixels of a screen of another density, its texts drawn
 // at their size there, not enlarged after)
+// a border of `b` units in pixels at `k` pixels a unit: whole pixels, one
+// at least (as a browser draws it: a line of 1 unit sharp at 125 %)
+function devicePixels(b: f32, k: f32): f32 {
+    return b > 0.0f32 ? max(1.0f32, f32(i64(b * k + 0.001f32))) : 0.0f32;
+}
+
 export function scaledElement(e: Element, k: f32): Element {
     if (k == 1.0f32) {
         return e;
@@ -162,6 +222,7 @@ export function scaledElement(e: Element, k: f32): Element {
         Input(ts, ed, focused, hint) => Input(scaledText(ts, k), ed, focused, hint),
         Image(p, w, h) => Image(p, (w > 0.0f32 ? w : f32(p.width)) * k, (h > 0.0f32 ? h : f32(p.height)) * k),
         Canvas(w, h, ps) => Canvas(w, h, ps),
+        Caret(w, h, c) => Caret(devicePixels(w, k), h * k, c),
         Div(st, cs) => Div({
             ...st,
             width: scaledLength(st.width, k),
@@ -170,8 +231,22 @@ export function scaledElement(e: Element, k: f32): Element {
             padding: st.padding * k,
             padX: st.padX >= 0.0f32 ? st.padX * k : st.padX,
             padY: st.padY >= 0.0f32 ? st.padY * k : st.padY,
-            border: st.border * k,
+            border: devicePixels(st.border, k),
+            borderTop: st.borderTop >= 0.0f32 ? devicePixels(st.borderTop, k) : st.borderTop,
+            borderRight: st.borderRight >= 0.0f32 ? devicePixels(st.borderRight, k) : st.borderRight,
+            borderBottom: st.borderBottom >= 0.0f32 ? devicePixels(st.borderBottom, k) : st.borderBottom,
+            borderLeft: st.borderLeft >= 0.0f32 ? devicePixels(st.borderLeft, k) : st.borderLeft,
             radius: st.radius * k,
+            radiusTopLeft: st.radiusTopLeft >= 0.0f32 ? st.radiusTopLeft * k : st.radiusTopLeft,
+            radiusTopRight: st.radiusTopRight >= 0.0f32 ? st.radiusTopRight * k : st.radiusTopRight,
+            radiusBottomRight: st.radiusBottomRight >= 0.0f32 ? st.radiusBottomRight * k : st.radiusBottomRight,
+            radiusBottomLeft: st.radiusBottomLeft >= 0.0f32 ? st.radiusBottomLeft * k : st.radiusBottomLeft,
+            minWidth: st.minWidth * k,
+            spreadX: st.spreadX * k,
+            barWidth: st.barWidth >= 0.0f32 ? st.barWidth * k : st.barWidth,
+            barRadius: st.barRadius >= 0.0f32 ? st.barRadius * k : st.barRadius,
+            barInset: st.barInset >= 0.0f32 ? st.barInset * k : st.barInset,
+            maxWidth: st.maxWidth >= 0.0f32 ? st.maxWidth * k : st.maxWidth,
             shadowBlur: st.shadowBlur * k,
             shadowY: st.shadowY * k,
             outline: st.outline * k,
@@ -226,6 +301,52 @@ export function style(): Style {
         padY: -1.0f32,
         outline: 0.0f32,
         outlineColor: transparent(),
+        borderTop: -1.0f32,
+        borderRight: -1.0f32,
+        borderBottom: -1.0f32,
+        borderLeft: -1.0f32,
+        floating: false,
+        moves: false,
+        minWidth: 0.0f32,
+        maxWidth: -1.0f32,
+        folds: false,
+        radiusTopLeft: -1.0f32,
+        radiusTopRight: -1.0f32,
+        radiusBottomRight: -1.0f32,
+        radiusBottomLeft: -1.0f32,
+        under: false,
+        spreadX: 0.0f32,
+        barWidth: -1.0f32,
+        barColor: transparent(),
+        barHoverColor: transparent(),
+        barRadius: -1.0f32,
+        barInset: -1.0f32,
+        opacity: 1.0f32,
+    };
+}
+
+// whether `e` is a box over its siblings (`floating`)
+function floats(e: Element): boolean {
+    return match (e) {
+        Div(st, cs) => st.floating,
+        _ => false,
+    };
+}
+
+// whether `e` is a box over its siblings drawn under them (`under`)
+function beneath(e: Element): boolean {
+    return match (e) {
+        Div(st, cs) => st.floating && st.under,
+        _ => false,
+    };
+}
+
+// the units a box over its siblings spreads past its parent's inside on
+// each side (`spreadX`)
+function spreadOf(e: Element): f32 {
+    return match (e) {
+        Div(st, cs) => st.spreadX,
+        _ => 0.0f32,
     };
 }
 
@@ -237,7 +358,7 @@ function padsOf(st: Style): [f32, f32] {
 // a text of `em` pixels a em in the colour `c`, its lines at the start
 // of its width, 1.4 em apart
 export function textStyle(em: f32, c: Color): TextStyle {
-    return { em: em, color: c, align: Start, lineHeight: em * 1.4f32, face: 0 };
+    return { em: em, color: c, align: Start, lineHeight: em * 1.4f32, face: 0, caret: caretColor() };
 }
 
 function isRow(d: Direction): boolean {
@@ -270,6 +391,21 @@ function sized(l: Length, content: f32): f32 {
     };
 }
 
+// the width `w` within the limits of the style `st` (`minWidth`,
+// `maxWidth`)
+function bounded(st: Style, w: f32): f32 {
+    const below = st.maxWidth >= 0.0f32 ? min(w, st.maxWidth) : w;
+    return max(below, st.minWidth);
+}
+
+// the width `w` within the limits of the element `e` (a box's)
+function boundedWidth(e: Element, w: f32): f32 {
+    return match (e) {
+        Div(st, cs) => bounded(st, w),
+        _ => w,
+    };
+}
+
 // the size of the element `e` (its width, its height) when it has `room`
 // pixels of width: a text cut in lines of that width, a box around its
 // children (their sizes along its main axis added with the gaps, the
@@ -281,12 +417,19 @@ function measure(fs: Font[k], e: Element, room: f32): [f32, f32] {
         Input(ts, ed, focused, hint) => [lineWidth(fs[faceOf(ts, k)], ts.em, ed.text == "" ? hint : ed.text) + 2.0f32, ts.lineHeight] as const,
         Image(p, w, h) => [w > 0.0f32 ? w : f32(p.width), h > 0.0f32 ? h : f32(p.height)] as const,
         Canvas(w, h, ps) => [w, h] as const,
+        Caret(w, h, c) => [0.0f32, h] as const,
         Div(st, cs) => {
             const row = isRow(st.direction);
             const [px, py] = padsOf(st);
-            const inner = sized(st.width, room) - 2.0f32 * px;
-            const sizes = map(cs, (c) => measure(fs, c, inner));
-            const gaps = cs.length > 1 ? f32(cs.length - 1) * st.gap : 0.0f32;
+            const inner = bounded(st, sized(st.width, room)) - 2.0f32 * px;
+            // (a box over its siblings takes no room among them; the last
+            // child of a row that folds, its button « … », none when all
+            // its children are shown)
+            const n = cs.length;
+            const out = (i: i64) => floats(cs[i]) || (st.folds && row && i == n - 1);
+            const sizes = map(iota(n), (i) => out(i) ? [0.0f32, 0.0f32] as const : measure(fs, cs[i], inner));
+            const inFlow = count(iota(n), (i) => !out(i));
+            const gaps = inFlow > 1 ? f32(inFlow - 1) * st.gap : 0.0f32;
             const along = fold(sizes, gaps, (a, s) => {
                 const [w, h] = s;
                 return a + (row ? w : h);
@@ -297,7 +440,7 @@ function measure(fs: Font[k], e: Element, room: f32): [f32, f32] {
             });
             const w = (row ? along : across) + 2.0f32 * px;
             const h = (row ? across : along) + 2.0f32 * py;
-            return [sized(st.width, w), sized(st.height, h)] as const;
+            return [bounded(st, sized(st.width, w)), sized(st.height, h)] as const;
         },
     };
 }
@@ -318,11 +461,22 @@ function baseline(f: Font, ts: TextStyle, y: f32): f32 {
 // what draws the box of the style `st` at (x, y, w, h): its shadow, its
 // background and border
 function decoration(st: Style, x: f32, y: f32, w: f32, h: f32): Primitive[] {
+    // (each corner its own radius, else that of `radius`)
+    const tl = st.radiusTopLeft >= 0.0f32 ? st.radiusTopLeft : st.radius;
+    const tr = st.radiusTopRight >= 0.0f32 ? st.radiusTopRight : st.radius;
+    const brr = st.radiusBottomRight >= 0.0f32 ? st.radiusBottomRight : st.radius;
+    const blr = st.radiusBottomLeft >= 0.0f32 ? st.radiusBottomLeft : st.radius;
     const shadow: Primitive[] = st.shadowBlur > 0.0f32 || st.shadowY != 0.0f32
-        ? [Blur({ x: x, y: y + st.shadowY, w: w, h: h, blur: st.shadowBlur, color: st.shadowColor, topLeft: st.radius, topRight: st.radius, bottomRight: st.radius, bottomLeft: st.radius })]
+        ? [Blur({ x: x, y: y + st.shadowY, w: w, h: h, blur: st.shadowBlur, color: st.shadowColor, topLeft: tl, topRight: tr, bottomRight: brr, bottomLeft: blr })]
         : [];
-    const visible = st.background.a > 0.0f32 || (st.border > 0.0f32 && st.borderColor.a > 0.0f32);
-    const body: Primitive[] = visible ? [Box(bordered(rounded(quad(x, y, w, h, st.background), st.radius), st.border, st.borderColor))] : [];
+    // (each side its own width, else that of `border`)
+    const bt = st.borderTop >= 0.0f32 ? st.borderTop : st.border;
+    const br = st.borderRight >= 0.0f32 ? st.borderRight : st.border;
+    const bb = st.borderBottom >= 0.0f32 ? st.borderBottom : st.border;
+    const bl = st.borderLeft >= 0.0f32 ? st.borderLeft : st.border;
+    const visible = st.background.a > 0.0f32 || ((bt > 0.0f32 || br > 0.0f32 || bb > 0.0f32 || bl > 0.0f32) && st.borderColor.a > 0.0f32);
+    const q = bordered(rounded(quad(x, y, w, h, st.background), st.radius), st.border, st.borderColor);
+    const body: Primitive[] = visible ? [Box({ ...q, top: bt, right: br, bottom: bb, left: bl, topLeft: tl, topRight: tr, bottomRight: brr, bottomLeft: blr })] : [];
     const o = st.outline;
     const ring: Primitive[] = o > 0.0f32 && st.outlineColor.a > 0.0f32 ? [Box(rounded(quad(x - o, y - o, w + 2.0f32 * o, h + 2.0f32 * o, st.outlineColor), st.radius + o))] : [];
     return concat(concat(shadow, ring), body);
@@ -363,7 +517,7 @@ function placeInput(f: Font, face: i64, ts: TextStyle, ed: Editing, focused: boo
     const [a, b] = selection(ed);
     const sel: Primitive[] = focused && a != b ? [Box(quad(ox + at(a), top, at(b) - at(a), ts.lineHeight, selectionColor()))] : [];
     const ch = ts.em * 1.25f32;
-    const caret: Primitive[] = focused && caretOn ? [Box(quad(floor(ox + cx), top + (ts.lineHeight - ch) * 0.5f32, 1.5f32, ch, caretColor()))] : [];
+    const caret: Primitive[] = focused && caretOn ? [Box(quad(floor(ox + cx), top + (ts.lineHeight - ch) * 0.5f32, 1.5f32, ch, ts.caret))] : [];
     // (an empty field shows its hint, its caret before it)
     const text = ed.text == "" ? lineAs(f, ts.em, hint, ox, baseline(f, ts, top), hintColor(), deferred, face) : lineAs(f, ts.em, ed.text, ox, baseline(f, ts, top), ts.color, deferred, face);
     const drawn = concat(concat(concat(concat([Clip(x, y, x + w, y + h)], sel), text), caret), [Unclip]);
@@ -384,10 +538,16 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
         Image(p, iw, ih) => [[Raster({ x: x, y: y, w: w, h: h, iw: p.width, ih: p.height, pixels: p.pixels })], []] as const,
         // (its primitives within its box)
         Canvas(cw, ch, ps) => [concat(concat([Clip(x, y, x + w, y + h)], map(ps, (p) => movedBy(p, x, y))), [Unclip]), []] as const,
+        // (a place of no size, a field with the focus: the carets blink while
+        // it is shown)
+        Caret(cw, ch, c) => [fr.caretOn ? [Box(quad(floor(x), y, cw, ch, c))] : [], [placeOf(x, y, 0.0f32, 0.0f32, 1, FIELD, 0.0f32, -1)]] as const,
         Div(st, cs) => {
             const deco = decoration(st, x, y, w, h);
             const shape = st.cursor >= 0 ? st.cursor : (st.onClick >= 0 ? POINTER : -1);
-            const clicked: Hit[] = st.onClick >= 0 ? [placeOf(x, y, w, h, st.onClick, CLICK, 0.0f32, shape)] : (shape >= 0 ? [placeOf(x, y, w, h, -1, SHAPE, 0.0f32, shape)] : []);
+            const clicked0: Hit[] = st.onClick >= 0 ? [placeOf(x, y, w, h, st.onClick, CLICK, 0.0f32, shape)] : (shape >= 0 ? [placeOf(x, y, w, h, -1, SHAPE, 0.0f32, shape)] : []);
+            // (a box that moves the window: a place of its own before those
+            // of its children, which keep the pointer)
+            const clicked: Hit[] = st.moves ? concat([placeOf(x, y, w, h, -1, MOVE, 0.0f32, -1)], clicked0) : clicked0;
             const hits: Hit[] = st.focusable && st.onClick >= 0 ? concat(clicked, [placeOf(x, y, w, h, st.onClick, FOCUS, st.radius, shape)]) : clicked;
             const row = isRow(st.direction);
             const n = cs.length;
@@ -400,9 +560,16 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
             // right 14 pixels kept for its scrollbar (its children laid out
             // left of it, never under it)
             const scrolls = st.scroll >= 0 && !row;
-            const gapsAll = n > 1 ? f32(n - 1) * st.gap : 0.0f32;
+            // (the boxes over their siblings out of the flow: no room, no
+            // gap; so the last child of a row that folds, placed after the
+            // children shown)
+            const over = map(cs, (c) => floats(c));
+            const folding = st.folds && row && n > 0;
+            const aside = map(iota(n), (i) => over[i] || (folding && i == n - 1));
+            const inFlow = count(aside, (o) => !o);
+            const gapsAll = inFlow > 1 ? f32(inFlow - 1) * st.gap : 0.0f32;
             const tall = scrolls && fold(cs, gapsAll, (a, c) => {
-                const [mw, mh] = measure(fs, c, iw);
+                const [mw, mh] = floats(c) ? [0.0f32, 0.0f32] as const : measure(fs, c, iw);
                 return a + mh;
             }) > ih;
             const cw = tall ? max(0.0f32, iw - 14.0f32 * fr.scale) : iw;
@@ -414,23 +581,33 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
             const grows = map(cs, (c) => share(lengthOf(c, row)));
             const base = map(iota(n), (i) => {
                 const [cw, ch] = sizes[i];
-                return grows[i] > 0.0f32 ? 0.0f32 : (row ? cw : ch);
+                return aside[i] || grows[i] > 0.0f32 ? 0.0f32 : (row ? cw : ch);
             });
-            const gaps = n > 1 ? f32(n - 1) * st.gap : 0.0f32;
+            const gaps = gapsAll;
             const used = fold(base, gaps, (a, b) => a + b);
-            const shares = fold(grows, 0.0f32, (a, g) => a + g);
+            const shares = fold(iota(n), 0.0f32, (a, i) => aside[i] ? a : a + grows[i]);
             const room = max(0.0f32, mainRoom - used);
-            const mains = map(iota(n), (i) => grows[i] > 0.0f32 ? room * grows[i] / shares : base[i]);
-            const left = shares > 0.0f32 ? 0.0f32 : room;
+            // (in a row, a share past the limits of its child's width: the
+            // child at its limit, the room left shared by the others)
+            const tried = map(iota(n), (i) => !aside[i] && grows[i] > 0.0f32 ? room * grows[i] / shares : base[i]);
+            const held = map(iota(n), (i) => row && !aside[i] && grows[i] > 0.0f32 && boundedWidth(cs[i], tried[i]) != tried[i]);
+            const heldRoom = fold(iota(n), 0.0f32, (a, i) => held[i] ? a + boundedWidth(cs[i], tried[i]) : a);
+            const freeShares = fold(iota(n), 0.0f32, (a, i) => aside[i] || held[i] ? a : a + grows[i]);
+            const freeRoom = max(0.0f32, room - heldRoom);
+            const mains = map(iota(n), (i) => held[i] ? boundedWidth(cs[i], tried[i])
+                : (!aside[i] && grows[i] > 0.0f32 ? freeRoom * grows[i] / freeShares : base[i]));
+            // (the room no child takes: none when one shares it, that its
+            // limits leave when all are held)
+            const left = shares > 0.0f32 ? (freeShares > 0.0f32 ? 0.0f32 : freeRoom) : room;
             const [first, extra] = match (st.justify) {
                 Packed(a) => match (a) {
                     Start => [0.0f32, 0.0f32] as const,
                     Center => [left * 0.5f32, 0.0f32] as const,
                     End => [left, 0.0f32] as const,
                 },
-                Between => [0.0f32, n > 1 ? left / f32(n - 1) : 0.0f32] as const,
+                Between => [0.0f32, inFlow > 1 ? left / f32(inFlow - 1) : 0.0f32] as const,
             };
-            const ends = scan(map(iota(n), (i) => mains[i] + st.gap + extra), (a, b) => a + b, 0.0f32);
+            const ends = scan(map(iota(n), (i) => aside[i] ? 0.0f32 : mains[i] + st.gap + extra), (a, b) => a + b, 0.0f32);
             // a column that scrolls: its children moved up by its offset,
             // within the height they have past its own
             const range = scrolls ? max(0.0f32, used - mainRoom) : 0.0f32;
@@ -440,33 +617,64 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
             const frames = map(iota(n), (i) => {
                 const c = cs[i];
                 const [cw, ch] = sizes[i];
+                // (a box over its siblings at the top of the inside: its own
+                // width, `Fill` that of the inside, its own height)
+                const [ow, oh] = over[i] ? measure(fs, c, iw) : [0.0f32, 0.0f32] as const;
+                const wide = match (lengthOf(c, true)) {
+                    Fill(k) => true,
+                    _ => false,
+                };
                 const fixed = match (lengthOf(c, !row)) {
                     Px(v) => true,
                     _ => false,
                 };
                 const content = row ? ch : cw;
-                const cross = st.stretch && !fixed ? crossRoom : content;
+                // (a width stretched within the limits of the child's)
+                const cross = st.stretch && !fixed ? (row ? crossRoom : boundedWidth(c, crossRoom)) : content;
                 const at = match (st.align) {
                     Start => 0.0f32,
                     Center => (crossRoom - cross) * 0.5f32,
                     End => crossRoom - cross,
                 };
                 const along = first + ends[i] - (mains[i] + st.gap + extra) - off;
-                return row
+                return over[i] ? [ix - spreadOf(c), iy, (wide ? iw : ow) + 2.0f32 * spreadOf(c), oh] as const
+                    : (row
                     ? [ix + along, iy + at, mains[i], cross] as const
-                    : [ix + at, iy + along, cross, mains[i]] as const;
+                    : [ix + at, iy + along, cross, mains[i]] as const);
+            });
+            // a row that folds: its children shown while they fit, its last
+            // (its button « … ») after them when some do not
+            const rightOf = (i: i64) => {
+                const [fx, fy, fw, fh] = frames[i];
+                return fx + fw - ix;
+            };
+            const all = folding && (n < 2 || rightOf(n - 2) <= iw + 0.5f32);
+            const [mw, mh] = folding ? sizes[n - 1] : [0.0f32, 0.0f32] as const;
+            const fits = map(iota(n), (i) => !folding || i == n - 1 || over[i]
+                || (all ? true : rightOf(i) + st.gap + mw <= iw + 0.5f32));
+            const shownKids = filter(iota(n), (i) => fits[i] && !(folding && i == n - 1 && all));
+            const lastFit = fold(iota(n), -1, (a, i) => i < n - 1 && fits[i] && !over[i] ? i : a);
+            const placed = map(iota(n), (i) => {
+                if (!folding || i != n - 1 || all) {
+                    return frames[i];
+                }
+                const [fx, fy, fw, fh] = frames[i];
+                return [lastFit >= 0 ? ix + rightOf(lastFit) + st.gap : ix, fy, mw, fh] as const;
             });
             // a box that cuts its children: those wholly outside it not
             // placed (a long list scrolled: its rows out of sight neither
             // drawn nor reached)
             const cuts = st.clip || scrolls;
-            const seenKids = filter(iota(n), (i) => {
-                const [fx, fy, fw, fh] = frames[i];
+            const seenKids = filter(shownKids, (i) => {
+                const [fx, fy, fw, fh] = placed[i];
                 return !cuts || (fy < iy + ih && fy + fh > iy && fx < ix + iw && fx + fw > ix);
             });
-            const [cps, chs] = placeFrom(fs, map(seenKids, (i) => cs[i]), map(seenKids, (i) => frames[i]), 0, [], [], fr);
+            // (the boxes over their siblings drawn and reached after them,
+            // those `under` them before them)
+            const ordered = concat(concat(filter(seenKids, (i) => over[i] && beneath(cs[i])), filter(seenKids, (i) => !over[i])), filter(seenKids, (i) => over[i] && !beneath(cs[i])));
+            const [cps, chs] = placeFrom(fs, map(ordered, (i) => cs[i]), map(ordered, (i) => placed[i]), 0, [], [], fr);
             if (!st.clip && !scrolls) {
-                return [concat(deco, cps), concat(hits, chs)] as const;
+                return [fadedAll(concat(deco, cps), st.opacity), concat(hits, chs)] as const;
             }
             // clipped: the children drawn within the padding box, their
             // places cut to it (none left where they are hidden)
@@ -485,12 +693,37 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
             // 12 pixels, over its children
             const hot = fr.hotBar == st.scroll;
             const [ty, th] = thumb(iy, ih, range, off, fr.scale);
-            const bw = (hot ? 8.0f32 : 6.0f32) * fr.scale;
-            const bar: Primitive[] = range > 0.0f32 ? [Box(rounded(quad(x1 - 2.0f32 * fr.scale - bw, ty, bw, th, rgba(0.0f32, 0.0f32, 0.0f32, hot ? 0.45f32 : 0.28f32)), bw * 0.5f32))] : [];
+            // (the thumb of the style, else the library's)
+            const bw = st.barWidth >= 0.0f32 ? st.barWidth : (hot ? 8.0f32 : 6.0f32) * fr.scale;
+            const inset = st.barInset >= 0.0f32 ? st.barInset : 2.0f32 * fr.scale;
+            const own = hot ? st.barHoverColor : st.barColor;
+            const shade = own.a > 0.0f32 ? own : rgba(0.0f32, 0.0f32, 0.0f32, hot ? 0.45f32 : 0.28f32);
+            const corner = st.barRadius >= 0.0f32 ? st.barRadius : bw * 0.5f32;
+            const bar: Primitive[] = range > 0.0f32 ? [Box(rounded(quad(x1 - inset - bw, ty, bw, th, shade), corner))] : [];
             const barPlace: Hit[] = range > 0.0f32 ? [placeOf(x1 - 12.0f32 * fr.scale, iy, 12.0f32 * fr.scale, ih, st.scroll, BAR, range, ARROW)] : [];
             const drawn = concat(concat(concat(concat(deco, [Clip(ix, iy, x1, y1)]), cps), bar), [Unclip]);
-            return [drawn, concat(concat(concat(hits, wheel), cut), barPlace)] as const;
+            return [fadedAll(drawn, st.opacity), concat(concat(concat(hits, wheel), cut), barPlace)] as const;
         },
+    };
+}
+
+// the primitives `ps` faded to the opacity `a` (their colours' alpha
+// multiplied; an image's pixels as they are)
+function fadedAll(ps: Primitive[n], a: f32): Primitive[] {
+    return a >= 1.0f32 ? ps : map(ps, (p) => faded(p, a));
+}
+
+function fadedColor(c: Color, a: f32): Color {
+    return { ...c, a: c.a * a };
+}
+
+function faded(p: Primitive, a: f32): Primitive {
+    return match (p) {
+        Box(q) => Box({ ...q, background: fadedColor(q.background, a), borderColor: fadedColor(q.borderColor, a) }),
+        Blur(s) => Blur({ ...s, color: fadedColor(s.color, a) }),
+        Glyph(g) => Glyph({ ...g, color: fadedColor(g.color, a) }),
+        Pending(k) => Pending({ ...k, color: fadedColor(k.color, a) }),
+        other => other,
     };
 }
 

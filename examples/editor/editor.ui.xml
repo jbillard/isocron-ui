@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The editor of code in the manner of Visual Studio Code, compiled: the
+     same elements as examples/scripted/editor.ui.xml, read when the
+     generic application starts, and its styles (editor.style); here its
+     expressions are Isocron, its clicks the messages of editor.isc.
+     tools/uigen makes examples/editor/editor_view.isc of it before
+     examples/editor_app.isc is compiled. -->
+<view function="view" model="Editor" styles="../scripted/editor.style" lib="../../src"
+      import="./editor: Editor, Node, Tab, visibleNodes, when, viewTitle, shown, commandWidth, winGlyph, captionFace, captionSize, chevron, rel, crumbs, codeArea, tabDirty, found, matches, baseName, statusItems, langName, divided, FILES, NOTHING, MENU_MORE, COMMAND, CHAT, COPILOT, SIGN_IN, LAYOUT, TOGGLE_SIDEBAR, TOGGLE_PANEL, ASIDE, MINIMIZE, MAXIMIZE, CLOSE_WINDOW, ACCOUNTS, MANAGE, SIDE_MORE, ROOT_SECTION, SASH_V, SASH_H, SPLIT, TAB_MORE, QUERY, SEARCH, REMOTE, PROBLEMS, BELL, STATUS_COPILOT, LANGUAGE, MENU, ACTIVITY, SECTION, STATUS, TAB, CLOSE_TAB, MATCH, NODE, FOUND, LINE, MENUS, SECTIONS, ACTIVITY_ICONS, ACTIVITY_TIPS, I_MORE, I_BACK, I_FORWARD, I_CHAT, I_DOWN, I_RIGHT, I_COPILOT, I_LAYOUT, I_SIDEBAR_ON, I_SIDEBAR_OFF, I_PANEL_ON, I_PANEL_OFF, I_ASIDE_OFF, I_ACCOUNT, I_GEAR, I_CLOSE, I_DIRTY, I_SPLIT, I_ERROR, I_WARNING, I_BELL, I_REMOTE, I_BRACES, ICONS, SETI, MONO; ./icons: fileIcon, fileIconColor">
+  <column class="window" background="{m.windowActive ? rgb(0x191A1Bu32) : rgb(0x121314u32)}">
+    <row class="titlebar" moves="true">
+      <row class="titleLeft" opacity="{m.windowActive ? 1.0f32 : 0.6f32}">
+        <box class="appIcon"><box class="mark"><text class="markText">I</text></box></box>
+        <row class="menubar">
+          <each items="{MENUS}" as="name" index="k">
+            <row class="menu" id="{MENU + k}"><text class="menuText">{name}</text></row>
+          </each>
+          <row class="menu" id="{MENU_MORE}"><text class="menuIcon" font="{ICONS}">{I_MORE}</text></row>
+        </row>
+      </row>
+      <row class="titleCenter" opacity="{m.windowActive ? 1.0f32 : 0.6f32}">
+        <row class="nav"><text class="navIcon" font="{ICONS}">{I_BACK}</text></row>
+        <row class="nav"><text class="navIcon" font="{ICONS}">{I_FORWARD}</text></row>
+        <row class="command" width="{Px(commandWidth(m))}" background="{m.windowActive ? rgb(0x191A1Bu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)}" id="{COMMAND}" tip="Search files by name (Ctrl+P)">
+          <text class="commandText" color="{m.windowActive ? rgb(0xBFBFBFu32) : rgb(0x8C8C8Cu32)}">{m.rootName}</text>
+          <box width="fill"/>
+          <row class="chat">
+            <box class="tool"><text class="chatIcon" font="{ICONS}">{I_CHAT}</text></box>
+            <box width="18" height="22" justify="center" align="center" stretch="false"><text class="chatMore" font="{ICONS}">{I_DOWN}</text></box>
+          </row>
+        </row>
+      </row>
+      <row class="titleRight">
+        <row class="account" opacity="{m.windowActive ? 1.0f32 : 0.6f32}">
+          <row class="tool" id="{COPILOT}"><text class="toolIcon" font="{ICONS}">{I_COPILOT}</text></row>
+          <row class="signIn" id="{SIGN_IN}"><text class="signInText">Sign In</text></row>
+        </row>
+        <box width="fill"/>
+        <row class="layoutTools" opacity="{m.windowActive ? 1.0f32 : 0.6f32}">
+          <row class="tool" id="{LAYOUT}" tip="Customize Layout..."><text class="toolIcon" font="{ICONS}">{I_LAYOUT}</text></row>
+          <row class="tool" id="{TOGGLE_SIDEBAR}" tip="Toggle Primary Side Bar (Ctrl+B)"><text class="toolIcon" font="{ICONS}">{m.sidebarShown ? I_SIDEBAR_ON : I_SIDEBAR_OFF}</text></row>
+          <row class="tool" id="{TOGGLE_PANEL}" tip="Toggle Panel (Ctrl+J)"><text class="toolIcon" font="{ICONS}">{m.panelShown ? I_PANEL_ON : I_PANEL_OFF}</text></row>
+          <row class="tool" id="{ASIDE}" tip="Toggle Secondary Side Bar"><text class="toolIcon" font="{ICONS}">{I_ASIDE_OFF}</text></row>
+        </row>
+        <row class="winButton" id="{MINIMIZE}"><text class="winIcon" font="{captionFace(m)}" size="{captionSize(m)}">{winGlyph(m, 0)}</text></row>
+        <row class="winButton" id="{MAXIMIZE}"><text class="winIcon" font="{captionFace(m)}" size="{captionSize(m)}">{winGlyph(m, 1)}</text></row>
+        <row class="winClose" id="{CLOSE_WINDOW}"><text class="winIcon" font="{captionFace(m)}" size="{captionSize(m)}">{winGlyph(m, 3)}</text></row>
+      </row>
+    </row>
+    <row class="body">
+      <column class="activity" radiusTopRight="{m.sidebarShown ? 0.0f32 : 8.0f32}" radiusBottomRight="{m.sidebarShown ? 0.0f32 : 8.0f32}">
+        <each items="{ACTIVITY_ICONS}" as="icon" index="v">
+          <box class="act">
+            <box class="actOff" id="{ACTIVITY + v}" tip="{ACTIVITY_TIPS[v]}" background="{shown(m, v) ? rgb(0x313233u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)}">
+              <text class="actIcon" font="{ICONS}" color="{shown(m, v) ? rgb(0xEDEDEDu32) : rgb(0x8C8C8Cu32)}">{icon}</text>
+            </box>
+          </box>
+        </each>
+        <box height="fill"/>
+        <box class="act"><box class="actOff" id="{ACCOUNTS}" tip="Accounts"><text class="actIcon" font="{ICONS}" color="#8C8C8C">{I_ACCOUNT}</text></box></box>
+        <box class="act"><box class="actOff" id="{MANAGE}" tip="Manage"><text class="actIcon" font="{ICONS}" color="#8C8C8C">{I_GEAR}</text></box></box>
+      </column>
+      <each items="{when(m.sidebarShown)}" as="s">
+        <row height="fill" stretch="true">
+          <column class="sidebar" width="{Px(m.sidebarWidth)}">
+            <row class="sideHeader">
+              <box class="sideTitleBox"><text class="sideTitle">{viewTitle(m)}</text></box>
+              <box width="fill"/>
+              <row class="tool" id="{SIDE_MORE}" tip="Views and More Actions..."><text class="toolIcon" font="{ICONS}">{I_MORE}</text></row>
+            </row>
+            <each items="{when(m.view == FILES)}" as="v1">
+              <column class="sideBody">
+                <row class="sectionLine">
+                  <row class="section" id="{ROOT_SECTION}">
+                    <box width="7" height="1"/>
+                    <box class="twistieBox"><text class="twistie" font="{ICONS}">{m.rootOpen ? I_DOWN : I_RIGHT}</text></box>
+                    <box width="2" height="1"/>
+                    <text class="sectionText">{m.rootName}</text>
+                  </row>
+                </row>
+                <box class="treeBox" scroll="0">
+                  <each items="{visibleNodes(m)}" as="ix">
+                    <row class="node" id="{NODE + ix}" background="{m.nodes[ix].path == m.current ? rgb(0x2C2D2Eu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)}">
+                      <box width="{Px(f32(m.nodes[ix].depth * 8 + 11))}" height="1"/>
+                      <box class="fileIcon">
+                        <each items="{when(m.nodes[ix].dir)}" as="f">
+                          <text class="twistie" font="{ICONS}">{chevron(m.nodes[ix])}</text>
+                        </each>
+                        <each items="{when(!m.nodes[ix].dir)}" as="f">
+                          <text size="19.5" font="{SETI}" color="{fileIconColor(m.nodes[ix].name)}">{fileIcon(m.nodes[ix].name)}</text>
+                        </each>
+                      </box>
+                      <box width="3" height="1"/>
+                      <text class="nodeText" color="{m.nodes[ix].path == m.current ? rgb(0xEDEDEDu32) : rgb(0xBFBFBFu32)}">{m.nodes[ix].name}</text>
+                    </row>
+                  </each>
+                </box>
+                <each items="{SECTIONS}" as="sec" index="k">
+                  <row class="sectionLine">
+                    <box class="sectionRule" floating="true"/>
+                    <row class="section" id="{SECTION + k}">
+                      <box width="7" height="1"/>
+                      <box class="twistieBox"><text class="twistie" font="{ICONS}">{I_RIGHT}</text></box>
+                      <box width="2" height="1"/>
+                      <text class="sectionText">{sec}</text>
+                    </row>
+                  </row>
+                </each>
+                <box width="1" height="4"/>
+              </column>
+            </each>
+            <each items="{when(m.view == 1)}" as="v2">
+              <column class="sideBody">
+                <row class="searchRow"><field class="input" edit="{m.search}" focused="{m.field == SEARCH}" hint="Search" id="{SEARCH}"/></row>
+                <box class="treeBox" scroll="3">
+                  <each items="{found(m, m.search.text, 200)}" as="p" index="k">
+                    <row class="node" id="{FOUND + k}" background="{p == m.current ? rgb(0x2C2D2Eu32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)}">
+                      <box width="11" height="1"/>
+                      <box class="fileIcon"><text size="19.5" font="{SETI}" color="{fileIconColor(p)}">{fileIcon(p)}</text></box>
+                      <box width="3" height="1"/>
+                      <text class="nodeText" color="#BFBFBF">{rel(m, p)}</text>
+                    </row>
+                  </each>
+                </box>
+              </column>
+            </each>
+            <each items="{when(m.view >= 2)}" as="v3">
+              <column class="sideBody" padX="12"><text class="placeholder">Cette vue reste à faire.</text></column>
+            </each>
+          </column>
+          <box class="sashV" id="{SASH_V}">
+            <box class="grip"/><box class="grip"/><box class="grip"/>
+          </box>
+        </row>
+      </each>
+      <each items="{when(!m.sidebarShown)}" as="g">
+        <box width="4" height="1"/>
+      </each>
+      <column class="center">
+        <each items="{when(m.palette)}" as="pal">
+          <row class="paletteRow">
+            <column class="palette">
+              <field class="qinput" edit="{m.query}" focused="{m.field == QUERY}" hint="Search files by name" id="{QUERY}"/>
+              <each items="{matches(m)}" as="p" index="k">
+                <row class="match" id="{MATCH + k}" background="{k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)}">
+                  <box class="fileIcon"><text size="19.5" font="{SETI}" color="{fileIconColor(p)}">{fileIcon(p)}</text></box>
+                  <text class="matchText" color="{k == m.choice ? rgb(0xFFFFFFu32) : rgb(0xBFBFBFu32)}">{baseName(p)}</text>
+                  <text class="matchPath" color="{k == m.choice ? rgb(0xFFFFFFu32) : rgb(0x8C8C8Cu32)}">{rel(m, p)}</text>
+                </row>
+              </each>
+            </column>
+          </row>
+        </each>
+        <column class="editorCard">
+          <each items="{when(m.tabs.length > 0)}" as="strip">
+            <column width="fill">
+            <row class="tabs">
+              <each items="{m.tabs}" as="t" index="k">
+                <column>
+                  <each items="{when(k != m.active)}" as="x">
+                    <row class="tab" id="{TAB + k}">
+                      <each items="{when(divided(m, k))}" as="d"><row align="center" stretch="false"><box class="tabDivider"/><box width="5" height="1"/></row></each>
+                      <each items="{when(!divided(m, k))}" as="d"><box class="tabPad"/></each>
+                      <box class="fileIcon"><text size="19.5" font="{SETI}" color="{fileIconColor(t.name)}">{fileIcon(t.name)}</text></box>
+                      <box class="tabGap"/>
+                      <text size="13" color="#8C8C8C">{t.name}</text>
+                      <box class="tabEnd"/>
+                    </row>
+                  </each>
+                  <each items="{when(k == m.active)}" as="x">
+                    <column class="tabOn" id="{TAB + k}">
+                      <column class="tabShape">
+                        <row class="capRow">
+                          <box class="capSide"/>
+                          <box class="cap" borderLeft="{k == 0 ? 0.0f32 : 1.0f32}" radiusTopLeft="{k == 0 ? 0.0f32 : 7.0f32}"/>
+                          <box class="capSide"/>
+                        </row>
+                        <row class="baseRow">
+                          <each items="{when(k != 0)}" as="f"><box class="shoulder"><box class="shoulderLeft"/></box></each>
+                          <each items="{when(k == 0)}" as="f"><box width="7" height="7"/></each>
+                          <box class="base"/>
+                          <box class="shoulder"><box class="shoulderRight"/></box>
+                        </row>
+                      </column>
+                      <row class="tabBody">
+                        <box class="tabPad"/>
+                        <box class="fileIcon"><text size="19.5" font="{SETI}" color="{fileIconColor(t.name)}">{fileIcon(t.name)}</text></box>
+                        <box class="tabGap"/>
+                        <text size="13" color="#EDEDED">{t.name}</text>
+                        <row class="tabEnd">
+                          <box width="4" height="1"/>
+                          <row class="close" id="{CLOSE_TAB + k}"><text class="closeIcon" font="{ICONS}">{tabDirty(m, k) &amp;&amp; m.hover != CLOSE_TAB + k ? I_DIRTY : I_CLOSE}</text></row>
+                        </row>
+                      </row>
+                      <box width="1" height="1"/>
+                    </column>
+                  </each>
+                </column>
+              </each>
+              <box width="fill"/>
+              <each items="{when(m.tabs.length > 0)}" as="e">
+                <row class="tabTools">
+                  <row class="tool" id="{SPLIT}" tip="Split Editor Right"><text class="toolIcon" font="{ICONS}">{I_SPLIT}</text></row>
+                  <row class="tool" id="{TAB_MORE}" tip="More Actions..."><text class="toolIcon" font="{ICONS}">{I_MORE}</text></row>
+                </row>
+              </each>
+            </row>
+            <row class="crumbs">
+              <each items="{crumbs(m)}" as="c">
+                <row class="crumb">
+                  <each items="{when(c.file)}" as="f">
+                    <box class="fileIcon"><text size="19.5" font="{SETI}" color="{fileIconColor(c.name)}">{fileIcon(c.name)}</text></box>
+                  </each>
+                  <each items="{when(c.icon != &quot;&quot;)}" as="f">
+                    <text class="crumbIcon" font="{ICONS}">{c.icon}</text>
+                  </each>
+                  <text class="crumbText">{c.name}</text>
+                  <each items="{when(!c.last)}" as="f">
+                    <text class="crumbSep" font="{ICONS}">{I_RIGHT}</text>
+                  </each>
+                </row>
+              </each>
+            </row>
+            </column>
+          </each>
+          <box class="code" scroll="1">
+            <slot elements="{codeArea(m)}"/>
+            <each items="{when(m.tabs.length == 0)}" as="e">
+              <column class="welcome">
+                <text class="welcomeTitle">Isocron</text>
+                <text class="welcomeText">Open a file in the explorer, or Ctrl+P to find it.</text>
+                <text class="welcomeText">Ctrl+B: the side bar · Ctrl+J: the panel · Ctrl+W: close the tab</text>
+              </column>
+            </each>
+          </box>
+        </column>
+        <each items="{when(m.panelShown)}" as="q">
+          <column class="panelWrap">
+            <box class="sashH" id="{SASH_H}"/>
+            <column class="panel" height="{Px(m.panelHeight)}">
+              <row class="panelTabs">
+                <box class="panelTab"><text class="panelTabText">Problems</text></box>
+                <box class="panelTabOn"><text class="panelTabOnText">Output</text></box>
+                <box class="panelTab"><text class="panelTabText">Debug Console</text></box>
+                <box class="panelTab"><text class="panelTabText">Terminal</text></box>
+              </row>
+              <box class="panelBody" scroll="2">
+                <each items="{m.log}" as="l">
+                  <text class="logText">{l}</text>
+                </each>
+              </box>
+            </column>
+          </column>
+        </each>
+      </column>
+    </row>
+    <box class="belowCards"/>
+    <row class="status">
+      <row class="statusFirst" id="{REMOTE}"><text class="statusIcon" font="{ICONS}">{I_REMOTE}</text></row>
+      <box class="statusGap"/>
+      <row class="statusItem" id="{PROBLEMS}">
+        <text class="statusIcon" font="{ICONS}">{I_ERROR}</text><text class="statusText">0</text>
+        <text class="statusIcon" font="{ICONS}">{I_WARNING}</text><text class="statusText">0</text>
+      </row>
+      <box width="fill"/>
+      <each items="{statusItems(m)}" as="it" index="k">
+        <row align="center" stretch="false">
+          <row class="statusItem" id="{STATUS + k}"><text class="statusText">{it}</text></row>
+          <box class="statusGap"/>
+        </row>
+      </each>
+      <each items="{when(langName(m) != &quot;&quot;)}" as="e">
+        <row align="center" stretch="false">
+          <row class="statusItem" id="{LANGUAGE}"><text class="statusIcon" font="{ICONS}">{I_BRACES}</text><text class="statusText">{langName(m)}</text></row>
+          <box class="statusGap"/>
+        </row>
+      </each>
+      <row class="statusItem" id="{STATUS_COPILOT}"><text class="statusIcon" font="{ICONS}">{I_COPILOT}</text></row>
+      <box class="statusGap"/>
+      <row class="statusFirst" id="{BELL}"><text class="statusIcon" font="{ICONS}">{I_BELL}</text></row>
+    </row>
+  </column>
+</view>

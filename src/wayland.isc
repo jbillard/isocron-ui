@@ -131,12 +131,15 @@ export function globalsOf(evs: Event[n], g: Globals): Globals {
 // 4: no `frame` of the pointer), whose devices are asked when it tells it
 // has them (`devicesRequests`: asking one it never had is an error of the
 // protocol, the connection closed)
-export function windowRequests(g: Globals, title: string): u8[] {
+// (`fixedW` by `fixedH` units, when not 0: its smallest and largest sizes,
+// `set_max_size` and `set_min_size`, a window of a fixed size)
+export function windowRequests(g: Globals, title: string, fixedW: i64, fixedH: i64): u8[] {
     const binds = concat(concat(bind(g.compositor, "wl_compositor", 4u32, COMPOSITOR), bind(g.shm, "wl_shm", 1u32, SHM)), bind(g.wmBase, "xdg_wm_base", 1u32, WM_BASE));
     const surface = request(COMPOSITOR, 0u32, le32(SURFACE));
     const role = request(WM_BASE, 2u32, concat(le32(XDG_SURFACE), le32(SURFACE)));
     const toplevel = request(XDG_SURFACE, 1u32, le32(TOPLEVEL));
-    const named = request(TOPLEVEL, 2u32, str(title));
+    const sized = fixedW > 0 && fixedH > 0 ? concat(request(TOPLEVEL, 7u32, concat(le32(u32(fixedW)), le32(u32(fixedH)))), request(TOPLEVEL, 8u32, concat(le32(u32(fixedW)), le32(u32(fixedH))))) : [];
+    const named = concat(request(TOPLEVEL, 2u32, str(title)), sized);
     const commit = request(SURFACE, 6u32, []);
     // (the ids of its pointer and its keyboard held by callbacks of
     // `wl_display.sync` meanwhile: the ids a client makes must follow each
@@ -320,7 +323,7 @@ export function destroyRequests(pool: u32, buffer: u32): u8[] {
 // what the program learns from the events of a read
 export type Input =
     Configure(u32)
-    | Size(i64, i64)
+    | Size(i64, i64, boolean)
     | Close
     | Ping(u32)
     | FrameDone(u32)
@@ -357,8 +360,12 @@ export function input(e: Event): Input {
     if (e.obj == XDG_SURFACE && e.op == 0u32) {
         return Configure(word(e.args, 0));
     }
+    // (its size, and whether it is active: the state 4, `activated`,
+    // among those of the array after it)
     if (e.obj == TOPLEVEL && e.op == 0u32) {
-        return Size(i64(i32(word(e.args, 0))), i64(i32(word(e.args, 4))));
+        const n = e.args.length >= 12 ? i64(word(e.args, 8)) / 4 : 0;
+        const active = count(iota(n), (k) => 12 + 4 * k + 4 <= e.args.length && word(e.args, 12 + 4 * k) == 4u32) > 0;
+        return Size(i64(i32(word(e.args, 0))), i64(i32(word(e.args, 4))), active);
     }
     if (e.obj == TOPLEVEL && e.op == 1u32) {
         return Close;

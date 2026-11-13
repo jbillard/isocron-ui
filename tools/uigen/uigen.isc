@@ -26,9 +26,13 @@
 // (width, height, direction, gap, padding, padX, padY, justify, align,
 // stretch, background, border, borderColor, radius, shadowBlur, shadowY,
 // shadowColor, clip, scroll, cursor, focusable, tip, outline,
-// outlineColor), and for a text size, color, textAlign, font (sans or
-// mono: the first font of the application or its second); `class` names
-// classes of the styles, `id` the message of a click. A value `{expr}` is
+// outlineColor, borderTop, borderRight, borderBottom, borderLeft,
+// floating, moves, minWidth, maxWidth, folds, radiusTopLeft,
+// radiusTopRight, radiusBottomRight, radiusBottomLeft, under, spreadX,
+// barWidth, barColor, barHoverColor, barRadius, barInset, opacity),
+// and for a text
+// size, color, textAlign, font (sans or mono: the first font of the
+// application or its second); `class` names classes of the styles, `id` the message of a click. A value `{expr}` is
 // an expression of Isocron.
 import { parse, Node, Tag, Text, Read, Fault, Attr, attr, has } from "../../src/xml";
 import { parseStyles, Sheet, Bad, Rule, Property } from "../../src/css";
@@ -126,10 +130,10 @@ const KIND_NAME: i64 = 10;
 // second)
 const KIND_FACE: i64 = 11;
 
-const BOX_PROPS: string[] = ["width", "height", "direction", "gap", "padding", "padX", "padY", "justify", "align", "stretch", "background", "border", "borderColor", "radius", "shadowBlur", "shadowY", "shadowColor", "clip", "scroll", "cursor", "focusable", "tip", "outline", "outlineColor"];
-const BOX_KINDS: i64[] = [1, 1, 4, 0, 0, 0, 0, 5, 6, 3, 2, 0, 2, 0, 0, 0, 2, 3, 9, 7, 3, 8, 0, 2];
-const TEXT_PROPS: string[] = ["size", "color", "textAlign", "font"];
-const TEXT_KINDS: i64[] = [0, 2, 6, 11];
+const BOX_PROPS: string[] = ["width", "height", "direction", "gap", "padding", "padX", "padY", "justify", "align", "stretch", "background", "border", "borderColor", "radius", "shadowBlur", "shadowY", "shadowColor", "clip", "scroll", "cursor", "focusable", "tip", "outline", "outlineColor", "borderTop", "borderRight", "borderBottom", "borderLeft", "floating", "moves", "minWidth", "maxWidth", "folds", "radiusTopLeft", "radiusTopRight", "radiusBottomRight", "radiusBottomLeft", "under", "spreadX", "barWidth", "barColor", "barHoverColor", "barRadius", "barInset", "opacity"];
+const BOX_KINDS: i64[] = [1, 1, 4, 0, 0, 0, 0, 5, 6, 3, 2, 0, 2, 0, 0, 0, 2, 3, 9, 7, 3, 8, 0, 2, 0, 0, 0, 0, 3, 3, 0, 0, 3, 0, 0, 0, 0, 3, 0, 0, 2, 2, 0, 0, 0];
+const TEXT_PROPS: string[] = ["size", "color", "textAlign", "font", "caretColor"];
+const TEXT_KINDS: i64[] = [0, 2, 6, 11, 2];
 
 // the value `v` of the kind `kind` as code, or "" when it is not one
 function valueOf(kind: i64, v: string): string {
@@ -204,7 +208,7 @@ function valueOf(kind: i64, v: string): string {
         return quoted(v);
     }
     if (kind == KIND_FACE) {
-        return v == "sans" ? "0" : (v == "mono" ? "1" : "");
+        return v == "sans" ? "0" : (v == "mono" ? "1" : (v == "icons" ? "2" : (v == "seti" ? "3" : (v == "bold" ? "4" : (v == "caption" ? "5" : (v == "semibold" ? "6" : ""))))));
     }
     return "";
 }
@@ -224,23 +228,31 @@ function propOf(file: string, names: string[n], kinds: i64[n], name: string, v: 
         return Faults([`${file}:${line}: the property \`${name}\` is unknown (${join(names, ", ")})`]);
     }
     const code = valueOf(kinds[k], v);
-    return code == "" ? Faults([`${file}:${line}: \`${v}\` is not a value of \`${name}\` (${kindName(kinds[k])})`]) : Code(`${name == "textAlign" ? "align" : (name == "size" ? "em" : (name == "font" ? "face" : name))}: ${code}`);
+    return code == "" ? Faults([`${file}:${line}: \`${v}\` is not a value of \`${name}\` (${kindName(kinds[k])})`]) : Code(`${name == "textAlign" ? "align" : (name == "size" ? "em" : (name == "font" ? "face" : (name == "caretColor" ? "caret" : name)))}: ${code}`);
 }
 
 // ----- styles ------------------------------------------------------------
 
-// the function of the class `r` (`cls_NAME`): a style with its properties
+// the name of the functions of the class `name` (`a-b:hover`: `a_b__hover`)
+function classId(name: string): string {
+    return swapped(swapped(name, "-", "_"), ":", "__");
+}
+
+// the function of the class `r` (`cls_NAME`): a style with its properties;
+// a class in a state (`NAME:hover`, `NAME:active`: `cls_NAME__hover`)
+// applied to a box with an `id` under the pointer (`m.hover`) or pressed
+// (`m.pressed`), as the generic application does
 function classFunction(file: string, r: Rule): Made {
-    // (a class in a state, under the pointer or pressed: the generic
-    // application's, which knows the place of the pointer)
-    if (r.name.indexOf(":") >= 0) {
-        return Faults([`${file}:${r.props.length > 0 ? r.props[0].line : 1}: \`.${r.name}\`: the states of a class (:hover, :active) are those of the generic application (src/scripted.isc), not of a view compiled`]);
+    const colon = r.name.indexOf(":");
+    const state = colon < 0 ? "" : r.name.slice(colon + 1, r.name.length);
+    if (colon >= 0 && state != "hover" && state != "active" && state != "focus") {
+        return Faults([`${file}:${r.props.length > 0 ? r.props[0].line : 1}: \`.${r.name}\`: a state is :hover, :active or :focus`]);
     }
     const box = filter(r.props, (p) => findIndex(BOX_PROPS, (x) => x == p.name) >= 0 || findIndex(TEXT_PROPS, (x) => x == p.name) < 0);
     const text = filter(r.props, (p) => findIndex(TEXT_PROPS, (x) => x == p.name) >= 0 && findIndex(BOX_PROPS, (x) => x == p.name) < 0);
     const fields = allOf(map(box, (p) => propOf(file, BOX_PROPS, BOX_KINDS, p.name, p.value, p.line)), ", ");
     const tfields = allOf(map(text, (p) => propOf(file, TEXT_PROPS, TEXT_KINDS, p.name, p.value, p.line)), ", ");
-    const id = swapped(r.name, "-", "_");
+    const id = classId(r.name);
     return both(fields, tfields, (f, t) => `function cls_${id}(s: Style): Style {\n    return ${f == "" ? "s" : `{ ...s, ${f} }`};\n}\n\nfunction text_${id}(s: TextStyle): TextStyle {\n    return ${t == "" ? "s" : `{ ...s, ${t} }`};\n}\n`);
 }
 
@@ -256,7 +268,14 @@ function classed(g: Gen, attrs: Attr[n], base: string, prefix: string, line: i64
     if (unknown.length > 0) {
         return Faults([`${g.file}:${line}: the class \`${unknown[0]}\` is not in the styles`]);
     }
-    return Code(fold(names, base, (acc, x) => `${prefix}${swapped(x, "-", "_")}(${acc})`));
+    return Code(fold(names, base, (acc, x) => `${prefix}${classId(x)}(${acc})`));
+}
+
+// the classes of `attrs` in the state `state` (those that have it) applied
+// to `base`, after the classes themselves
+function stated(g: Gen, attrs: Attr[n], base: string, state: string): string {
+    const names = filter(map(split(attr(attrs, "class"), " "), (x) => x.trim()), (x) => x != "" && findIndex(g.classes, (c) => c == `${x}:${state}`) >= 0);
+    return fold(names, base, (acc, x) => `cls_${classId(x)}__${state}(${acc})`);
 }
 
 // the attributes `attrs` known for a box (those of `Style`, `class`, `id`):
@@ -269,10 +288,20 @@ function boxStyle(g: Gen, attrs: Attr[n], direction: string, line: i64): Made {
     }
     const base = direction == "" ? "style()" : `{ ...style(), direction: ${direction} }`;
     const props = allOf(map(filter(attrs, (a) => a.name != "class" && a.name != "id"), (a) => propOf(g.file, BOX_PROPS, BOX_KINDS, a.name, a.value, line)), ", ");
-    const click = has(attrs, "id") ? `onClick: ${isExpr(attr(attrs, "id")) ? exprOf(attr(attrs, "id")) : attr(attrs, "id")}` : "";
+    const idCode = isExpr(attr(attrs, "id")) ? exprOf(attr(attrs, "id")) : attr(attrs, "id");
+    const click = has(attrs, "id") ? `onClick: ${idCode}` : "";
     return both(classed(g, attrs, base, "cls_", line), props, (c, p) => {
         const fields = p == "" ? click : (click == "" ? p : p + ", " + click);
-        return fields == "" ? c : `{ ...${c}, ${fields} }`;
+        const plain = fields == "" ? c : `{ ...${c}, ${fields} }`;
+        // (a box with a message whose classes have states: its style under
+        // the pointer, pressed, or both, after the model's `hover` and
+        // `pressed`; its attributes over them all)
+        const hover = stated(g, attrs, c, "hover");
+        const active = stated(g, attrs, c, "active");
+        const both2 = stated(g, attrs, hover, "active");
+        const over = (s: string) => fields == "" ? s : `{ ...${s}, ${fields} }`;
+        return !has(attrs, "id") || (hover == c && active == c) ? plain
+            : `(m.pressed == (${idCode}) ? (m.hover == (${idCode}) ? ${over(both2)} : ${over(active)}) : (m.hover == (${idCode}) ? ${over(hover)} : ${plain}))`;
     });
 }
 
@@ -304,11 +333,19 @@ function onlyAttrs(g: Gen, attrs: Attr[n], what: string, known: string[m], line:
     return strange.length > 0 ? Faults([`${g.file}:${line}: the attribute \`${strange[0].name}\` is unknown for <${what}> (${join(known, ", ")})`]) : Code("");
 }
 
-// a component made by `call`, its classes applied to its box
+// a component made by `call`, its classes applied to its box (a field's
+// in the state :focus too while its `focused` is true)
 function component(g: Gen, attrs: Attr[n], what: string, known: string[m], call: string, line: i64): Made {
     const checked = onlyAttrs(g, attrs, what, concat(known, ["class"]), line);
     const restyle = has(attrs, "class") ? classed(g, attrs, "s", "cls_", line) : Code("");
-    return both(checked, restyle, (a, r) => r == "" ? call : `restyled(${call}, (s) => ${r})`);
+    // (the properties of text of its classes given to its texts too, as
+    // the generic application does: the colour of the text of a field)
+    const retext = has(attrs, "class") ? classed(g, attrs, "t", "text_", line) : Code("");
+    return both(both(checked, restyle, (a, r) => r), retext, (r, t) => {
+        const focus = what == "field" && r != "" ? stated(g, attrs, r, "focus") : r;
+        const styled = focus == r ? r : `(${argOf(attrs, "focused", KIND_BOOL, "false")} ? ${focus} : ${r})`;
+        return r == "" ? call : `retexted(restyled(${call}, (s) => ${styled}), (t) => ${t})`;
+    });
 }
 
 // the element `n` as code (an `Element`), on a line of its own with the
@@ -330,7 +367,18 @@ function tagOf(g: Gen, name: string, attrs: Attr[n], kids: Node[m], line: i64): 
         const base = `textStyle(${argOf(attrs, "size", KIND_F32, "14.0f32")}, ${argOf(attrs, "color", KIND_COLOR, "rgb(0x111827u32)")})`;
         const aligned0 = has(attrs, "textAlign") ? `{ ...${base}, align: ${argOf(attrs, "textAlign", KIND_ALIGN, "Start")} }` : base;
         const aligned = has(attrs, "font") ? `{ ...${aligned0}, face: ${argOf(attrs, "font", KIND_FACE, "0")} }` : aligned0;
-        return both(checked, classed(g, attrs, aligned, "text_", line), (c, st) => `Label(${st}, ${textOf(kids)})`);
+        // (its classes, then the attributes it is given over them, as those
+        // of a box and as CSS)
+        const own = filter([
+            has(attrs, "size") ? `em: ${argOf(attrs, "size", KIND_F32, "14.0f32")}` : "",
+            has(attrs, "color") ? `color: ${argOf(attrs, "color", KIND_COLOR, "rgb(0x111827u32)")}` : "",
+            has(attrs, "textAlign") ? `align: ${argOf(attrs, "textAlign", KIND_ALIGN, "Start")}` : "",
+            has(attrs, "font") ? `face: ${argOf(attrs, "font", KIND_FACE, "0")}` : "",
+        ], (x) => x != "");
+        return both(checked, classed(g, attrs, aligned, "text_", line), (c, st) => {
+            const styled = !has(attrs, "class") || own.length == 0 ? st : `{ ...${st}, ${join(own, ", ")} }`;
+            return `Label(${styled}, ${textOf(kids)})`;
+        });
     }
     if (name == "button") {
         return component(g, attrs, name, ["id", "primary", "width", "hand"], `button(${textOf(kids)}, ${argOf(attrs, "id", KIND_NAME, "-1")}, ${argOf(attrs, "primary", KIND_BOOL, "true")}, ${argOf(attrs, "width", KIND_LENGTH, "Auto")}, ${argOf(attrs, "hand", KIND_TEXT, "{ hovered: false, pressed: false }")})`, line);
@@ -475,7 +523,7 @@ action made(xmlPath: string, rname: string, rattrs: Attr[n], rkids: Node[m], rli
                         + `import { Element, Div, Label, Px, Fill, Auto, Row, Column, Packed, Between, style, textStyle, Style, TextStyle, ARROW, POINTER, TEXT } from "${lib}/ui";\n`
                         + `import { Start, Center, End } from "${lib}/text";\n`
                         + `import { editing } from "${lib}/edit";\n`
-                        + `import { button, iconButton, textField, checkbox, toggleAt, progress, restyled } from "${lib}/widgets";\n`
+                        + `import { button, iconButton, textField, checkbox, toggleAt, progress, restyled, retexted } from "${lib}/widgets";\n`
                         + importsOf(attr(rattrs, "import")) + "\n\n"
                         + c.slice(0, at) + (at > 0 ? "\n" : "")
                         + `export function ${fname}(m: ${model}): Element {\n    return ${c.slice(at + SEP.length, c.length)};\n}\n`;

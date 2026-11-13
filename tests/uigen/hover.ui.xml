@@ -1,0 +1,7 @@
+<view model="Model" styles="hover.style" lib="../../src" import="../../examples/todo: Model">
+  <row class="b">
+    <box class="a" id="7" width="20"/>
+    <box class="a b" id="{8 + m.items.length}"/>
+    <box class="a"/>
+  </row>
+</view>

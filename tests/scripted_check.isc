@@ -5,7 +5,8 @@
 // field emptied by Lua), a task ticked and one removed, and the first task
 // done cleared, the same pixels and the same places (their rectangles: the
 // messages of the places are numbered by each); what its Lua prints when
-// it is closed; faulty files refused at their file and line.
+// it is closed; its window with every button; faulty files refused at
+// their file and line (a button of the window neither true nor false).
 import { parse, Font } from "../src/font";
 import { render, rgb } from "../src/paint";
 import { interface, laidOut, laidOutFonts } from "../src/app";
@@ -81,6 +82,9 @@ action features(f: Font): void {
             const [ps, u] = laidOutFonts(interface(400, 300, 0u64), [f, mono], a0, sc.view, 0u64);
             print(map(filter(u.hits, (h) => h.id >= 0 && h.id < 3), (h) => [h.id, i64(h.w)] as const));
             print([globalOf(a0, "content"), a0.err] as const);
+            // (its window of a fixed size, without the button that maximizes
+            // it)
+            print([a0.resizable, a0.minimizable, a0.maximizable] as const);
             const [a1, fx1] = sc.update(a0, Hover(0));
             print([backgroundOf(a1.tree, 0), backgroundOf(a1.tree, 1)] as const);
             const [a2, fx2] = sc.update(a1, Key(112, WITH_CTRL));
@@ -131,7 +135,8 @@ action main(args: string[k]): i32 {
                 print([a1.err, a4.err, a4.cx.binds[0]] as const);
                 const [e, out] = sc.closed(a4);
                 print(out);
-                faults(["tag", "value", "style", "syntax", "script", "runtime"], 0);
+                print([a4.resizable, a4.minimizable, a4.maximizable] as const);
+                faults(["tag", "value", "style", "syntax", "script", "runtime", "flag"], 0);
                 features(f);
                 return 0;
             },

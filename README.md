@@ -191,7 +191,12 @@ iscc build examples/scripted_app.isc -o scripted_app
 ./scripted_app examples/scripted/todo.ui.xml
 ```
 
-The root `<view>` takes `title`, `width`, `height`, `styles` and `script`
+The root `<view>` takes `title`, `width`, `height`, `resizable`,
+`minimizable` and `maximizable` (its window: `true` by default, `false` for
+a window of a fixed size or without the button), `titlebar` (`system` by
+default; `custom`: the view draws the bar of the title, its boxes
+`moves="true"` move the window, its buttons call `host.minimize()`,
+`host.toggleMaximized()` and `host.close()`; under Windows), `styles` and `script`
 (files beside it, separated by spaces), `images` (the files of PNG an
 expression may name), `menu`, `onclose` and `onkey`; without an argument
 the application reads `app.ui.xml`. In an `<each>`, `as` and `index` name
@@ -208,7 +213,8 @@ interface. Besides the vocabulary of `uigen`:
   takes the key (`if ctrl and key == "p" then ... return true end`).
 - `<field autofocus="true">`: the field takes the focus when it appears.
 - `.name:hover` and `.name:active` in the styles: the class of a box with
-  `onclick` or `ondrag` under the pointer, pressed (refused by `uigen`).
+  `onclick` or `ondrag` under the pointer, pressed (also made by `uigen`
+  for a box with an `id`, after the model's `hover` and `pressed`).
 - `ondrag="..."` of a box: Lua run as the pointer moves with the button
   held after a press on it, `dx` and `dy` the distance since the press
   (`onclick="from = width" ondrag="width = from + dx"`).
@@ -216,7 +222,46 @@ interface. Besides the vocabulary of `uigen`:
   with the view (`src="{expr}"`: one of `images`).
 - `font="mono"` of a text (and of a class): the second font of the
   application, of fixed width (Consolas under Windows, else DejaVu Sans
-  Mono beside it or in the folders of the system; `--mono=file`).
+  Mono beside it or in the folders of the system; `--mono=file`);
+  `caretColor` of a class: the colour of the caret of a field;
+  `font="icons"` the codicons of Visual Studio Code (`codicon.ttf`,
+  `--icons=file`), `font="seti"` the icons of files of its theme Seti
+  (`seti.ttf`), `font="bold"` and `font="semibold"` (Segoe UI Bold and
+  Semibold under Windows, else DejaVu Sans Bold), `font="caption"` the
+  glyphs of the buttons of a window of Windows (Segoe Fluent Icons, else
+  the icons).
+- `<code doc="{path}" scroll="1"/>` in a box that scrolls (`scroll="1"`):
+  the document of the editor of code the host keeps for `path`, its lines
+  in sight (`src/doc.isc`, `src/code_view.isc`): the keys, the pointer and
+  the clipboard change it there, as Visual Studio Code does (the caret, the
+  selection by Shift, by the pointer, a word by a double click, a line by a
+  triple one; Enter with the indentation of the line, brackets and quotes
+  closed by themselves, Tab and Shift+Tab, Home to the first character
+  that is not a space; the moves by words with Ctrl, Page Up and Page
+  Down; Ctrl+A, Ctrl+C, Ctrl+X and Ctrl+V, the whole line without a
+  selection; Ctrl+Z and Ctrl+Y, the typing of a word one undo), its lines
+  coloured again as they change. In Lua, `host.openDoc(path, text)` makes
+  the document of a file read, `host.closeDoc(path)` drops it,
+  `host.save(path)` writes it, `host.focusCode()` gives it the keyboard;
+  `host.docs[path]` tells its `line`, its `col`, whether it is `dirty`, its
+  `lang`, its `indent`, its `eol` and the `symbols` around its cursor (a
+  JSON). An application compiled shows the same with `codeRows` and
+  `stickyOf` (`<slot>` of uigen) and changes its document with `keyed`,
+  `typedCode`, `pasted`, `clickedAt`, `draggedTo` (examples/editor).
+- In Lua, `host.width` and `host.height`: the size of the inside of the
+  window in units, set again when it changes (a bar laid out after it);
+  `host.system` (`windows`, `linux`, ...), `host.cwd` (the current
+  folder), `host.maximized`.
+- The properties of a box besides those of `uigen`'s list: `minWidth` and
+  `maxWidth` (its width within them, whatever its parent gives it),
+  `folds` (a row whose children past its width are hidden, its last child,
+  a button « … », shown then), `radiusTopLeft`, `radiusTopRight`,
+  `radiusBottomRight`, `radiusBottomLeft` (a corner of its own),
+  `floating` (over its siblings, at the top of its parent), `under` (a
+  floating box drawn under them), `spreadX` (a floating box wider than its
+  parent by that on each side), `moves`, `barWidth`, `barColor`,
+  `barHoverColor`, `barRadius` and `barInset` (the thumb of its scrollbar).
+  A border of 1 unit is one pixel at any density, as a browser draws it.
 - `host.readFile(path, done)` and `host.listFolder(path, done)` in Lua: the
   file or the folder read after the input that asked it (by the loop of
   the window: the effects `ReadText`, `ListFolder`), `done` then called
@@ -235,10 +280,19 @@ interface. Besides the vocabulary of `uigen`:
   messages under Windows); the loops of Windows, Wayland and X11.
 - `src/input.isc`: the inputs (`Click`, `Drag`, `Release`, `Hover`, `Text`,
   `Key` with its modifiers, `Paste`, `Focus`, `Viewport`, `Tick`,
-  `TextRead`, `FolderListed`) and the effects (`Copy`, `AskPaste`,
-  `Animate`, `ReadText`, `ListFolder`).
+  `TextRead`, `FolderListed`, `TextWritten`, `WindowState`, `WindowSize`,
+  `WindowActive`) and the effects (`Copy`, `AskPaste`, `Animate`,
+  `ReadText`, `ListFolder`, `WriteText`, `ScrollTo`, `Minimize`,
+  `ToggleMaximized`, `CloseWindow`).
 - `src/edit.isc`: the text of a field (`Editing`: its caret and selection)
   and how the keys, the pointer and the clipboard change it (`edited`).
+- `src/doc.isc`: a document of the editor of code (`Doc`: its lines, its
+  cursor and selection, its undo, the scans of its lines) and what the
+  hand does to it, as Visual Studio Code; `src/code.isc`: its lines cut in
+  coloured tokens (the languages it knows, the theme 2026 Dark);
+  `src/code_view.isc`: its lines in sight as elements (`codeRows`,
+  `stickyOf`), the caret an element of its own (`Caret`, blinking as that
+  of a field).
 - `src/widgets.isc`: the components, those of the plate: `button`
   (primary, secondary), `iconButton`, `textField` (its hint, its ring of
   focus), `checkbox`, `radio`, `toggle` and `toggleAt` (its knob sliding),
@@ -280,10 +334,21 @@ folder (`tests/fonts/`).
   `todo.ui.xml` and `todo.style` (`todo_view.isc`). `scripted_app.isc`:
   the generic application, any interface of XML, styles and Lua
   (`scripted/todo.ui.xml`: the same list of tasks; `scripted/editor.ui.xml`:
-  an editor of code in the manner of Visual Studio Code, the files of the
-  folder of the view in a tree, opened in tabs and coloured, a palette
-  (Ctrl+P), the side bar and the panel shown or hidden (Ctrl+B, Ctrl+J)
-  and resized by their edges; its icons drawn by `tools/icons.py`).
+  an editor of code in the image of Visual Studio Code, its Modern UI and
+  its theme 2026 Dark (`editor.style`, the sizes of its style sheets
+  checked against a capture of it), its codicons and the icons of files of
+  its theme Seti (`seti.lua` and `seti.ttf`, made by `tools/seti.py`), the
+  bar of its title drawn by it; the files of the folder of the view in a
+  tree in the order of its explorer, opened in tabs joined to their editor
+  and coloured, the lines of the blocks around the first in sight kept at
+  the top, a palette (Ctrl+P), the side bar and the panel shown or hidden
+  (Ctrl+B, Ctrl+J) and resized by their edges).
+- `editor_app.isc` (`editor/editor.isc`, `editor/code.isc`,
+  `editor/icons.isc`): the same editor compiled: its view made by `uigen`
+  from `editor/editor.ui.xml` and the styles of the one read at run time
+  (`iscc run tools/uigen/uigen.isc examples/editor/editor.ui.xml
+  examples/editor/editor_view.isc`), what it does written in Isocron; the
+  folder given (the current one by default) read at the start.
 - `long_list_app.isc` (`long_list.isc`): 100 000 tasks (or the number
   given) in a long list; prints those ticked.
 - `gallery_app.isc` (`gallery_live.isc`, `gallery_plate.isc`): the plate of

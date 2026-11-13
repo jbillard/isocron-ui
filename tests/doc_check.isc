@@ -1,0 +1,116 @@
+// The document of the editor of code (src/doc.isc) and what the hand does
+// to it, as Visual Studio Code does it: each step prints the text, the
+// cursor and the anchor (line:offset), and what it asks.
+import { Doc, docOf, keyed, typedCode, pasted, textOf, clickedAt, draggedTo, saved, dirty, selection, columnOf, offsetOf, viewed, topFor } from "../src/doc";
+import { Effect, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, BACKSPACE, DELETE, TAB, ENTER, ESCAPE, LEFT, RIGHT, HOME, END, UP, DOWN, PAGE_UP, PAGE_DOWN } from "../src/input";
+
+function shown(d: Doc): string {
+    const text = join(split(textOf(d), "\n"), "⏎");
+    return `${text} | ${d.cursor.line}:${d.cursor.col} ${d.anchor.line}:${d.anchor.col}${dirty(d) ? " *" : ""}`;
+}
+
+function key(d: Doc, k: i64, mods: i64): Doc {
+    const [d1, fx] = keyed(d, k, mods);
+    return d1;
+}
+
+function asked(d: Doc, k: i64, mods: i64): string {
+    const [d1, fx] = keyed(d, k, mods);
+    return join(map(fx, (e) => match (e) {
+        Copy(s) => `Copy(${join(split(s, "\n"), "⏎")})`,
+        AskPaste => "AskPaste",
+        _ => "other",
+    }), " ");
+}
+
+function typedAll(d: Doc, s: string): Doc {
+    return fold(bytes(s), d, (acc, c) => typedCode(acc, i64(c)));
+}
+
+action main(args: string[k]): i32 {
+    const d0 = docOf("a.lua", "local x = 1\nprint(x)");
+    print(shown(d0));
+    // typing at the start; a bracket closed by itself, then typed over
+    const d1 = typedAll(d0, "f(");
+    print(shown(d1));
+    const d2 = typedAll(d1, "a)");
+    print(shown(d2));
+    // a quote after a letter is an apostrophe; a quote before a space closes
+    const d3 = typedAll(key(d2, END, 0), " it's \"");
+    print(shown(d3));
+    // Backspace between a pair closed by itself: both removed
+    print(shown(key(d3, BACKSPACE, 0)));
+    // Enter between braces: the closing one on a line of its own, indented
+    const e0 = docOf("b.isc", "function f() {}");
+    const e1 = key(clickedAt(e0, 0, 14, 1, false), ENTER, 0);
+    print(shown(e1));
+    // Enter keeps the indentation of the line
+    const e2 = key(typedAll(e1, "return 1;"), ENTER, 0);
+    print(shown(e2));
+    // Backspace in the indentation: back to its previous stop
+    print(shown(key(e2, BACKSPACE, 0)));
+    // Tab: spaces to the next stop; Shift+Tab over two lines: out by one
+    const t0 = docOf("c.py", "ab\n    cd\n    ef");
+    print(shown(key(clickedAt(t0, 0, 1, 1, false), TAB, 0)));
+    const t1 = draggedTo(clickedAt(t0, 1, 2, 1, false), 2, 6);
+    print(shown(key(t1, TAB, WITH_SHIFT)));
+    print(shown(key(t1, TAB, 0)));
+    // words: Ctrl+Right to the end of each, separators a word of their own
+    const w0 = docOf("d.lua", "foo.bar(baz)  qux");
+    const w1 = key(w0, RIGHT, WITH_CTRL);
+    const w2 = key(w1, RIGHT, WITH_CTRL);
+    const w3 = key(w2, RIGHT, WITH_CTRL);
+    print(`${w1.cursor.col} ${w2.cursor.col} ${w3.cursor.col} ${key(key(w3, RIGHT, WITH_CTRL), RIGHT, WITH_CTRL).cursor.col}`);
+    const w4 = key(key(w0, END, 0), LEFT, WITH_CTRL);
+    print(`${w4.cursor.col} ${key(w4, LEFT, WITH_CTRL).cursor.col} ${key(key(w4, LEFT, WITH_CTRL), LEFT, WITH_CTRL).cursor.col}`);
+    // Ctrl+Backspace: the word before
+    print(shown(key(key(w0, END, 0), BACKSPACE, WITH_CTRL)));
+    // Home: the first character that is not a space, then the start
+    const h0 = clickedAt(docOf("e.txt", "    text"), 0, 8, 1, false);
+    print(`${key(h0, HOME, 0).cursor.col} ${key(key(h0, HOME, 0), HOME, 0).cursor.col}`);
+    // up and down keep their column through a short line; a tab is 4
+    const v0 = docOf("f.txt", "long line here\nab\n\tsecond tab");
+    const v1 = key(clickedAt(v0, 0, 10, 1, false), DOWN, 0);
+    const v2 = key(v1, DOWN, 0);
+    print(`${v1.cursor.line}:${v1.cursor.col} ${v2.cursor.line}:${v2.cursor.col} ${columnOf(v0.lines[2], 7)} ${offsetOf(v0.lines[2], 2)} ${offsetOf(v0.lines[2], 3)}`);
+    // Shift+arrows select; an arrow without Shift collapses to that side
+    const s1 = key(key(clickedAt(v0, 0, 2, 1, false), RIGHT, WITH_SHIFT), DOWN, WITH_SHIFT);
+    const [sa, sb] = selection(s1);
+    print(`${sa.line}:${sa.col} ${sb.line}:${sb.col} ${key(s1, LEFT, 0).cursor.col}`);
+    // Ctrl+A, then Copy; Ctrl+C without a selection: the line and its end
+    print(asked(key(v0, 97, WITH_CTRL), 99, WITH_CTRL));
+    print(asked(clickedAt(v0, 1, 1, 1, false), 99, WITH_CTRL));
+    // Ctrl+X without a selection: the line removed; Ctrl+V asks the clipboard
+    print(shown(key(clickedAt(v0, 1, 1, 1, false), 120, WITH_CTRL)));
+    print(asked(v0, 118, WITH_CTRL));
+    // a paste of several lines, the cursor after it
+    print(shown(pasted(clickedAt(v0, 1, 1, 1, false), "X\nYZ")));
+    // the typing of a word one undo; a space begins another
+    const u1 = typedAll(typedAll(docOf("g.txt", ""), "hello"), " world");
+    print(shown(u1));
+    print(shown(key(u1, 122, WITH_CTRL)));
+    print(shown(key(key(u1, 122, WITH_CTRL), 122, WITH_CTRL)));
+    print(shown(key(key(key(u1, 122, WITH_CTRL), 122, WITH_CTRL), 121, WITH_CTRL)));
+    // saved: no longer dirty
+    print(shown(saved(u1)));
+    // a double click takes a word, a triple one the line; a drag by words
+    const c0 = docOf("h.txt", "alpha beta gamma\nsecond");
+    const c1 = clickedAt(c0, 0, 7, 2, false);
+    print(shown(c1));
+    print(shown(draggedTo(c1, 0, 13)));
+    print(shown(clickedAt(c0, 0, 3, 3, false)));
+    // a comment of a block opened: the colours of the lines after it change
+    const k0 = docOf("i.isc", "a\nb\nc");
+    const k1 = typedAll(k0, "/*");
+    print(`${k0.scans[2].raws[0].kind} ${k1.scans[2].raws[0].kind} ${k1.scans[2].open}`);
+    // the depths of the brackets at the starts of the lines
+    const b0 = docOf("j.isc", "f({\n[x]\n})");
+    print(b0.depths);
+    // the ends of lines of Windows kept
+    print(join(split(textOf(typedAll(docOf("k.txt", "a\r\nb"), "z")), "\r\n"), "|"));
+    // Page Down by the lines a page holds; the offset that shows the cursor
+    const p0 = viewed(docOf("l.txt", join(map(iota(100), (i) => `line ${i}`), "\n")), 0.0f32, 190.0f32);
+    const p1 = key(p0, PAGE_DOWN, 0);
+    print(`${p1.cursor.line} ${topFor(p1)} ${key(key(p1, PAGE_DOWN, 0), PAGE_UP, 0).cursor.line}`);
+    return 0;
+}

@@ -4,7 +4,7 @@
      under the pointer (`:hover`), Ctrl+P that opens a field taking the
      focus (`onkey`, `autofocus`), an image, a file read by Lua, a sash
      dragged (`ondrag`). -->
-<view title="features" width="400" height="300" styles="features.style"
+<view title="features" width="400" height="300" resizable="false" maximizable="false" styles="features.style"
       script="features.lua" onkey="return key_(key, ctrl)" images="dot.png">
   <column stretch="false">
     <row onclick="" class="item">

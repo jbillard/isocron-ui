@@ -1,0 +1,666 @@
+// The editor of code in the manner of Visual Studio Code, compiled: the
+// same as the one read when the generic application starts
+// (examples/scripted/editor.ui.xml, editor.lua), its view made by
+// tools/uigen from examples/editor/editor.ui.xml with the same styles
+// (examples/scripted/editor.style), what it does written here in Isocron
+// rather than in Lua. The files of a folder in a tree, opened in tabs,
+// coloured (code.isc); a palette that finds a file (Ctrl+P), the side bar
+// and the panel shown or hidden (Ctrl+B, Ctrl+J), a tab closed (Ctrl+W).
+import { rgb, rgba, Color } from "../../src/paint";
+import * as sys from "sys";
+import { Input, Effect, Click, Drag, Release, Hover, Key, Text, Paste, Focus, Viewport, Tick, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, WriteText, ScrollTo, Reveal, ENTER, ESCAPE, UP, DOWN, WITH_CTRL, WITH_SHIFT } from "../../src/input";
+import { Editing, editing, edited } from "../../src/edit";
+import { Doc, docOf, keyed, typedCode, pasted, textOf, saved, dirty, clickedAt, draggedTo, viewed, topFor, cursorBand, columnOf, symbolsAt, LINE_HEIGHT } from "../../src/doc";
+import { CodeLook, codeLook, codeRows, stickyOf } from "../../src/code_view";
+import { Element } from "../../src/ui";
+
+// a file or a folder of the tree, in the order it is shown (a folder
+// before its children)
+export type Node = { path: string, name: string, dir: boolean, depth: i64, open: boolean, loaded: boolean };
+
+// a file open: its document (its lines, its cursor, its undo)
+export type Tab = { path: string, name: string, doc: Doc };
+
+export type Editor = {
+    root: string, rootName: string, system: string,
+    nodes: Node[], files: string[],
+    tabs: Tab[], active: i64, current: string, view: i64,
+    sidebarShown: boolean, sidebarWidth: f32, panelShown: boolean, panelHeight: f32,
+    from: f32, pressX: f32, pressY: f32,
+    palette: boolean, query: Editing, choice: i64, search: Editing, field: i64,
+    log: string[], rootOpen: boolean,
+    hover: i64, pressed: i64, width: f32, height: f32, maximized: boolean, windowActive: boolean,
+    // the width of a column of the font of the code, in units
+    advance: f32,
+};
+
+// ----- the messages of the places ---------------------------------------
+
+export const NOTHING: i64 = 1;
+export const MENU_MORE: i64 = 2;
+export const COMMAND: i64 = 3;
+export const CHAT: i64 = 4;
+export const COPILOT: i64 = 5;
+export const SIGN_IN: i64 = 6;
+export const LAYOUT: i64 = 7;
+export const TOGGLE_SIDEBAR: i64 = 8;
+export const TOGGLE_PANEL: i64 = 9;
+export const ASIDE: i64 = 10;
+export const MINIMIZE: i64 = 11;
+export const MAXIMIZE: i64 = 12;
+export const CLOSE_WINDOW: i64 = 13;
+export const ACCOUNTS: i64 = 14;
+export const MANAGE: i64 = 15;
+export const SIDE_MORE: i64 = 16;
+export const ROOT_SECTION: i64 = 17;
+export const SASH_V: i64 = 18;
+export const SASH_H: i64 = 19;
+export const SPLIT: i64 = 20;
+export const TAB_MORE: i64 = 21;
+export const QUERY: i64 = 22;
+export const SEARCH: i64 = 23;
+// (the focus of the keyboard in the code: `field` is CODE)
+export const CODE: i64 = 29;
+export const REMOTE: i64 = 24;
+export const PROBLEMS: i64 = 25;
+export const BELL: i64 = 26;
+export const STATUS_COPILOT: i64 = 27;
+export const LANGUAGE: i64 = 28;
+export const MENU: i64 = 100;
+export const ACTIVITY: i64 = 200;
+export const SECTION: i64 = 220;
+export const STATUS: i64 = 240;
+export const TAB: i64 = 30000;
+export const CLOSE_TAB: i64 = 31000;
+export const MATCH: i64 = 32000;
+export const NODE: i64 = 100000;
+export const FOUND: i64 = 200000;
+export const LINE: i64 = 1000000;
+
+// the views of the side bar
+export const FILES: i64 = 0;
+const SEARCH_VIEW: i64 = 1;
+
+// the most files read at the start, the most lines of a file shown
+const MOST_FILES: i64 = 5000;
+
+export const MENUS: string[] = ["File", "Edit", "Selection", "View", "Go", "Run", "Terminal", "Help"];
+export const SECTIONS: string[] = ["Outline", "Timeline"];
+
+// the icons of Visual Studio Code (codicon.ttf)
+export const I_FILES: string = "\u{EAF0}";
+export const I_SEARCH: string = "\u{EA6D}";
+export const I_BRANCH: string = "\u{EA68}";
+export const I_DEBUG: string = "\u{EB91}";
+export const I_BLOCKS: string = "\u{EAE6}";
+export const I_ACCOUNT: string = "\u{EB99}";
+export const I_GEAR: string = "\u{EB51}";
+export const I_RIGHT: string = "\u{EAB6}";
+export const I_DOWN: string = "\u{EAB4}";
+export const I_CLOSE: string = "\u{EA76}";
+// (a tab changed and not saved: a dot, circle-filled)
+export const I_DIRTY: string = "\u{EA71}";
+export const I_MORE: string = "\u{EA7C}";
+export const I_BACK: string = "\u{EA9B}";
+export const I_FORWARD: string = "\u{EA9C}";
+export const I_SPLIT: string = "\u{EB56}";
+export const I_ERROR: string = "\u{EA87}";
+export const I_WARNING: string = "\u{EA6C}";
+export const I_BELL: string = "\u{EAA2}";
+export const I_REMOTE: string = "\u{EB3A}";
+export const I_BRACES: string = "\u{EB0F}";
+export const I_CHAT: string = "\u{EC4F}";
+export const I_COPILOT: string = "\u{EC1E}";
+export const I_LAYOUT: string = "\u{EBEB}";
+export const I_SIDEBAR_ON: string = "\u{EBF3}";
+export const I_SIDEBAR_OFF: string = "\u{EC02}";
+export const I_PANEL_ON: string = "\u{EBF2}";
+export const I_PANEL_OFF: string = "\u{EC01}";
+export const I_ASIDE_OFF: string = "\u{EC00}";
+
+export const ACTIVITY_ICONS: string[] = ["\u{EAF0}", "\u{EA6D}", "\u{EA68}", "\u{EB91}", "\u{EAE6}"];
+export const ACTIVITY_TIPS: string[] = ["Explorer (Ctrl+Shift+E)", "Search (Ctrl+Shift+F)", "Source Control (Ctrl+Shift+G)", "Run and Debug (Ctrl+Shift+D)", "Extensions (Ctrl+Shift+X)"];
+const VIEW_TITLES: string[] = ["Explorer", "Search", "Source Control", "Run and Debug", "Extensions"];
+
+// the faces of the fonts of the application (examples/editor_app.isc)
+export const SANS: i64 = 0;
+export const MONO: i64 = 1;
+export const ICONS: i64 = 2;
+export const SETI: i64 = 3;
+export const SEMIBOLD: i64 = 6;
+export const CAPTION: i64 = 5;
+
+// ----- the start --------------------------------------------------------
+
+// the editor of the folder `root` whose tree is `nodes`
+export function initial(root: string, rootName: string, system: string, nodes: Node[], files: string[], advance: f32): Editor {
+    return {
+        root: root, rootName: rootName, system: system, nodes: nodes, files: files,
+        tabs: [], active: -1, current: "", view: FILES,
+        sidebarShown: true, sidebarWidth: 300.0f32, panelShown: false, panelHeight: 150.0f32,
+        from: 0.0f32, pressX: 0.0f32, pressY: 0.0f32,
+        palette: false, query: editing(""), choice: 0, search: editing(""), field: -1,
+        log: ["Isocron : éditeur prêt."], rootOpen: true,
+        hover: -1, pressed: -1, width: 1100.0f32, height: 720.0f32, maximized: false, windowActive: true,
+        advance: advance,
+    };
+}
+
+// the folders ignored
+function ignored(name: string): boolean {
+    return name == ".git/" || name == "target/" || name == "node_modules/";
+}
+
+function joined(dir: string, name: string): string {
+    return dir == "." ? name : `${dir}/${name}`;
+}
+
+// the order of the names of the explorer of Visual Studio Code: that of the
+// collation of the system (ICU's root): the punctuation first (`_` before
+// `.`), then the digits, then the letters whatever their case
+const PUNCT: string = "\t _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
+
+// the rank of a byte in that order, as a byte (those beyond ASCII kept:
+// the key stays a text of UTF-8)
+function rank(c: u8): u8 {
+    const p = bytes(PUNCT);
+    const k = findIndex(p, (x) => x == c);
+    return k >= 0 ? u8(1 + k) : (c >= 48u8 && c <= 57u8 ? c - 48u8 + 40u8 : (c >= 65u8 && c <= 90u8 ? c - 65u8 + 60u8
+        : (c >= 97u8 && c <= 122u8 ? c - 97u8 + 60u8 : (c >= 128u8 ? c : 90u8))));
+}
+
+// the key of the name `x` in that order (the name itself after it: two
+// names of the same key in the order of their bytes)
+export function nameKey(x: string): string {
+    return stringOf(map(bytes(x), rank)) + "\u{1}" + x;
+}
+
+// the names of a folder (those of folders ending with `/`): its folders
+// first, then its files, each in the order of the explorer
+export function sortedNames(names: string[n]): string[] {
+    const kept = filter(names, (x) => !ignored(x));
+    const dirs = sortBy(filter(kept, (x) => x.endsWith("/")), nameKey);
+    const plain = sortBy(filter(kept, (x) => !x.endsWith("/")), nameKey);
+    return concat(dirs, plain);
+}
+
+// the nodes of the names of the folder `dir` at the depth `depth`
+export function nodesOf(dir: string, names: string[n], depth: i64): Node[] {
+    return map(sortedNames(names), (x) => {
+        const isDir = x.endsWith("/");
+        const name = isDir ? x.slice(0, x.length - 1) : x;
+        return { path: joined(dir, name), name: name, dir: isDir, depth: depth, open: false, loaded: false };
+    });
+}
+
+// ----- what the model shows ---------------------------------------------
+
+// the indices of the nodes shown: those whose folders are open (a node
+// below a closed folder skipped: `hide` the depth of that folder)
+export function visibleNodes(m: Editor): i64[] {
+    return m.rootOpen ? shownFrom(m.nodes, 0, -1, []) : [];
+}
+
+function shownFrom(nodes: Node[n], i: i64, hide: i64, out: i64[]): i64[] {
+    if (i >= n) {
+        return out;
+    }
+    const x = nodes[i];
+    if (hide >= 0 && x.depth > hide) {
+        return shownFrom(nodes, i + 1, hide, out);
+    }
+    return shownFrom(nodes, i + 1, x.dir && !x.open ? x.depth : -1, concat(out, [i]));
+}
+
+export function when(b: boolean): i64[] {
+    return filter([1], (x) => b);
+}
+
+export function viewTitle(m: Editor): string {
+    return VIEW_TITLES[m.view];
+}
+
+export function shown(m: Editor, v: i64): boolean {
+    return m.view == v && m.sidebarShown;
+}
+
+// the box that finds a file: 38 % of the window wide, 600 units at most
+export function commandWidth(m: Editor): f32 {
+    return min(600.0f32, m.width * 0.38f32);
+}
+
+// the glyph of a button of the window: those of the system under Windows
+// (Segoe Fluent Icons), else those of Visual Studio Code
+export function winGlyph(m: Editor, kind: i64): string {
+    const k = kind == 1 && m.maximized ? 2 : kind;
+    const caption = ["\u{E921}", "\u{E922}", "\u{E923}", "\u{E8BB}"];
+    const chrome = ["\u{EABA}", "\u{EAB9}", "\u{EABB}", "\u{EAB8}"];
+    return m.system == "windows" ? caption[k] : chrome[k];
+}
+
+export function captionFace(m: Editor): i64 {
+    return m.system == "windows" ? CAPTION : ICONS;
+}
+
+export function captionSize(m: Editor): f32 {
+    return m.system == "windows" ? 10.0f32 : 16.0f32;
+}
+
+export function chevron(n: Node): string {
+    return n.open ? I_DOWN : I_RIGHT;
+}
+
+// the file of the tab shown
+export function activeTab(m: Editor): Tab[] {
+    return m.active >= 0 && m.active < m.tabs.length ? [m.tabs[m.active]] : [];
+}
+
+// the path `p` from the folder shown
+export function rel(m: Editor, p: string): string {
+    return m.root != "." && p.startsWith(m.root + "/") ? p.slice(m.root.length + 1, p.length) : p;
+}
+
+// a part of the path above the code: a folder, the file (its icon), or a
+// symbol around the cursor (its icon); the last
+export type Crumb = { name: string, file: boolean, icon: string, last: boolean };
+
+// the symbols around the cursor of the tab shown (src/doc.isc)
+function symbolsOf(m: Editor): Crumb[] {
+    if (m.active < 0 || m.active >= m.tabs.length) {
+        return [];
+    }
+    return map(symbolsAt(m.tabs[m.active].doc), (y) => ({ name: y.name, file: false, icon: y.array ? "\u{EA8A}" : "\u{EA8B}", last: false }));
+}
+
+// the parts of the path of the file of the tab shown (the file its icon),
+// then the symbols around the cursor; the last marked
+export function crumbs(m: Editor): Crumb[] {
+    if (m.active < 0 || m.active >= m.tabs.length) {
+        return [];
+    }
+    const parts = filter(split(join(split(rel(m, m.tabs[m.active].path), "\\"), "/"), "/"), (x) => x != "");
+    const path = map(iota(parts.length), (k) => ({ name: parts[k], file: k == parts.length - 1, icon: "", last: false }));
+    const all = concat(path, symbolsOf(m));
+    return map(iota(all.length), (k) => ({ ...all[k], last: k == all.length - 1 }));
+}
+
+// how the code looks: the width of a column of its font, its messages
+// (LINE and the line), the focus of the keyboard in it
+function lookOf(m: Editor): CodeLook {
+    return codeLook(m.advance, MONO, LINE, m.field == CODE && m.windowActive);
+}
+
+// the elements of the box of the code: the lines of the blocks around the
+// first in sight kept at its top, the lines in sight
+export function codeArea(m: Editor): Element[] {
+    if (m.active < 0 || m.active >= m.tabs.length) {
+        return [];
+    }
+    const d = m.tabs[m.active].doc;
+    return concat(stickyOf(d, lookOf(m)), codeRows(d, lookOf(m)));
+}
+
+// the files whose path holds the letters of `text` in their order, `most`
+// at most
+export function found(m: Editor, text: string, most: i64): string[] {
+    const q = bytes(text.toLowerCase());
+    const hits = filter(m.files, (p) => {
+        const lp = bytes(p.toLowerCase());
+        const end = fold(iota(q.length), 0, (at, k) => {
+            if (at < 0) {
+                return -1;
+            }
+            const j = findIndex(iota(max(0, lp.length - at)), (d) => lp[at + d] == q[k]);
+            return j < 0 ? -1 : at + j + 1;
+        });
+        return end >= 0;
+    });
+    return map(iota(min(most, hits.length)), (k) => hits[k]);
+}
+
+export function matches(m: Editor): string[] {
+    return found(m, m.query.text, 12);
+}
+
+export function baseName(p: string): string {
+    const k = max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+    return k < 0 ? p : p.slice(k + 1, p.length);
+}
+
+// the items of the bar of the state: the line and the column of the cursor
+// (`Ln 50, Col 15`; a selection: `(N selected)` after), the indentation,
+// the encoding, the ends of lines
+export function statusItems(m: Editor): string[] {
+    if (m.active < 0 || m.active >= m.tabs.length) {
+        return [];
+    }
+    const d = m.tabs[m.active].doc;
+    const col = columnOf(d.lines[d.cursor.line], d.cursor.col) + 1;
+    return [`Ln ${d.cursor.line + 1}, Col ${col}`, `Spaces: ${d.indent}`, "UTF-8", d.crlf ? "CRLF" : "LF"];
+}
+
+export function langName(m: Editor): string {
+    return m.active >= 0 && m.active < m.tabs.length ? m.tabs[m.active].doc.lang.name : "";
+}
+
+// whether the tab `k` holds changes not saved (a dot in the place of its
+// button that closes)
+export function tabDirty(m: Editor, k: i64): boolean {
+    return dirty(m.tabs[k].doc);
+}
+
+// a tab: whether a line separates it from the one before (two tabs not
+// shown side by side)
+export function divided(m: Editor, k: i64): boolean {
+    return k > 0 && k != m.active && k - 1 != m.active;
+}
+
+// ----- what the inputs do -----------------------------------------------
+
+function say(m: Editor, text: string): Editor {
+    const log = concat(m.log, [text]);
+    return { ...m, log: log.length > 50 ? map(iota(50), (k) => log[log.length - 50 + k]) : log };
+}
+
+// the file `path` opened: the tab already open shown, else its text asked
+function opened(m: Editor, path: string): [Editor, Effect[]] {
+    const k = findIndex(m.tabs, (t) => t.path == path);
+    if (k >= 0) {
+        return [{ ...m, active: k, current: path }, []] as const;
+    }
+    return [{ ...m, current: path }, [ReadText(path)]] as const;
+}
+
+// the text of the file `path` read: a tab of its lines
+function readIn(m: Editor, path: string, text: string, ok: boolean): Editor {
+    if (!ok) {
+        return say(m, `Lecture impossible : ${path} (${text})`);
+    }
+    const name = baseName(path);
+    const binary = text.indexOf("\u{0}") >= 0;
+    const doc = docOf(path, binary ? "The file is not displayed in the text editor because it is either binary or uses an unsupported text encoding." : text);
+    const tab = { path: path, name: name, doc: doc };
+    return say({ ...m, tabs: concat(m.tabs, [tab]), active: m.tabs.length, current: path }, `Ouvert : ${rel(m, path)} (${doc.lines.length} lignes)`);
+}
+
+// the folder of the node `i` read: its children inserted after it, open
+function listedIn(m: Editor, path: string, names: string[n], ok: boolean): Editor {
+    const i = findIndex(m.nodes, (x) => x.path == path);
+    if (i < 0 || !ok) {
+        return ok ? m : say(m, `Dossier illisible : ${path}`);
+    }
+    const n = m.nodes[i];
+    const kids = nodesOf(path, names, n.depth + 1);
+    const head = map(iota(i), (k) => m.nodes[k]);
+    const tail = map(iota(m.nodes.length - i - 1), (k) => m.nodes[i + 1 + k]);
+    const files = concat(m.files, map(filter(kids, (x) => !x.dir), (x) => x.path));
+    return { ...m, nodes: concat(concat(head, [{ ...n, open: true, loaded: true }]), concat(kids, tail)), files: files };
+}
+
+// a click on the node `i`: a folder opened or closed (read the first time),
+// a file opened
+function nodeClicked(m: Editor, i: i64): [Editor, Effect[]] {
+    const n = m.nodes[i];
+    const m1 = { ...m, current: n.path };
+    if (!n.dir) {
+        return opened(m1, n.path);
+    }
+    if (n.loaded || n.open) {
+        return [{ ...m1, nodes: map(iota(m.nodes.length), (k) => k == i ? { ...n, open: !n.open } : m.nodes[k]) }, []] as const;
+    }
+    return [m1, [ListFolder(n.path)]] as const;
+}
+
+function closed(m: Editor, k: i64): Editor {
+    if (k < 0 || k >= m.tabs.length) {
+        return m;
+    }
+    const tabs = map(filter(iota(m.tabs.length), (j) => j != k), (j) => m.tabs[j]);
+    const active = m.active >= k ? max(m.active - 1, tabs.length > 0 ? 0 : -1) : m.active;
+    return { ...m, tabs: tabs, active: active, current: active >= 0 ? tabs[active].path : "" };
+}
+
+function showView(m: Editor, v: i64): Editor {
+    return m.view == v && m.sidebarShown ? { ...m, sidebarShown: false } : { ...m, view: v, sidebarShown: true };
+}
+
+function openChoice(m: Editor): [Editor, Effect[]] {
+    const ms = matches(m);
+    // (the file found opened, the keyboard then in its code)
+    const m1 = { ...m, palette: false, field: CODE };
+    return m.choice >= 0 && m.choice < ms.length ? opened(m1, ms[m.choice]) : [m1, []] as const;
+}
+
+function togglePalette(m: Editor): Editor {
+    return { ...m, palette: !m.palette, query: editing(""), choice: 0, field: m.palette ? -1 : QUERY };
+}
+
+// the document of the tab shown changed by `f`
+function withDoc(m: Editor, f: (Doc) => Doc): Editor {
+    return m.active >= 0 && m.active < m.tabs.length
+        ? { ...m, tabs: map(iota(m.tabs.length), (k) => k == m.active ? { ...m.tabs[k], doc: f(m.tabs[k].doc) } : m.tabs[k]) } : m;
+}
+
+// the column of the code under the pointer at `x` units from the left of
+// a line (its number and the gap after it before the code)
+function columnAt(m: Editor, x: f32): i64 {
+    return i64(floor((x - 42.4f32 - 25.6f32) / m.advance + 0.5f32));
+}
+
+// the document changed by a key: the line of its cursor revealed in the
+// box of the code
+function docChanged(m: Editor, d: Doc, fx: Effect[n]): [Editor, Effect[]] {
+    const [y, h] = cursorBand(d);
+    const m1 = withDoc(m, (x) => d);
+    return [m1, concat(fx, [Reveal(1, y, h)])] as const;
+}
+
+// Ctrl+S: the document of the tab shown written to its file
+function save(m: Editor): [Editor, Effect[]] {
+    if (m.active < 0 || m.active >= m.tabs.length) {
+        return [m, []] as const;
+    }
+    const t = m.tabs[m.active];
+    return [m, [WriteText(t.path, textOf(t.doc))]] as const;
+}
+
+// the file `path` written: its document saved (no longer a dot on its tab)
+function written(m: Editor, path: string, ok: boolean, reason: string): Editor {
+    if (!ok) {
+        return say(m, `Écriture impossible : ${path} (${reason})`);
+    }
+    return say({ ...m, tabs: map(m.tabs, (t) => t.path == path ? { ...t, doc: saved(t.doc) } : t) }, `Enregistré : ${rel(m, path)}`);
+}
+
+// a click on the place `p`
+function clicked(m: Editor, p: i64, i: Input): [Editor, Effect[]] {
+    if (p == QUERY || p == SEARCH) {
+        const [f, fx, own] = edited(p == QUERY ? m.query : m.search, i, p);
+        return [p == QUERY ? { ...m, query: f, field: p } : { ...m, search: f, field: p }, fx] as const;
+    }
+    const m0 = { ...m, field: m.palette ? m.field : -1 };
+    if (p == COMMAND) {
+        return [togglePalette(m0), []] as const;
+    }
+    if (p == TOGGLE_SIDEBAR) {
+        return [{ ...m0, sidebarShown: !m.sidebarShown }, []] as const;
+    }
+    if (p == TOGGLE_PANEL) {
+        return [{ ...m0, panelShown: !m.panelShown }, []] as const;
+    }
+    if (p == MINIMIZE) {
+        return [m0, [Minimize]] as const;
+    }
+    if (p == MAXIMIZE) {
+        return [m0, [ToggleMaximized]] as const;
+    }
+    if (p == CLOSE_WINDOW) {
+        return [m0, [CloseWindow]] as const;
+    }
+    if (p == ROOT_SECTION) {
+        return [{ ...m0, rootOpen: !m.rootOpen }, []] as const;
+    }
+    if (p == SASH_V) {
+        return [{ ...m0, from: m.sidebarWidth }, []] as const;
+    }
+    if (p == SASH_H) {
+        return [{ ...m0, from: m.panelHeight }, []] as const;
+    }
+    if (p >= ACTIVITY && p < ACTIVITY + 5) {
+        return [showView(m0, p - ACTIVITY), []] as const;
+    }
+    if (p >= LINE) {
+        // (the cursor at the line clicked, at the column under the pointer)
+        return match (i) {
+            Click(q, x, y, at, clicks, mods) => [withDoc({ ...m0, field: CODE }, (d) => clickedAt(d, p - LINE, columnAt(m, x), clicks, (mods & WITH_SHIFT) != 0)), []] as const,
+            _ => [m0, []] as const,
+        };
+    }
+    if (p >= FOUND && p < LINE) {
+        const hits = found(m, m.search.text, 200);
+        return p - FOUND < hits.length ? opened(m0, hits[p - FOUND]) : [m0, []] as const;
+    }
+    if (p >= NODE && p < FOUND) {
+        return p - NODE < m.nodes.length ? nodeClicked(m0, p - NODE) : [m0, []] as const;
+    }
+    if (p >= MATCH && p < NODE) {
+        return openChoice({ ...m0, choice: p - MATCH });
+    }
+    if (p >= CLOSE_TAB && p < MATCH) {
+        return [closed(m0, p - CLOSE_TAB), []] as const;
+    }
+    if (p >= TAB && p < CLOSE_TAB) {
+        const k = p - TAB;
+        return k < m.tabs.length ? [{ ...m0, active: k, current: m.tabs[k].path, field: CODE }, [ScrollTo(1, m.tabs[k].doc.top)]] as const : [m0, []] as const;
+    }
+    return [m0, []] as const;
+}
+
+// a key held with Ctrl or one that edits: the shortcuts, then the field
+// with the focus
+function shortcut(m: Editor, k: i64, mods: i64, i: Input): [Editor, Effect[]] {
+    const ctrl = (mods & WITH_CTRL) != 0;
+    if (ctrl && k == 112) {
+        return [togglePalette(m), []] as const;
+    }
+    if (ctrl && k == 98) {
+        return [{ ...m, sidebarShown: !m.sidebarShown }, []] as const;
+    }
+    if (ctrl && k == 106) {
+        return [{ ...m, panelShown: !m.panelShown }, []] as const;
+    }
+    if (ctrl && k == 119) {
+        return [closed(m, m.active), []] as const;
+    }
+    if (ctrl && k == 115) {
+        return save(m);
+    }
+    if (m.palette) {
+        if (k == ESCAPE) {
+            return [{ ...m, palette: false, field: -1 }, []] as const;
+        }
+        if (k == DOWN) {
+            return [{ ...m, choice: min(m.choice + 1, max(0, matches(m).length - 1)) }, []] as const;
+        }
+        if (k == UP) {
+            return [{ ...m, choice: max(0, m.choice - 1) }, []] as const;
+        }
+        if (k == ENTER) {
+            return openChoice(m);
+        }
+    }
+    return typed(m, i);
+}
+
+// an input given to the field with the focus
+function typed(m: Editor, i: Input): [Editor, Effect[]] {
+    if (m.field == QUERY) {
+        const [f, fx, own] = edited(m.query, i, QUERY);
+        return [{ ...m, query: f, choice: f.text == m.query.text ? m.choice : 0 }, fx] as const;
+    }
+    if (m.field == SEARCH) {
+        const [f, fx, own] = edited(m.search, i, SEARCH);
+        return [{ ...m, search: f }, fx] as const;
+    }
+    // (the code: the keys, the characters, the clipboard)
+    if (m.field == CODE && m.active >= 0 && m.active < m.tabs.length) {
+        const d = m.tabs[m.active].doc;
+        return match (i) {
+            Key(k, mods) => {
+                const [d1, fx] = keyed(d, k, mods);
+                return docChanged(m, d1, fx);
+            },
+            Text(c) => docChanged(m, typedCode(d, c), []),
+            Paste(s) => docChanged(m, pasted(d, s), []),
+            _ => [m, []] as const,
+        };
+    }
+    return [m, []] as const;
+}
+
+// the model after the input `i` of the hand, and what it asks
+export function update(m: Editor, i: Input): [Editor, Effect[]] {
+    return match (i) {
+        Hover(p) => [{ ...m, hover: p }, []] as const,
+        Click(p, x, y, at, clicks, mods) => {
+            const [m1, fx] = clicked(m, p, i);
+            return [{ ...m1, pressed: p, pressX: x, pressY: y }, fx] as const;
+        },
+        Drag(p, x, y, at) => {
+            if (p == SASH_V) {
+                return [{ ...m, sidebarWidth: max(170.0f32, min(600.0f32, m.from + x - m.pressX)) }, []] as const;
+            }
+            if (p == SASH_H) {
+                return [{ ...m, panelHeight: max(60.0f32, min(400.0f32, m.from - (y - m.pressY))) }, []] as const;
+            }
+            // (a drag from a line of the code: the selection to the line and the
+            // column under the pointer)
+            if (p >= LINE && m.field == CODE) {
+                const line = p - LINE + i64(floor(y / LINE_HEIGHT));
+                const m1 = withDoc(m, (d) => draggedTo(d, line, columnAt(m, x)));
+                return m1.active >= 0 ? docChanged(m1, m1.tabs[m1.active].doc, []) : [m1, []] as const;
+            }
+            return p == m.field ? typed(m, i) : [m, []] as const;
+        },
+        Release(p) => [{ ...m, pressed: -1 }, []] as const,
+        Key(k, mods) => shortcut(m, k, mods, i),
+        Viewport(k, offset, height) => [k == 1 ? withDoc(m, (d) => viewed(d, offset, height)) : m, []] as const,
+        TextWritten(p, ok, reason) => [written(m, p, ok, reason), []] as const,
+        TextRead(p, t, ok) => [readIn(m, p, t, ok), []] as const,
+        FolderListed(p, names, ok) => [listedIn(m, p, names, ok), []] as const,
+        WindowState(z) => [{ ...m, maximized: z }, []] as const,
+        WindowSize(w, h) => [{ ...m, width: w, height: h }, []] as const,
+        WindowActive(z) => [{ ...m, windowActive: z }, []] as const,
+        Focus(p) => [{ ...m, field: p == QUERY || p == SEARCH ? p : (m.field == CODE ? CODE : -1) }, []] as const,
+        _ => typed(m, i),
+    };
+}
+
+// ----- the start: the folder read at once ---------------------------------
+
+// the tree of the folder `dir` (`depth` its children's), read whole as the
+// editor of Lua does at its start (the palette then finds every file), the
+// paths of its files added to `files`
+export action treeOf(dir: string, depth: i64, files: string[]): [Node[], string[]] {
+    const names = match (sys.listDir(dir)) {
+        Ok(xs) => map(xs, (x) => sys.isDir(joined(dir, x)) ? x + "/" : x),
+        Err(e) => [],
+    };
+    const kids = nodesOf(dir, names, depth);
+    return treeFrom(kids, 0, depth, [], files);
+}
+
+action treeFrom(kids: Node[n], k: i64, depth: i64, out: Node[], files: string[]): [Node[], string[]] {
+    if (k >= n) {
+        return [out, files] as const;
+    }
+    const n0 = kids[k];
+    if (!n0.dir) {
+        return treeFrom(kids, k + 1, depth, concat(out, [n0]), concat(files, [n0.path]));
+    }
+    if (files.length >= MOST_FILES) {
+        return treeFrom(kids, k + 1, depth, concat(out, [n0]), files);
+    }
+    const [sub, f2] = treeOf(n0.path, depth + 1, files);
+    return treeFrom(kids, k + 1, depth, concat(concat(out, [{ ...n0, loaded: true }]), sub), f2);
+}

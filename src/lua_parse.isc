@@ -42,6 +42,19 @@ function isNameByte(c: u8): boolean {
     return isNameStart(c) || isDigit(c);
 }
 
+// the end of the hexadecimal digits from `at`
+function hexDigitsEnd(b: u8[n], at: i64): i64 {
+    return at < n && isHexDigit(b[at]) ? hexDigitsEnd(b, at + 1) : at;
+}
+
+// the bytes of the code point `c` in UTF-8
+function utf8Of(c: i64): u8[] {
+    return c < 128 ? [u8(c)]
+        : (c < 2048 ? [u8(192 | (c >> 6)), u8(128 | (c & 63))]
+        : (c < 65536 ? [u8(224 | (c >> 12)), u8(128 | ((c >> 6) & 63)), u8(128 | (c & 63))]
+        : [u8(240 | (c >> 18)), u8(128 | ((c >> 12) & 63)), u8(128 | ((c >> 6) & 63)), u8(128 | (c & 63))]));
+}
+
 function hexValue(c: u8): i64 {
     return isDigit(c) ? i64(c) - 48 : (c >= 97u8 ? i64(c) - 87 : i64(c) - 55);
 }
@@ -256,6 +269,26 @@ function stringFrom(b: u8[n], at: i64, quote: u8, line: i64, start: i64, got: u8
         const end = min(digitsEnd(b, at + 1, false), at + 4);
         const v = fold(b.slice(at + 1, end), 0, (x, d) => x * 10 + i64(d) - 48);
         return v > 255 ? faulted(acc, "a decimal escape too large", line) : stringFrom(b, end, quote, line, start, concat(got, [u8(v)]), acc);
+    }
+    if (e == 117u8) {
+        // \u{XXX}: the character of that code, in UTF-8 (Lua 5.3)
+        if (at + 2 >= n || b[at + 2] != 123u8) {
+            return faulted(acc, "missing '{' in \\u{xxxx}", line);
+        }
+        const end = hexDigitsEnd(b, at + 3);
+        if (end == at + 3) {
+            return faulted(acc, "hexadecimal digit expected", line);
+        }
+        if (end >= n || b[end] != 125u8) {
+            return faulted(acc, "missing '}' in \\u{xxxx}", line);
+        }
+        const v = fold(b.slice(at + 3, end), 0, (x, d) => min(x * 16 + hexValue(d), 2147483648));
+        // (the strings of the machine are texts: no surrogate, nothing past
+        // U+10FFFF)
+        if (v > 1114111 || (v >= 55296 && v < 57344)) {
+            return faulted(acc, "UTF-8 value too large", line);
+        }
+        return stringFrom(b, end + 1, quote, line, start, concat(got, utf8Of(v)), acc);
     }
     if (e == 122u8) {
         // \z: the blanks after it skipped

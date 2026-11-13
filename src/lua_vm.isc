@@ -2884,10 +2884,10 @@ function stringPrim(st: Vm, id: i64, args: Value[n], line: i64): [Vm, Value[]] {
         return oneV(s4, v);
     }
     if (id == 22) {
-        return oneV(s1, Str(s.toUpperCase()));
+        return oneV(s1, Str(asciiCased(s, true)));
     }
     if (id == 23) {
-        return oneV(s1, Str(s.toLowerCase()));
+        return oneV(s1, Str(asciiCased(s, false)));
     }
     if (id == 24) {
         const [s2, k] = intArg(s1, args, 1, name, line);
@@ -3641,6 +3641,13 @@ export function stringsTable(vm: Vm, xs: string[n]): [Vm, V] {
 // that is not a table)
 export function fieldOf(vm: Vm, t: V, name: string): V {
     return t.t == T_TAB ? rawGetStr(vm, t.i, name) : nilV();
+}
+
+// `s` with its ASCII letters in upper case (`up`) or lower case, its other
+// bytes as they are: `string.upper` and `string.lower` of Lua in the locale
+// C (`"café"` gives `"CAFé"`)
+function asciiCased(s: string, up: boolean): string {
+    return stringOf(map(bytes(s), (c) => up && c >= 97u8 && c <= 122u8 ? c - 32u8 : (!up && c >= 65u8 && c <= 90u8 ? c + 32u8 : c)));
 }
 
 // ----- the collector -------------------------------------------------------------

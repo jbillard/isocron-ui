@@ -218,6 +218,19 @@ export function restyled(e: Element, f: (Style) => Style): Element {
     };
 }
 
+// the element `e` with each of its texts (its labels, the lines of its
+// fields), at any depth, given the style `f` makes of its own: the
+// properties of text of the classes of a component (a view of uigen, as
+// the generic application gives them)
+export function retexted(e: Element, f: (TextStyle) => TextStyle): Element {
+    return match (e) {
+        Label(ts, s) => Label(f(ts), s),
+        Input(ts, ed, focused, hint) => Input(f(ts), ed, focused, hint),
+        Div(st, cs) => Div(st, map(cs, (c) => retexted(c, f))),
+        other => other,
+    };
+}
+
 // the element `e` (a box: a component) with the tooltip `text`, shown by
 // the pointer resting over it
 export function withTip(e: Element, text: string): Element {

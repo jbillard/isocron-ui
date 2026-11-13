@@ -6,7 +6,8 @@
 [6, 0, 0, 0, 0, 0, 12]
 3
 [wayland.Other(2, 0), wayland.Other(3, 0)]
-wayland.Size(800, 600)
+wayland.Size(800, 600, false)
+wayland.Size(1024, 700, true)
 wayland.Ping(41)
 wayland.Pointer(10, -0.5)
 /run/user/1001/wayland-0

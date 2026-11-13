@@ -1,82 +1,342 @@
-/* The styles of the editor (editor.ui.xml): a dark theme */
+/* The styles of the editor (editor.ui.xml): those of Visual Studio Code in
+   its Modern UI (its parts in cards, its tabs joined to their editor) and
+   its theme 2026 Dark, in units (pixels at 100 %): the sizes of its style
+   sheets (src/vs/workbench/contrib/modernUI, browser/media/
+   floatingPanels.css) checked against a capture of it at 125 %. */
 
+/* the window: the ground around the cards (titleBar.activeBackground) */
 .window {
     width: fill;
     height: fill;
-    background: #1E1E1E;
+    background: #191A1B;
     cursor: arrow;
 }
 
-/* the bar of the title and its menus */
+/* ----- the bar of the title: 35 units, three zones (the left and the
+   right of the same width, the middle its content: the arrows and the box
+   that finds a file, 38 % of the window wide, 600 at most) ----- */
 .titlebar {
     width: fill;
-    height: 30;
-    background: #3C3C3C;
+    height: 35;
     direction: row;
     align: center;
     stretch: false;
-    padX: 6;
-    gap: 2;
 }
 
-.menu {
-    padX: 8;
-    padY: 3;
-    radius: 4;
-    cursor: arrow;
-}
-
-.menu:hover {
-    background: #505050;
-}
-
-.menuText {
-    size: 13;
-    color: #CCCCCC;
-}
-
-.titleText {
-    size: 12;
-    color: #CCCCCC;
-}
-
-.main {
+.titleLeft {
     width: fill;
-    height: fill;
-    stretch: true;
+    height: 35;
+    direction: row;
+    align: center;
+    stretch: false;
+    clip: true;
 }
 
-/* the bar of the activities */
-.activity {
-    width: 48;
-    height: fill;
-    background: #333333;
+.appIcon {
+    width: 35;
+    height: 35;
+    justify: center;
     align: center;
     stretch: false;
 }
 
-.act {
-    width: 48;
-    height: 48;
+.mark {
+    width: 16;
+    height: 16;
+    radius: 3;
+    background: #297AA0;
+    justify: center;
+    align: center;
+    stretch: false;
+}
+
+.markText {
+    size: 11;
+    color: #FFFFFF;
+}
+
+/* the menus: 8 units on each side of their name, the last a « … » shown
+   when some do not fit */
+.menubar {
+    width: fill;
+    height: 35;
+    direction: row;
+    align: center;
+    stretch: false;
+    folds: true;
+}
+
+.menu {
+    height: 22;
+    padX: 8;
+    radius: 5;
     justify: center;
     align: center;
     stretch: false;
     cursor: arrow;
 }
 
-.act:hover {
-    background: #3F3F3F;
+.menu:hover {
+    background: #242526;
 }
 
-/* the side bar */
-.sideRow {
+.menuText {
+    size: 13;
+    color: #8C8C8C;
+}
+
+.menuIcon {
+    size: 16;
+    color: #8C8C8C;
+}
+
+.titleCenter {
+    height: 35;
+    padX: 10;
+    gap: 4;
+    direction: row;
+    align: center;
+    stretch: false;
+}
+
+.nav {
+    width: 22;
+    height: 22;
+    radius: 4;
+    justify: center;
+    align: center;
+    stretch: false;
+}
+
+/* (no place visited before: the arrows dimmed, disabledForeground) */
+.navIcon {
+    size: 16;
+    color: #555555;
+}
+
+/* the box that finds a file (commandCenter): the name of the folder at
+   its left, the button of the chat at its right */
+.command {
+    height: 24;
+    radius: 6;
+    background: #191A1B;
+    border: 1;
+    borderColor: #2E3031;
+    padX: 9;
+    direction: row;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.command:hover {
+    background: rgba(255, 255, 255, 0.06);
+    borderColor: #333536;
+}
+
+.commandText {
+    size: 12;
+    color: #BFBFBF;
+}
+
+.chat {
+    height: 22;
+    direction: row;
+    align: center;
+    stretch: false;
+}
+
+.chatIcon {
+    size: 16;
+    color: #BFBFBF;
+}
+
+.chatMore {
+    size: 12;
+    color: #BFBFBF;
+}
+
+.titleRight {
+    width: fill;
+    height: 35;
+    minWidth: 330;
+    direction: row;
+    align: center;
+    stretch: false;
+}
+
+.account {
+    height: 35;
+    gap: 5;
+    direction: row;
+    align: center;
+    stretch: false;
+}
+
+.signIn {
+    height: 22;
+    padX: 8;
+    radius: 4;
+    background: #297AA0;
+    justify: center;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.signIn:hover {
+    background: #2B7DA3;
+}
+
+.signInText {
+    size: 12;
+    color: #FFFFFF;
+}
+
+/* the buttons of the layout: 22 units, 4 apart, 4 before the buttons of
+   the window */
+.layoutTools {
+    height: 35;
+    padX: 4;
+    gap: 4;
+    direction: row;
+    align: center;
+    stretch: false;
+}
+
+.tool {
+    width: 22;
+    height: 22;
+    radius: 4;
+    justify: center;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.tool:hover {
+    background: rgba(90, 93, 94, 0.31);
+}
+
+.toolIcon {
+    size: 16;
+    color: #8C8C8C;
+}
+
+/* the buttons of the window: 46 units by the height of the bar, the
+   glyphs of the system under Windows */
+.winButton {
+    width: 46;
+    height: 35;
+    justify: center;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.winButton:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.winClose {
+    width: 46;
+    height: 35;
+    justify: center;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.winClose:hover {
+    background: rgba(232, 17, 35, 0.9);
+}
+
+.winIcon {
+    color: #8C8C8C;
+}
+
+/* ----- the cards: 4 units from the edges of the window, from each
+   other and from the bar of the state ----- */
+.body {
+    width: fill;
     height: fill;
+    padX: 4;
+    direction: row;
     stretch: true;
 }
 
+.belowCards {
+    width: fill;
+    height: 4;
+}
+
+/* the bar of the activities: 36 units and a lane of 8, its edge
+   (modernActivityBar.border), rounded at its left, joined to the side bar */
+.activity {
+    width: 44;
+    height: fill;
+    padY: 3;
+    gap: 8;
+    background: #191A1B;
+    border: 1;
+    borderColor: #252526;
+    radiusTopLeft: 8;
+    radiusBottomLeft: 8;
+    radiusTopRight: 0;
+    radiusBottomRight: 0;
+    align: center;
+    stretch: false;
+}
+
+.act {
+    width: 36;
+    height: 36;
+    justify: center;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+/* the activity shown: a box of 32 units, its corners of 4 */
+.actOn {
+    width: 32;
+    height: 32;
+    radius: 4;
+    background: #313233;
+    justify: center;
+    align: center;
+    stretch: false;
+}
+
+.actOff {
+    width: 32;
+    height: 32;
+    radius: 4;
+    justify: center;
+    align: center;
+    stretch: false;
+}
+
+.actOff:hover {
+    background: rgba(255, 255, 255, 0.067);
+}
+
+.actIcon {
+    size: 24;
+}
+
+/* the side bar: its edge but at its left, rounded at its right */
 .sidebar {
     height: fill;
-    background: #252526;
+    background: #191A1B;
+    border: 1;
+    borderLeft: 0;
+    borderColor: #2A2B2C;
+    radiusTopRight: 8;
+    radiusBottomRight: 8;
+    radiusTopLeft: 0;
+    radiusBottomLeft: 0;
+    padY: 0;
 }
 
 .sideBody {
@@ -84,31 +344,79 @@
     height: fill;
 }
 
+/* the title of the view: 32 units, its name 8 units in (12 from the
+   edge), 12 units in a weight of 600 */
 .sideHeader {
     width: fill;
-    height: 35;
-    padX: 20;
+    height: 32;
+    padX: 4;
+    direction: row;
     align: center;
     stretch: false;
+}
+
+.sideTitleBox {
+    padX: 8;
 }
 
 .sideTitle {
-    size: 11;
-    color: #BBBBBB;
+    size: 12;
+    font: semibold;
+    color: #BFBFBF;
 }
 
-.rootRow {
+/* the sections of the view (the folder, Outline, Timeline): 28 units, 4
+   from the edges, a line above each but the first */
+.sectionRow {
     width: fill;
-    height: 22;
+    height: 28;
     padX: 4;
-    gap: 2;
+    stretch: true;
+}
+
+.sectionLine {
+    width: fill;
+    height: 28;
+    padX: 4;
+}
+
+.section {
+    width: fill;
+    height: 28;
+    radius: 4;
+    direction: row;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.section:hover {
+    background: rgba(255, 255, 255, 0.078);
+}
+
+.sectionRule {
+    width: fill;
+    height: 1;
+    background: #2A2B2C;
+}
+
+.sectionText {
+    size: 12;
+    font: semibold;
+    color: #BFBFBF;
+}
+
+.twistieBox {
+    width: 16;
+    height: 16;
+    justify: center;
     align: center;
     stretch: false;
 }
 
-.rootText {
-    size: 11;
-    color: #CCCCCC;
+.twistie {
+    size: 16;
+    color: #BFBFBF;
 }
 
 .searchRow {
@@ -120,92 +428,242 @@
 .treeBox {
     width: fill;
     height: fill;
+    padX: 4;
+    barWidth: 8;
+    barColor: rgba(168, 169, 170, 0.52);
+    barHoverColor: rgba(168, 169, 170, 0.565);
+    barRadius: 4;
+    barInset: 0;
 }
 
+/* a row of the tree: 22 units, 8 units a level, its chevron or the icon
+   of its file 3 units in, its name 22 units after them */
 .node {
     width: fill;
     height: 22;
-    gap: 4;
+    radius: 4;
+    direction: row;
     align: center;
     stretch: false;
     cursor: arrow;
 }
 
 .node:hover {
-    background: #2A2D2E;
+    background: rgba(255, 255, 255, 0.078);
 }
 
 .nodeText {
     size: 13;
-    color: #CCCCCC;
 }
 
 .placeholder {
     size: 13;
-    color: #858585;
+    color: #8C8C8C;
 }
 
 .fileIcon {
-    width: 10;
-    height: 10;
-    radius: 2;
+    width: 16;
+    height: 22;
+    justify: center;
+    align: center;
+    stretch: false;
 }
 
-/* the edges that resize the side bar and the panel */
+/* the edge between the cards that resizes the side bar: its grip of
+   three dots, blue under the pointer (focusBorder) */
 .sashV {
     width: 4;
     height: fill;
-    background: #252526;
+    justify: center;
+    align: center;
+    gap: 3;
+    stretch: false;
+    radius: 2;
     cursor: arrow;
 }
 
 .sashV:hover {
-    background: #0E639C;
+    background: rgba(57, 148, 188, 0.7);
 }
 
 .sashV:active {
-    background: #007ACC;
+    background: rgba(57, 148, 188, 0.7);
+}
+
+.grip {
+    width: 2;
+    height: 2;
+    radius: 1;
+    background: rgba(191, 191, 191, 0.4);
 }
 
 .sashH {
     width: fill;
     height: 4;
-    background: #2B2B2B;
+    radius: 2;
     cursor: arrow;
 }
 
 .sashH:hover {
-    background: #0E639C;
+    background: rgba(57, 148, 188, 0.7);
 }
 
 .sashH:active {
-    background: #007ACC;
+    background: rgba(57, 148, 188, 0.7);
 }
 
-/* the editor: its tabs, the path of its file, its code */
+/* ----- the card of the editor: its edge, its corners of 8 ----- */
 .center {
     width: fill;
     height: fill;
 }
 
+.editorCard {
+    width: fill;
+    height: fill;
+    background: #121314;
+    border: 1;
+    borderColor: #2A2B2C;
+    radius: 8;
+    clip: true;
+}
+
+/* the tabs: a strip of 31 units and its line (32), the tab shown joined
+   to the editor below it (its top rounded, its shoulders), the others
+   flat; 13 units, 6 before the icon, 6 between it and the name, 30.5
+   after it (the column of the button that closes) */
 .tabs {
     width: fill;
-    height: 35;
-    background: #252526;
-    stretch: true;
+    height: 32;
+    background: #202122;
+    borderBottom: 1;
+    borderColor: #2A2B2C;
+    direction: row;
+    align: start;
+    stretch: false;
 }
 
 .tab {
-    height: 35;
-    padX: 12;
-    gap: 6;
+    height: 31;
+    direction: row;
     align: center;
     stretch: false;
     cursor: arrow;
 }
 
 .tab:hover {
-    background: #313131;
+    background: #2A2A2B;
+}
+
+.tabOn {
+    height: 32;
+    stretch: false;
+    cursor: arrow;
+}
+
+/* the shape of the tab shown, under its text: its top (its sides and its
+   corners of 7, the edge of the card above it) and its base, whose
+   shoulders, quarters of a circle of 7 hollowed out of the strip, spread
+   over its neighbours */
+.tabShape {
+    width: fill;
+    height: 32;
+    floating: true;
+    under: true;
+    spreadX: 7;
+}
+
+.capRow {
+    width: fill;
+    height: 25;
+    direction: row;
+    stretch: true;
+}
+
+.capSide {
+    width: 7;
+    height: 25;
+}
+
+.cap {
+    width: fill;
+    height: 25;
+    background: #121314;
+    borderLeft: 1;
+    borderRight: 1;
+    borderColor: #2A2B2C;
+    radiusTopLeft: 7;
+    radiusTopRight: 7;
+}
+
+.baseRow {
+    width: fill;
+    height: 7;
+    direction: row;
+    stretch: true;
+}
+
+.base {
+    width: fill;
+    height: 7;
+    background: #121314;
+}
+
+.shoulder {
+    width: 8;
+    height: 7;
+    background: #121314;
+}
+
+.shoulderLeft {
+    width: 8;
+    height: 7;
+    background: #202122;
+    borderRight: 1;
+    borderBottom: 1;
+    borderColor: #2A2B2C;
+    radiusBottomRight: 7;
+}
+
+.shoulderRight {
+    width: 8;
+    height: 7;
+    background: #202122;
+    borderLeft: 1;
+    borderBottom: 1;
+    borderColor: #2A2B2C;
+    radiusBottomLeft: 7;
+}
+
+.tabBody {
+    height: 31;
+    direction: row;
+    align: center;
+    stretch: false;
+}
+
+.tabPad {
+    width: 6;
+    height: 1;
+}
+
+.tabGap {
+    width: 6;
+    height: 1;
+}
+
+.tabEnd {
+    width: 30.5;
+    height: 31;
+    direction: row;
+    align: center;
+    stretch: false;
+}
+
+.tabDivider {
+    width: 1;
+    height: 16;
+    background: #2A2B2C;
 }
 
 .close {
@@ -219,54 +677,129 @@
 }
 
 .close:hover {
-    background: #505050;
+    background: rgba(90, 93, 94, 0.31);
 }
 
-.closeText {
-    size: 14;
-    color: #CCCCCC;
+.closeIcon {
+    size: 16;
+    color: #BFBFBF;
 }
 
+.tabTools {
+    height: 31;
+    padX: 4;
+    gap: 4;
+    direction: row;
+    align: center;
+    stretch: false;
+}
+
+/* the path of the file and its symbols: 22 units */
 .crumbs {
     width: fill;
     height: 22;
-    padX: 16;
+    padX: 18;
+    direction: row;
     align: center;
     stretch: false;
 }
 
 .crumb {
-    size: 12;
-    color: #A9A9A9;
+    gap: 4;
+    direction: row;
+    align: center;
+    stretch: false;
 }
 
+.crumbText {
+    size: 13;
+    color: #8C8C8C;
+}
+
+/* the icon of a symbol (symbolIcon: the foreground) */
+.crumbIcon {
+    size: 16;
+    color: #BFBFBF;
+}
+
+.crumbSep {
+    size: 16;
+    color: #8C8C8C;
+}
+
+/* the code: lines of 19 units, Consolas of 14, the numbers 42.4 units
+   in, the code 68 */
+/* (its scrollbar: the slider of Visual Studio Code, scrollbarSlider) */
 .code {
     width: fill;
     height: fill;
     clip: true;
+    barWidth: 13;
+    barColor: rgba(168, 169, 170, 0.52);
+    barHoverColor: rgba(168, 169, 170, 0.565);
+    barRadius: 4;
+    barInset: 0;
+}
+
+/* the lines of the blocks around the first line in sight, kept at the
+   top (sticky scroll): a line and a shadow under them */
+.sticky {
+    width: fill;
+    background: #121314;
+    borderBottom: 1;
+    borderColor: #2A2B2C;
+    shadowBlur: 3;
+    shadowY: 2;
+    shadowColor: rgba(25, 27, 29, 0.3);
 }
 
 .line {
     width: fill;
     height: 19;
+    direction: row;
     align: center;
     stretch: false;
 }
 
 .gutter {
-    width: 64;
-    padX: 18;
+    width: 42.4;
+    height: 19;
+    justify: end;
+    align: center;
+    stretch: false;
+}
+
+.gutterGap {
+    width: 25.6;
+    height: 1;
 }
 
 .lineNo {
-    size: 13;
-    color: #858585;
+    size: 14;
+    font: mono;
     textAlign: end;
+}
+
+/* the line of the cursor (editor.lineHighlightBackground) */
+.codeLine {
+    width: fill;
+    height: 19;
+    direction: row;
+    align: center;
+    stretch: false;
+}
+
+.guide {
+    borderLeft: 1;
+    borderColor: rgba(131, 132, 133, 0.3);
+    height: 19;
+    align: center;
+    stretch: false;
 }
 
 .more {
     size: 12;
-    color: #858585;
+    color: #8C8C8C;
 }
 
 .welcome {
@@ -278,81 +811,151 @@
 }
 
 .welcomeTitle {
-    size: 40;
+    size: 26;
+    font: semibold;
     color: #3C3C3C;
 }
 
 .welcomeText {
     size: 13;
-    color: #858585;
+    color: #8C8C8C;
 }
 
-/* the palette */
+/* the fields: input.background, input.border, their border blue with the
+   focus */
+.input {
+    height: 26;
+    radius: 4;
+    background: #191A1B;
+    border: 1;
+    borderColor: #333536;
+    outline: 0;
+    padX: 6;
+    color: #BFBFBF;
+    caretColor: #BBBEBF;
+}
+
+.input:focus {
+    borderColor: rgba(57, 148, 188, 0.7);
+}
+
+/* the palette (quickInput): under the bar of the title, 600 units */
 .paletteRow {
     width: fill;
     justify: center;
-    padY: 8;
+    padY: 0;
     stretch: false;
+    floating: true;
 }
 
 .palette {
     width: 600;
     padding: 6;
-    gap: 2;
-    radius: 6;
-    background: #252526;
-    shadowBlur: 12;
-    shadowY: 4;
-    shadowColor: rgba(0, 0, 0, 0.6);
+    gap: 4;
+    radius: 8;
+    background: #202122;
+    border: 1;
+    borderColor: #2A2B2C;
+    shadowBlur: 8;
+    shadowY: 2;
+    shadowColor: rgba(0, 0, 0, 0.36);
+}
+
+.qinput {
+    height: 26;
+    radius: 4;
+    background: #191A1B;
+    border: 1;
+    borderColor: #333536;
+    outline: 0;
+    padX: 6;
+    color: #BFBFBF;
+    caretColor: #BBBEBF;
+}
+
+.qinput:focus {
+    borderColor: rgba(57, 148, 188, 0.7);
 }
 
 .match {
     width: fill;
-    height: 24;
-    padX: 8;
-    gap: 8;
-    radius: 3;
+    height: 22;
+    padX: 6;
+    gap: 6;
+    radius: 4;
+    direction: row;
     align: center;
     stretch: false;
     cursor: arrow;
 }
 
 .match:hover {
-    background: #2A2D2E;
+    background: rgba(255, 255, 255, 0.078);
 }
 
 .matchText {
     size: 13;
-    color: #CCCCCC;
 }
 
-/* the panel */
+.matchPath {
+    size: 12;
+}
+
+/* the panel: a card below the editor */
 .panelWrap {
     width: fill;
 }
 
 .panel {
     width: fill;
-    background: #1E1E1E;
+    background: #191A1B;
+    border: 1;
+    borderColor: #2A2B2C;
+    radius: 8;
+    clip: true;
 }
 
 .panelTabs {
     width: fill;
-    height: 35;
-    padX: 16;
-    gap: 22;
+    height: 32;
+    background: #202122;
+    borderBottom: 1;
+    borderColor: #2A2B2C;
+    direction: row;
     align: center;
     stretch: false;
 }
 
 .panelTab {
-    size: 11;
-    color: #969696;
+    height: 31;
+    padX: 16;
+    justify: center;
+    align: center;
+    stretch: false;
+}
+
+.panelTabText {
+    size: 13;
+    color: #8C8C8C;
 }
 
 .panelTabOn {
-    size: 11;
-    color: #E7E7E7;
+    height: 31;
+    padX: 16;
+    background: #191A1B;
+    borderLeft: 1;
+    borderRight: 1;
+    borderColor: #2A2B2C;
+    radiusTopLeft: 7;
+    radiusTopRight: 7;
+    justify: center;
+    align: center;
+    stretch: false;
+}
+
+.panelTabOnText {
+    size: 13;
+    color: #EDEDED;
 }
 
 .panelBody {
@@ -363,21 +966,63 @@
 
 .logText {
     size: 12;
-    color: #CCCCCC;
+    font: mono;
+    color: #BFBFBF;
 }
 
-/* the bar of the state */
+/* ----- the bar of the state: 22 units, 12 from the edges, 2 above and
+   below; its items 5 units in, 6 apart, 6 for the first and the last ----- */
 .status {
     width: fill;
-    height: 22;
-    background: #007ACC;
-    padX: 10;
-    gap: 16;
+    height: 26;
+    padX: 12;
+    padY: 2;
+    direction: row;
     align: center;
     stretch: false;
 }
 
+.statusFirst {
+    height: 22;
+    padX: 6;
+    gap: 3;
+    radius: 4;
+    direction: row;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.statusFirst:hover {
+    background: #323233;
+}
+
+.statusItem {
+    height: 22;
+    padX: 5;
+    gap: 3;
+    radius: 4;
+    direction: row;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.statusItem:hover {
+    background: #323233;
+}
+
+.statusGap {
+    width: 6;
+    height: 1;
+}
+
 .statusText {
     size: 12;
-    color: #FFFFFF;
+    color: #8C8C8C;
+}
+
+.statusIcon {
+    size: 14;
+    color: #8C8C8C;
 }

@@ -18,6 +18,8 @@ action main(args: string[k]): i32 {
     print(map(evs, (e) => wl.input(e)));
     // a configuration of the toplevel, a ping, a motion of the pointer
     print(wl.input({ obj: wl.TOPLEVEL, op: 0u32, args: concat(concat(wl.i32le(800i32), wl.i32le(600i32)), wl.le32(0u32)) }));
+    // (its states: maximized (1) and activated (4), the window active)
+    print(wl.input({ obj: wl.TOPLEVEL, op: 0u32, args: concat(concat(concat(wl.i32le(1024i32), wl.i32le(700i32)), wl.le32(8u32)), concat(wl.le32(1u32), wl.le32(4u32))) }));
     print(wl.input({ obj: wl.WM_BASE, op: 0u32, args: wl.le32(41u32) }));
     print(wl.input({ obj: wl.POINTER, op: 2u32, args: concat(concat(wl.le32(1000u32), wl.i32le(2560i32)), wl.i32le(-128i32)) }));
     print(wl.socketPath("", "/run/user/1001"));
