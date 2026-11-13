@@ -48,12 +48,46 @@ function hexValue(c: u8): i64 {
 
 // the first place from `at` where `b` holds the bytes of `s` (-1: none)
 function findFrom(b: u8[n], s: string, at: i64): i64 {
-    const t = bytes(s);
-    const m = t.length;
+    return findBytes(b, bytes(s), at);
+}
+
+// (the bytes of the text looked for made once, compared one by one: no
+// array made at each place)
+function findBytes(b: u8[n], t: u8[m], at: i64): i64 {
     if (at + m > n) {
         return -1;
     }
-    return count(iota(m), (k) => b[at + k] == t[k]) == m ? at : findFrom(b, s, at + 1);
+    return bytesAt(b, t, at, 0) ? at : findBytes(b, t, at + 1);
+}
+
+function bytesAt(b: u8[n], t: u8[m], at: i64, k: i64): boolean {
+    return k >= m || (b[at + k] == t[k] && bytesAt(b, t, at, k + 1));
+}
+
+// the tokens read so far: their array, room kept at its end, and their
+// number (a record: given from function to
+// function of the lexer, each token written in place)
+type Lx = { toks: Token[], nt: i64 };
+
+// (room for one token a byte and the end, made once: no token more than
+// its bytes; an array grown when full, `cond ? xs : concat(xs, ...)`,
+// copied `xs` at each token, an `if` one branch of which is new making
+// the other new)
+function noTokens(bytesCount: i64): Lx {
+    return { toks: fill(bytesCount + 1, { kind: T_END, text: "", int: 0, float: 0.0, line: 0 }), nt: 0 };
+}
+
+// a fault of the lexer, its tokens given to it (taken apart, freed): the
+// tokens are then given on every path of the lexer, written in place at
+// each token rather than copied (a path that dropped them made them lent)
+function faulted(lx: Lx, msg: string, line: i64): Lexed {
+    const gone = { ...lx, nt: 0 };
+    return gone.nt == 0 ? LexFault(msg, line) : LexFault(msg, line);
+}
+
+function pushed(lx: Lx, t: Token): Lx {
+    const k = lx.nt;
+    return { toks: lx.toks.with(k, t), nt: k + 1 };
 }
 
 // the level of a long bracket at `at` (`[[` 0, `[=[` 1...; -1: none)
@@ -71,12 +105,14 @@ function countEq(b: u8[n], at: i64, k: i64): i64 {
 
 // the tokens of the source `src`
 export function lex(src: string): Lexed {
-    return lexFrom(bytes(src), 0, 1, []);
+    const b = bytes(src);
+    return lexFrom(b, 0, 1, noTokens(b.length));
 }
 
-function lexFrom(b: u8[n], at: i64, line: i64, acc: Token[]): Lexed {
+function lexFrom(b: u8[n], at: i64, line: i64, acc: Lx): Lexed {
     if (at >= n) {
-        return Tokens(concat(acc, [{ kind: T_END, text: "<eof>", int: 0, float: 0.0, line: line }]));
+        const all = pushed(acc, { kind: T_END, text: "<eof>", int: 0, float: 0.0, line: line });
+        return Tokens(all.toks.slice(0, all.nt));
     }
     const c = b[at];
     if (c == 10u8) {
@@ -92,18 +128,18 @@ function lexFrom(b: u8[n], at: i64, line: i64, acc: Token[]): Lexed {
             const close = "]" + "=".repeat(level) + "]";
             const end = findFrom(b, close, at + 4 + level);
             if (end < 0) {
-                return LexFault("a comment not closed", line);
+                return faulted(acc, "a comment not closed", line);
             }
             return lexFrom(b, end + level + 2, line + count(iota(end - at), (k) => b[at + k] == 10u8), acc);
         }
-        const nl = findFrom(b, "\n", at);
+        const nl = findBytes(b, [10u8], at);
         return nl < 0 ? lexFrom(b, n, line, acc) : lexFrom(b, nl, line, acc);
     }
     if (isNameStart(c)) {
         const e = nameEnd(b, at);
         const word = stringOf(b.slice(at, e));
         const keyword = findIndex(KEYWORDS, (k) => k == word) >= 0;
-        return lexFrom(b, e, line, concat(acc, [{ kind: keyword ? T_OP : T_NAME, text: word, int: 0, float: 0.0, line: line }]));
+        return lexFrom(b, e, line, pushed(acc, { kind: keyword ? T_OP : T_NAME, text: word, int: 0, float: 0.0, line: line }));
     }
     if (isDigit(c) || (c == 46u8 && at + 1 < n && isDigit(b[at + 1]))) {
         return numberAt(b, at, line, acc);
@@ -116,22 +152,24 @@ function lexFrom(b: u8[n], at: i64, line: i64, acc: Token[]): Lexed {
         const close = "]" + "=".repeat(level) + "]";
         const end = findFrom(b, close, at + 2 + level);
         if (end < 0) {
-            return LexFault("a long string not closed", line);
+            return faulted(acc, "a long string not closed", line);
         }
         // (a line feed right after the opening dropped)
         const start = at + 2 + level < n && b[at + 2 + level] == 10u8 ? at + 3 + level : at + 2 + level;
         const text = stringOf(b.slice(start, end));
-        return lexFrom(b, end + level + 2, line + count(iota(end - at), (k) => b[at + k] == 10u8), concat(acc, [{ kind: T_STRING, text: text, int: 0, float: 0.0, line: line }]));
+        return lexFrom(b, end + level + 2, line + count(iota(end - at), (k) => b[at + k] == 10u8), pushed(acc, { kind: T_STRING, text: text, int: 0, float: 0.0, line: line }));
     }
-    const multi = findIndex(OPS, (o) => findFrom(b, o, at) == at);
+    // (each operator compared at `at` alone: looked for in the rest of the
+    // text, it was a search to the end at each punctuation)
+    const multi = findIndex(OPS, (o) => at + bytes(o).length <= n && bytesAt(b, bytes(o), at, 0));
     if (multi >= 0) {
-        return lexFrom(b, at + bytes(OPS[multi]).length, line, concat(acc, [{ kind: T_OP, text: OPS[multi], int: 0, float: 0.0, line: line }]));
+        return lexFrom(b, at + bytes(OPS[multi]).length, line, pushed(acc, { kind: T_OP, text: OPS[multi], int: 0, float: 0.0, line: line }));
     }
     const single = "+-*/%^#&~|<>=(){}[];:,.";
     if (count(bytes(single), (x) => x == c) > 0) {
-        return lexFrom(b, at + 1, line, concat(acc, [{ kind: T_OP, text: stringOf([c]), int: 0, float: 0.0, line: line }]));
+        return lexFrom(b, at + 1, line, pushed(acc, { kind: T_OP, text: stringOf([c]), int: 0, float: 0.0, line: line }));
     }
-    return LexFault(`a character unexpected: \`${stringOf([c])}\``, line);
+    return faulted(acc, `a character unexpected: \`${stringOf([c])}\``, line);
 }
 
 function nameEnd(b: u8[n], at: i64): i64 {
@@ -144,16 +182,16 @@ function digitsEnd(b: u8[n], at: i64, hex: boolean): i64 {
 
 // a number at `at`: decimal or hexadecimal, an integer when it has neither
 // a point nor an exponent and fits in 64 bits, else a float
-function numberAt(b: u8[n], at: i64, line: i64, acc: Token[]): Lexed {
+function numberAt(b: u8[n], at: i64, line: i64, acc: Lx): Lexed {
     const hex = at + 1 < n && b[at] == 48u8 && (b[at + 1] == 120u8 || b[at + 1] == 88u8);
     if (hex) {
         const e = digitsEnd(b, at + 2, true);
         if (e == at + 2) {
-            return LexFault("a hexadecimal number without digits", line);
+            return faulted(acc, "a hexadecimal number without digits", line);
         }
         // (integers of more than 16 digits wrap, as in Lua)
         const v = fold(b.slice(at + 2, e), 0, (x, d) => x * 16 + hexValue(d));
-        return lexFrom(b, e, line, concat(acc, [{ kind: T_INT, text: stringOf(b.slice(at, e)), int: v, float: f64(v), line: line }]));
+        return lexFrom(b, e, line, pushed(acc, { kind: T_INT, text: stringOf(b.slice(at, e)), int: v, float: f64(v), line: line }));
     }
     const intEnd = digitsEnd(b, at, false);
     const point = intEnd < n && b[intEnd] == 46u8;
@@ -162,19 +200,19 @@ function numberAt(b: u8[n], at: i64, line: i64, acc: Token[]): Lexed {
     const expSign = exp && fracEnd + 1 < n && (b[fracEnd + 1] == 43u8 || b[fracEnd + 1] == 45u8) ? 1 : 0;
     const expEnd = exp ? digitsEnd(b, fracEnd + 1 + expSign, false) : fracEnd;
     if (exp && expEnd == fracEnd + 1 + expSign) {
-        return LexFault("an exponent without digits", line);
+        return faulted(acc, "an exponent without digits", line);
     }
     const text = stringOf(b.slice(at, expEnd));
     if (expEnd < n && isNameStart(b[expEnd])) {
-        return LexFault(`a malformed number near \`${text}\``, line);
+        return faulted(acc, `a malformed number near \`${text}\``, line);
     }
     if (!point && !exp) {
         return match (tryParseI64(text)) {
-            Ok(v) => lexFrom(b, expEnd, line, concat(acc, [{ kind: T_INT, text: text, int: v, float: f64(v), line: line }])),
-            Err(e) => lexFrom(b, expEnd, line, concat(acc, [{ kind: T_FLOAT, text: text, int: 0, float: floatOf(text), line: line }])),
+            Ok(v) => lexFrom(b, expEnd, line, pushed(acc, { kind: T_INT, text: text, int: v, float: f64(v), line: line })),
+            Err(e) => lexFrom(b, expEnd, line, pushed(acc, { kind: T_FLOAT, text: text, int: 0, float: floatOf(text), line: line })),
         };
     }
-    return lexFrom(b, expEnd, line, concat(acc, [{ kind: T_FLOAT, text: text, int: 0, float: floatOf(text), line: line }]));
+    return lexFrom(b, expEnd, line, pushed(acc, { kind: T_FLOAT, text: text, int: 0, float: floatOf(text), line: line }));
 }
 
 function floatOf(text: string): f64 {
@@ -188,23 +226,23 @@ function floatOf(text: string): f64 {
 }
 
 // a string in quotes at `at`, its escapes replaced
-function stringAt(b: u8[n], at: i64, line: i64, acc: Token[]): Lexed {
+function stringAt(b: u8[n], at: i64, line: i64, acc: Lx): Lexed {
     return stringFrom(b, at + 1, b[at], line, line, [], acc);
 }
 
-function stringFrom(b: u8[n], at: i64, quote: u8, line: i64, start: i64, got: u8[], acc: Token[]): Lexed {
+function stringFrom(b: u8[n], at: i64, quote: u8, line: i64, start: i64, got: u8[], acc: Lx): Lexed {
     if (at >= n || b[at] == 10u8) {
-        return LexFault("a string not closed", start);
+        return faulted(acc, "a string not closed", start);
     }
     const c = b[at];
     if (c == quote) {
-        return lexFrom(b, at + 1, line, concat(acc, [{ kind: T_STRING, text: stringOf(got), int: 0, float: 0.0, line: start }]));
+        return lexFrom(b, at + 1, line, pushed(acc, { kind: T_STRING, text: stringOf(got), int: 0, float: 0.0, line: start }));
     }
     if (c != 92u8) {
         return stringFrom(b, at + 1, quote, line, start, concat(got, [c]), acc);
     }
     if (at + 1 >= n) {
-        return LexFault("a string not closed", start);
+        return faulted(acc, "a string not closed", start);
     }
     const e = b[at + 1];
     const simple = e == 110u8 ? 10 : (e == 116u8 ? 9 : (e == 114u8 ? 13 : (e == 92u8 ? 92 : (e == 34u8 ? 34 : (e == 39u8 ? 39 : (e == 97u8 ? 7 : (e == 98u8 ? 8 : (e == 102u8 ? 12 : (e == 118u8 ? 11 : (e == 10u8 ? 10 : -1))))))))));
@@ -217,14 +255,14 @@ function stringFrom(b: u8[n], at: i64, quote: u8, line: i64, start: i64, got: u8
     if (isDigit(e)) {
         const end = min(digitsEnd(b, at + 1, false), at + 4);
         const v = fold(b.slice(at + 1, end), 0, (x, d) => x * 10 + i64(d) - 48);
-        return v > 255 ? LexFault("a decimal escape too large", line) : stringFrom(b, end, quote, line, start, concat(got, [u8(v)]), acc);
+        return v > 255 ? faulted(acc, "a decimal escape too large", line) : stringFrom(b, end, quote, line, start, concat(got, [u8(v)]), acc);
     }
     if (e == 122u8) {
         // \z: the blanks after it skipped
         const skip = skipBlanks(b, at + 2);
         return stringFrom(b, skip, quote, line + count(iota(skip - at), (k) => b[at + k] == 10u8), start, got, acc);
     }
-    return LexFault(`an invalid escape \`\\${stringOf([e])}\``, line);
+    return faulted(acc, `an invalid escape \`\\${stringOf([e])}\``, line);
 }
 
 function skipBlanks(b: u8[n], at: i64): i64 {
@@ -303,19 +341,64 @@ type Fs = { names: string[], slotOf: i64[], nslots: i64, captured: boolean[], sl
 
 // the reader: its tokens and place, the functions being read (the
 // innermost last), those read, the loops around (`break`), its fault
-type P = { toks: Token[], pos: i64, fs: Fs[], protos: Proto[], loops: i64, err: string, errLine: i64 };
+type P = { toks: TokNode, pos: i64, fs: Fs[], protos: Protos, loops: i64, err: string, errLine: i64 };
+
+// the functions read, the last first, and their number: a chain of nodes
+// (a function added is one node; the reader, made anew at each token,
+// copies a pointer to them)
+type Protos = { last: ProtoNode, n: i64 };
+type ProtoNode = PNode(Proto, ProtoNode) | PEnd;
+
+function emptyProto(): Proto {
+    return { nparams: 0, paramCell: [], vararg: false, body: [], slots: 0, upFromLocal: [], upIndex: [], name: "", line: 0, slotNames: [], upNames: [] };
+}
+
+// the functions of the chain in their order
+function protosOf(ps: Protos): Proto[] {
+    return protosFrom(ps.last, ps.n, fill(ps.n, emptyProto()));
+}
+
+function protosFrom(node: ProtoNode, k: i64, acc: Proto[]): Proto[] {
+    return match (node) {
+        PEnd => acc,
+        PNode(pr, rest) => protosFrom(rest, k - 1, acc.with(k - 1, pr)),
+    };
+}
+
+// the tokens of the reader in a node of the heap (a recursive type, counted:
+// the reader, made anew at each token it reads, copies a pointer to them,
+// not the tokens: reading 600 lines took half a second)
+type TokNode = Toks(Token[]) | Chained(TokNode);
+
+function tokAt(t: TokNode, i: i64): Token {
+    return match (t) {
+        Toks(ts) => ts[i],
+        Chained(x) => tokAt(x, i),
+    };
+}
+
+function tokCount(t: TokNode): i64 {
+    return match (t) {
+        Toks(ts) => ts.length,
+        Chained(x) => tokCount(x),
+    };
+}
 
 function tk(p: P): Token {
-    return p.toks[p.pos];
+    return tokAt(p.toks, p.pos);
 }
 
 function isOp(p: P, s: string): boolean {
-    const t = p.toks[p.pos];
+    const t = tokAt(p.toks, p.pos);
     return t.kind == T_OP && t.text == s;
 }
 
+// (the place moved in the reader itself: `cond ? { ...p, pos } : p` would
+// copy the reader, its tokens with it, at each token, an `if` one branch
+// of which is new making the other new)
 function adv(p: P): P {
-    return p.pos + 1 < p.toks.length ? { ...p, pos: p.pos + 1 } : p;
+    const next = p.pos + 1 < tokCount(p.toks) ? p.pos + 1 : p.pos;
+    return { ...p, pos: next };
 }
 
 function near(t: Token): string {
@@ -328,8 +411,8 @@ function fail(p: P, msg: string): P {
     if (p.err != "") {
         return p;
     }
-    const t = p.toks[p.pos];
-    return { ...p, err: `${msg} near ${near(t)}`, errLine: t.line, pos: p.toks.length - 1 };
+    const t = tokAt(p.toks, p.pos);
+    return { ...p, err: `${msg} near ${near(t)}`, errLine: t.line, pos: tokCount(p.toks) - 1 };
 }
 
 function expect(p: P, s: string): P {
@@ -668,7 +751,7 @@ function fields(p: P, pos: Expr[], keys: Expr[], vals: Expr[], multi: boolean, l
         return fieldSep(r, pos, concat(keys, [k]), concat(vals, [v]), false, line);
     }
     const t = tk(p);
-    const after = p.toks[min(p.pos + 1, p.toks.length - 1)];
+    const after = tokAt(p.toks, min(p.pos + 1, tokCount(p.toks) - 1));
     if (t.kind == T_NAME && after.kind == T_OP && after.text == "=") {
         const [r, v] = expr(adv(adv(p)), 0);
         return fieldSep(r, pos, concat(keys, [EStr(t.text, hashString(t.text))]), concat(vals, [v]), false, line);
@@ -730,8 +813,8 @@ function endFunction(p: P, body: Stat[n], nparams: i64, name: string, line: i64,
     const cap = f.captured;
     const rewritten = count(cap, (c) => c) == 0 ? body : rwStats(body, cap);
     const proto = { nparams: nparams, paramCell: cap.slice(0, nparams), vararg: f.vararg, body: rewritten, slots: f.nslots, upFromLocal: f.upFromLocal, upIndex: f.upIndex, name: name, line: line, slotNames: f.slotNames, upNames: f.upNames };
-    const k = p.protos.length;
-    return [{ ...p, fs: p.fs.slice(0, level), protos: concat(p.protos, [proto]), loops: loops }, EFunc(k)] as const;
+    const k = p.protos.n;
+    return [{ ...p, fs: p.fs.slice(0, level), protos: { last: PNode(proto, p.protos.last), n: k + 1 }, loops: loops }, EFunc(k)] as const;
 }
 
 // ----- statements ----------------------------------------------------------
@@ -942,14 +1025,14 @@ export function parseLua(src: string): ParsedLua {
         LexFault(m, line) => ParseFault(m, line),
         Tokens(toks) => {
             const fresh = { names: [], slotOf: [], nslots: 0, captured: [], slotNames: [], upNames: [], upFromLocal: [], upIndex: [], vararg: true };
-            const p = { toks: toks, pos: 0, fs: [fresh], protos: [], loops: 0, err: "", errLine: 0 };
+            const p = { toks: Toks(toks), pos: 0, fs: [fresh], protos: { last: PEnd, n: 0 }, loops: 0, err: "", errLine: 0 };
             const [q, body] = block(p, []);
             const r = tk(q).kind == T_END ? q : fail(q, "'<eof>' expected");
             if (r.err != "") {
                 return ParseFault(r.err, r.errLine);
             }
             const [s, main] = endFunction(r, body, 0, "main chunk", 0, 0);
-            return Program({ protos: s.protos, main: s.protos.length - 1 });
+            return Program({ protos: protosOf(s.protos), main: s.protos.n - 1 });
         },
     };
 }

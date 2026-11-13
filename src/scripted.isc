@@ -27,6 +27,7 @@
 // component leaves it. The interface is made again after each input.
 import * as lua from "./lua_vm";
 import { V } from "./lua_vm";
+import { T_TAB } from "./lua_code";
 import { parse, Node, Tag, Text, Read, Fault, Attr, attr, has } from "./xml";
 import { parseStyles, Sheet, Bad, Rule, Property } from "./css";
 import { rgb, rgba, Color } from "./paint";
@@ -34,7 +35,7 @@ import { Element, Div, Label, Image, Length, Px, Fill, Auto, Direction, Row, Col
 import { Align, Start, Center, End } from "./text";
 import { Editing, editing, edited, utf8 } from "./edit";
 import { button, iconButton, textField, checkbox, toggleAt, progress, restyled, Hand } from "./widgets";
-import { Input as HandInput, Effect, Click, Drag, Release, Hover, Key, Focus, TextRead, FolderListed, ReadText, ListFolder, ENTER, ESCAPE, BACKSPACE, TAB, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END, WITH_CTRL, WITH_SHIFT, WITH_ALT } from "./input";
+import { Input as HandInput, Effect, Click, Drag, Release, Hover, Key, Focus, Viewport, TextRead, FolderListed, ReadText, ListFolder, ENTER, ESCAPE, BACKSPACE, TAB, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END, WITH_CTRL, WITH_SHIFT, WITH_ALT } from "./input";
 import { decode, Picture } from "./png";
 import * as sys from "sys";
 
@@ -653,11 +654,15 @@ const H_FIELD: i64 = 2;
 // focus (its number among the binds), the place under the pointer and the
 // one pressed, the error of the last input, its window, the function run
 // when it is closed, the one given the keys (`onkey`), the fields made the
-// last time
+// last time, the place pressed; the values Lua gave the last time the
+// elements were made by calling it, its error then, and whether Lua ran
+// since (if not, the elements are made again from those values: a
+// pointer that moves over the view runs no Lua)
 export type App = {
     vm: lua.Vm, cx: Cx, tpl: Tpl[], eds: Editing[], tree: Element, hs: H[],
     focus: i64, hover: i64, pressed: i64, err: string, title: string, width: i64, height: i64, menu: string[], close: i64,
     key: i64, seen: boolean[], pressX: f32, pressY: f32,
+    memo: V[], memoErr: string, luaRan: boolean,
 };
 
 // what making the elements reads: the file of the view, its classes, the
@@ -669,9 +674,12 @@ export type Cx = { file: string, classes: Cls[], binds: string[], pics: Picture[
 // input that asked them (when the view is read, at once); `done` is then
 // called with the text of the file or the sequence of the names in the
 // folder (those of folders ending with `/`), or with nil and the reason;
-// `host.folder` is the folder of the view
+// `host.folder` is the folder of the view; `host.offsets[k + 1]` and
+// `host.heights[k + 1]` the offset of the box that scrolls `scroll="k"` and
+// the height it may show (the window's), told when they change (a long
+// list then makes the rows in sight alone)
 const HOST_LUA: string = join([
-    "host = { requests = {}, pending = {} }",
+    "host = { requests = {}, pending = {}, offsets = {}, heights = {} }",
     "function host.readFile(path, done)",
     "  host.requests[#host.requests + 1] = { \"read\", path, done }",
     "end",
@@ -826,6 +834,7 @@ action loaded(path: string, rattrs: Attr[n], rkids: Node[m], rline: i64): Result
                 vm: v3, cx: { file: path, classes: classes, binds: g2.binds, pics: pics, names: g2.images }, tpl: ts, eds: map(g2.binds, (b) => editing("")), tree: Div(style(), []), hs: [],
                 focus: -1, hover: -1, pressed: -1, err: "", title: has(rattrs, "title") ? attr(rattrs, "title") : "Isocron", width: dim("width", 480), height: dim("height", 400), menu: menu, close: close,
                 key: key, seen: map(g2.binds, (x) => false), pressX: 0.0f32, pressY: 0.0f32,
+                memo: [], memoErr: "", luaRan: true,
             };
             return Ok(rebuilt(filesAtOnce(a)));
         },
@@ -866,7 +875,10 @@ action answerOf(e: Effect): HandInput {
 function requested(a: App): [App, Effect[]] {
     const host = lua.global(a.vm, "host");
     const take = lua.fieldOf(a.vm, host, "take");
-    const [v1, rs] = lua.call(a.vm, take, []);
+    // (the collector held: the values kept for the next elements stay
+    // where they are)
+    const [v0, rs] = lua.call(lua.held(a.vm, 1), take, []);
+    const v1 = lua.held(v0, -1);
     if (lua.failed(v1) || rs.length == 0) {
         return [{ ...a, vm: lua.failed(v1) ? lua.recover(v1) : v1 }, []] as const;
     }
@@ -878,6 +890,20 @@ function requested(a: App): [App, Effect[]] {
         return kind == "read" ? ReadText(path) : ListFolder(path);
     });
     return [{ ...a, vm: v1 }, fx] as const;
+}
+
+// the offset and the height of the box that scrolls `k` set in Lua
+// (`host.offsets[k + 1]`, `host.heights[k + 1]`)
+function viewported(a: App, k: i64, offset: f32, height: f32): App {
+    const host = lua.global(a.vm, "host");
+    const offs = lua.fieldOf(a.vm, host, "offsets");
+    const hs = lua.fieldOf(a.vm, host, "heights");
+    if (offs.t != T_TAB || hs.t != T_TAB) {
+        return a;
+    }
+    const v1 = lua.rawSet(a.vm, offs.i, lua.integerValue(k + 1), lua.floatValue(f64(offset)));
+    const v2 = lua.rawSet(v1, hs.i, lua.integerValue(k + 1), lua.floatValue(f64(height)));
+    return { ...a, vm: v2, luaRan: true };
 }
 
 // the answer `i` (a file read, a folder listed) given to the function that
@@ -902,9 +928,10 @@ function delivered(a: App, i: HandInput): App {
     };
     const [v2, rs] = lua.call(v1, deliver, args);
     if (lua.failed(v2)) {
-        return { ...a, vm: lua.recover(v2), err: a.err == "" ? lua.errorText(v2) : a.err };
+        const why = a.err == "" ? lua.errorText(v2) : a.err;
+        return { ...a, vm: lua.recover(v2), err: why, luaRan: true };
     }
-    return { ...a, vm: v2 };
+    return { ...a, vm: v2, luaRan: true };
 }
 
 // ----- the elements made -------------------------------------------------
@@ -912,19 +939,26 @@ function delivered(a: App, i: HandInput): App {
 // what making the elements carries: the machine (its collector held), the
 // places made, the first error, the editing of the fields, the focus and
 // the hand, the fields made the last time and those made now
-type B = { vm: lua.Vm, hs: H[], err: string, eds: Editing[], focus: i64, hover: i64, pressed: i64, seen: boolean[], now: boolean[] };
+// (`memo`: the values of Lua, given again in their order when `replay`,
+// `at` the next; recorded otherwise)
+type B = { vm: lua.Vm, hs: H[], err: string, eds: Editing[], focus: i64, hover: i64, pressed: i64, seen: boolean[], now: boolean[], memo: V[], replay: boolean, at: i64 };
 
 // the function `f` of the view called with `args`: its first value (nil
 // after an error, the first one kept)
 function called(b: B, f: i64, args: V[n]): [B, V] {
+    if (b.replay && b.at < b.memo.length) {
+        const kept = b.memo[b.at];
+        return [{ ...b, at: b.at + 1 }, kept] as const;
+    }
     const fns = lua.global(b.vm, REG);
-    const [v1, rs] = lua.call(b.vm, lua.element(b.vm, fns, f + 1), args);
+    const fv = lua.element(b.vm, fns, f + 1);
+    const [v1, rs] = lua.call(b.vm, fv, args);
     if (lua.failed(v1)) {
         const why = b.err == "" ? lua.errorText(v1) : b.err;
-        return [{ ...b, vm: lua.recover(v1), err: why }, lua.nilValue()] as const;
+        return [{ ...b, vm: lua.recover(v1), err: why, memo: b.replay ? b.memo : concat(b.memo, [lua.nilValue()]), at: b.at + 1 }, lua.nilValue()] as const;
     }
     const r = rs.length > 0 ? rs[0] : lua.nilValue();
-    return [{ ...b, vm: v1 }, r] as const;
+    return [{ ...b, vm: v1, memo: b.replay ? b.memo : concat(b.memo, [r]), at: b.at + 1 }, r] as const;
 }
 
 // the value of a property of the kind `kind` given by Lua (`v`), PNone
@@ -1157,12 +1191,16 @@ function compElement(b: B, file: string, c: Comp, kind: i64, label: string, id: 
 // the application with its elements made again (its memory collected
 // first when it has grown: the values of the places made after it)
 export function rebuilt(a: App): App {
-    const v0 = lua.held(lua.collectIfDue(a.vm), 1);
-    const b0 = { vm: v0, hs: [], err: "", eds: a.eds, focus: a.focus, hover: a.hover, pressed: a.pressed, seen: a.seen, now: map(a.seen, (x) => false) };
+    // (Lua has not run since the values were kept: made again from them,
+    // no Lua called, nothing collected: the tables they name stay)
+    const replay = !a.luaRan && a.memo.length > 0;
+    const v0 = replay ? a.vm : lua.held(lua.collectIfDue(a.vm), 1);
+    const b0 = { vm: v0, hs: [], err: "", eds: a.eds, focus: a.focus, hover: a.hover, pressed: a.pressed, seen: a.seen, now: map(a.seen, (x) => false), memo: replay ? a.memo : [], replay: replay, at: 0 };
     const [b1, es] = made(b0, a.cx, a.tpl[0], []);
     // (the focus of a field no longer made lost)
     const focus = b1.focus >= 0 && !b1.now[b1.focus] ? -1 : b1.focus;
-    return { ...a, vm: lua.held(b1.vm, -1), hs: b1.hs, eds: b1.eds, focus: focus, seen: b1.now, tree: es.length > 0 ? es[0] : Div(style(), []), err: a.err == "" ? b1.err : a.err };
+    const builtErr = replay ? a.memoErr : b1.err;
+    return { ...a, vm: replay ? b1.vm : lua.held(b1.vm, -1), hs: b1.hs, eds: b1.eds, focus: focus, seen: b1.now, tree: es.length > 0 ? es[0] : Div(style(), []), err: a.err == "" ? builtErr : a.err, memo: b1.memo, memoErr: builtErr, luaRan: false };
 }
 
 // the elements of the application: an error shown above them
@@ -1186,9 +1224,9 @@ function ranValue(a: App, f: i64, args: V[n]): [App, V] {
     if (f < 0) {
         return [a, lua.nilValue()] as const;
     }
-    const b = { vm: a.vm, hs: [], err: "", eds: a.eds, focus: a.focus, hover: a.hover, pressed: a.pressed, seen: a.seen, now: a.seen };
+    const b = { vm: a.vm, hs: [], err: "", eds: a.eds, focus: a.focus, hover: a.hover, pressed: a.pressed, seen: a.seen, now: a.seen, memo: [], replay: false, at: 0 };
     const [b1, v] = called(b, f, args);
-    return [{ ...a, vm: b1.vm, err: a.err == "" ? b1.err : a.err }, v] as const;
+    return [{ ...a, vm: b1.vm, err: a.err == "" ? b1.err : a.err, luaRan: true }, v] as const;
 }
 
 // the name of the key `k` given to `onkey`: Enter, Escape, Backspace, Tab,
@@ -1220,7 +1258,7 @@ function fieldEdited(a: App, h: H, i: HandInput, p: i64): [App, Effect[]] {
         return [{ ...a, eds: a.eds.with(h.bind, ed) }, fx] as const;
     }
     const [v1, s] = lua.stringV(a.vm, ed.text);
-    const a1 = { ...a, vm: lua.setGlobal(v1, a.cx.binds[h.bind], s), eds: a.eds.with(h.bind, ed) };
+    const a1 = { ...a, vm: lua.setGlobal(v1, a.cx.binds[h.bind], s), eds: a.eds.with(h.bind, ed), luaRan: true };
     return [ran(a1, h.change, h.args), fx] as const;
 }
 
@@ -1240,6 +1278,7 @@ export function update(a0: App, i: HandInput): [App, Effect[]] {
 
 function answered(a: App, i: HandInput): [App, Effect[]] {
     return match (i) {
+        Viewport(k, offset, height) => [viewported(a, k, offset, height), []] as const,
         TextRead(p, t, ok) => [delivered(a, i), []] as const,
         FolderListed(p, names, ok) => [delivered(a, i), []] as const,
         Hover(p) => [{ ...a, hover: p }, []] as const,

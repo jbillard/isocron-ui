@@ -390,9 +390,44 @@ function activeTab()
   return tabs[active]
 end
 
-function codeLines()
+-- the lines in sight of the code (the box that scrolls `scroll="1"`: its
+-- offset and height told by the host), a few more above and below: the
+-- first, the last, and the number of lines
+LINE_H = 19
+
+local function codeRange()
   local t = tabs[active]
-  return t and t.lines or {}
+  if not t then
+    return 1, 0, 0
+  end
+  local n = #t.lines
+  local off = host.offsets[2] or 0
+  local h = host.heights[2] or 720
+  local first = math.max(1, math.floor(off / LINE_H) + 1 - 5)
+  local last = math.min(n, math.floor((off + h) / LINE_H) + 1 + 5)
+  return first, last, n
+end
+
+-- the space of the lines above those in sight, those in sight (their
+-- numbers, their tokens), the space of those below
+function codeTop()
+  local first = codeRange()
+  return (first - 1) * LINE_H
+end
+
+function codeRows()
+  local first, last = codeRange()
+  local t = tabs[active]
+  local out = {}
+  for k = first, last do
+    out[#out + 1] = { num = k, toks = t.lines[k] }
+  end
+  return out
+end
+
+function codeBottom()
+  local first, last, n = codeRange()
+  return math.max(0, n - last) * LINE_H
 end
 
 function more()

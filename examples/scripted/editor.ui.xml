@@ -98,16 +98,19 @@
           </each>
         </row>
         <row class="crumbs"><text class="crumb">{breadcrumb()}</text></row>
-        <!-- the code of the file of the tab, its lines numbered -->
+        <!-- the code of the file of the tab, its lines numbered: those in
+             sight alone made, the others a space of their height -->
         <box class="code" scroll="1">
-          <each items="{codeLines()}" as="line" index="n">
+          <box height="{codeTop()}"/>
+          <each items="{codeRows()}" as="line">
             <row class="line">
-              <box class="gutter"><text class="lineNo" font="mono">{n}</text></box>
-              <each items="{line}" as="tok">
+              <box class="gutter"><text class="lineNo" font="mono">{line.num}</text></box>
+              <each items="{line.toks}" as="tok">
                 <text font="mono" size="13" color="{tok.color}">{tok.text}</text>
               </each>
             </row>
           </each>
+          <box height="{codeBottom()}"/>
           <each items="{more()}" as="m">
             <row class="line"><box class="gutter"/><text class="more">{m}</text></row>
           </each>

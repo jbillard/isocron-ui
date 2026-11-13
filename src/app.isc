@@ -737,6 +737,12 @@ function modifierOf(k: i64): i64 {
     return k == 16 ? WITH_SHIFT : (k == 17 ? WITH_CTRL : (k == 18 ? WITH_ALT : 0));
 }
 
+// the events `out` with `e` after them, or in place of the last one when
+// it is of the same kind (`same`)
+function replacedOr(out: Ev[n], e: Ev, same: (Ev) => boolean): Ev[] {
+    return n > 0 && same(out[n - 1]) ? out.with(n - 1, e) : concat(out, [e]);
+}
+
 // the events of the hand of the events of a window of Windows: the
 // modifiers followed (`mods`), a pair of units of UTF-16 joined (`high`,
 // the first of a pair waiting), the keys that edit and the letters held
@@ -752,8 +758,17 @@ function readFrom(evs: win.Event[n], i: i64, out: Ev[], mods: i64, high: i64): [
         return [out, mods, high] as const;
     }
     return match (evs[i]) {
-        win.Resize(a, b) => readFrom(evs, i + 1, concat(out, [Resized(a, b)]), mods, high),
-        win.Pointer(a, b) => readFrom(evs, i + 1, concat(out, [Moved(f32(a) + 0.5f32, f32(b) + 0.5f32)]), mods, high),
+        // (a size, a place of the pointer, replacing the one just before
+        // it: the steps of a drag or of a resizing the model is not told one
+        // by one, only the last of a batch)
+        win.Resize(a, b) => readFrom(evs, i + 1, replacedOr(out, Resized(a, b), (e) => match (e) {
+            Resized(x, y) => true,
+            _ => false,
+        }), mods, high),
+        win.Pointer(a, b) => readFrom(evs, i + 1, replacedOr(out, Moved(f32(a) + 0.5f32, f32(b) + 0.5f32), (e) => match (e) {
+            Moved(x, y) => true,
+            _ => false,
+        }), mods, high),
         win.Button(b, down) => readFrom(evs, i + 1, concat(out, [down ? Down(b) : Up(b)]), mods, high),
         // a notch (120) of the wheel: 48 pixels
         win.Wheel(d) => readFrom(evs, i + 1, concat(out, [Scroll(-f32(d) * 0.4f32)]), mods, high),
@@ -1188,6 +1203,18 @@ action loopWayland<M>(c: net.Conn, fs: Font[nf], m: M, ui: Ui, st: State, view: 
 }
 
 // the events `evs` from the `i`-th, answered in their order
+// another motion of the pointer `obj` (its opcode `op`) in `evs` from the
+// `j`-th, before its entry, leaving, buttons or wheel (opcodes 0, 1, 3, 4)
+function laterMotion(evs: wl.Event[n], j: i64, obj: u32, op: u32): boolean {
+    if (j >= n) {
+        return false;
+    }
+    if (evs[j].obj == obj) {
+        return evs[j].op == op ? true : (evs[j].op <= 4u32 ? false : laterMotion(evs, j + 1, obj, op));
+    }
+    return laterMotion(evs, j + 1, obj, op);
+}
+
 action handle<M>(c: net.Conn, fs: Font[nf], m: M, evs: wl.Event[n], i: i64, ui: Ui, st: State, view: (M) => Element, update: (M, Input) => [M, Effect[]]): [M, Ui, State] {
     if (i >= evs.length || st.done) {
         return [m, ui, st] as const;
@@ -1283,7 +1310,8 @@ action handle<M>(c: net.Conn, fs: Font[nf], m: M, evs: wl.Event[n], i: i64, ui: 
             const shaped = pointerNow && st.shapes != 0u32 ? net.write(c, wl.shapeDeviceRequest(st.shapes - 1u32, st.shapes)) : Ok(());
             return [m, ui, { ...st, caps: st.caps | (caps & 3u32) }] as const;
         },
-        wl.Pointer(x, y) => feedWayland(c, ui, m, now, st, update, Moved(f32(x) * st.px, f32(y) * st.px)),
+        // (a motion followed by another in the batch: only the last told)
+        wl.Pointer(x, y) => laterMotion(evs, i + 1, e.obj, e.op) ? [m, ui, st] as const : feedWayland(c, ui, m, now, st, update, Moved(f32(x) * st.px, f32(y) * st.px)),
         // its entry: its serial kept (the shape of the pointer set with it)
         wl.Enter(serial, x, y) => {
             const [mm, u, s2] = feedWayland(c, ui, m, now, st, update, Moved(f32(x) * st.px, f32(y) * st.px));
