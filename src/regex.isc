@@ -1,0 +1,446 @@
+// The regular expressions of the search of the editor of code (the button
+// `.*` of its widget, as Visual Studio Code's): a pattern the hand types,
+// compiled here without failing (a pattern that is not one finds nothing:
+// the `RegExp` of Isocron stops the program at it), matched by bytes of
+// UTF-8, the leftmost match first as ECMAScript (by trying its choices in
+// their order, with a budget of steps for each place of a line). Literals,
+// `.`, classes `[...]` with ranges and `^`, the escapes `\d \D \w \W \s \S
+// \b \B \t \n \r` and `\` before a sign, `^` and `$` (a line), groups
+// `( )` and `(?: )`, `|`, `* + ? {m} {m,} {m,n}` and their lazy forms with
+// `?`; letters of either case when the case is not matched.
+
+// an instruction of a compiled pattern: its kind, its two jumps (relative
+// to it), its ranges of bytes (pairs, a class), whether they are refused
+type Inst = { op: i64, a: i64, b: i64, ranges: i64[], neg: boolean };
+
+const CHAR: i64 = 0;
+const ANY: i64 = 1;
+const SPLIT: i64 = 2;
+const JMP: i64 = 3;
+const SAVE: i64 = 4;
+const ASSERT: i64 = 5;
+const MATCH: i64 = 6;
+
+// a pattern compiled: its instructions, its groups; `ok` false when the
+// text is not a pattern
+export type Pattern = { ok: boolean, prog: Inst[], groups: i64 };
+
+function noInsts(): Inst[] {
+    return [];
+}
+
+function noInts(): i64[] {
+    return [];
+}
+
+function inst(op: i64, a: i64, b: i64): Inst {
+    return { op: op, a: a, b: b, ranges: [], neg: false };
+}
+
+function charOf(ranges: i64[], neg: boolean): Inst {
+    return { op: CHAR, a: 0, b: 0, ranges: ranges, neg: neg };
+}
+
+// what the parser gives: the instructions of a part, the place after it in
+// the pattern, the groups opened so far, whether it failed
+type Part = { prog: Inst[], at: i64, groups: i64, ok: boolean };
+
+function failed(at: i64, groups: i64): Part {
+    return { prog: [], at: at, groups: groups, ok: false };
+}
+
+// the text `source` compiled (letters of either case when `fold`)
+export function compiled(source: string, fold: boolean): Pattern {
+    const b = bytes(source);
+    const p = alternation(b, 0, 1, fold);
+    if (!p.ok || p.at != b.length) {
+        return { ok: false, prog: [], groups: 0 };
+    }
+    return { ok: true, prog: concat(concat([inst(SAVE, 0, 0)], p.prog), [inst(SAVE, 1, 0), inst(MATCH, 0, 0)]), groups: p.groups };
+}
+
+// `e1|e2|...` from `i`
+function alternation(b: u8[n], i: i64, groups: i64, fold: boolean): Part {
+    const first = sequence(b, i, groups, fold);
+    if (!first.ok || first.at >= n || b[first.at] != 124u8) {
+        return first;
+    }
+    const rest = alternation(b, first.at + 1, first.groups, fold);
+    if (!rest.ok) {
+        return rest;
+    }
+    // (SPLIT to the first and to the rest; the first jumps past the rest)
+    const prog = concat(concat(concat([inst(SPLIT, 1, first.prog.length + 2)], first.prog), [inst(JMP, rest.prog.length + 1, 0)]), rest.prog);
+    return { prog: prog, at: rest.at, groups: rest.groups, ok: true };
+}
+
+// the parts one after the other from `i`, to `|`, `)` or the end
+function sequence(b: u8[n], i: i64, groups: i64, fold: boolean): Part {
+    return sequenceFrom(b, i, groups, fold, []);
+}
+
+function sequenceFrom(b: u8[n], i: i64, groups: i64, fold: boolean, out: Inst[]): Part {
+    if (i >= n || b[i] == 124u8 || b[i] == 41u8) {
+        return { prog: out, at: i, groups: groups, ok: true };
+    }
+    const a = atom(b, i, groups, fold);
+    if (!a.ok) {
+        return a;
+    }
+    const q = quantified(b, a);
+    if (!q.ok) {
+        return q;
+    }
+    return sequenceFrom(b, q.at, q.groups, fold, concat(out, q.prog));
+}
+
+// a number of digits from `i`: its value and the place after it (-1: none)
+function number(b: u8[n], i: i64): [i64, i64] {
+    const k = findIndex(iota(max(0, n - i)), (j) => b[i + j] < 48u8 || b[i + j] > 57u8);
+    const end = k < 0 ? n : i + k;
+    if (end == i || end - i > 4) {
+        return [-1, i] as const;
+    }
+    return [fold(iota(end - i), 0, (v, j) => v * 10 + i64(b[i + j]) - 48), end] as const;
+}
+
+// the part `a` followed by its quantifier, if one
+function quantified(b: u8[n], a: Part): Part {
+    const i = a.at;
+    if (i >= n) {
+        return a;
+    }
+    const c = b[i];
+    const [lo, hi, at] = c == 42u8 ? [0, -1, i + 1] as const : (c == 43u8 ? [1, -1, i + 1] as const : (c == 63u8 ? [0, 1, i + 1] as const : braces(b, i)));
+    if (at == i) {
+        return a;
+    }
+    if (lo < 0 || (hi >= 0 && hi < lo) || lo > 100 || hi > 100) {
+        return failed(i, a.groups);
+    }
+    // (a quantifier after another: refused)
+    if (at < n && (b[at] == 42u8 || b[at] == 43u8 || b[at] == 123u8)) {
+        return failed(at, a.groups);
+    }
+    const lazy = at < n && b[at] == 63u8;
+    return { prog: repeated(a.prog, lo, hi, lazy), at: lazy ? at + 1 : at, groups: a.groups, ok: true };
+}
+
+// `{m}`, `{m,}`, `{m,n}` at `i`: its bounds and the place after it (that
+// place `i` when there is none: a brace taken as itself)
+function braces(b: u8[n], i: i64): [i64, i64, i64] {
+    if (b[i] != 123u8) {
+        return [0, 0, i] as const;
+    }
+    const [lo, j] = number(b, i + 1);
+    if (lo < 0 || j >= n) {
+        return [0, 0, i] as const;
+    }
+    if (b[j] == 125u8) {
+        return [lo, lo, j + 1] as const;
+    }
+    if (b[j] != 44u8 || j + 1 >= n) {
+        return [0, 0, i] as const;
+    }
+    if (b[j + 1] == 125u8) {
+        return [lo, -1, j + 2] as const;
+    }
+    const [hi, k] = number(b, j + 1);
+    return hi >= 0 && k < n && b[k] == 125u8 ? [lo, hi, k + 1] as const : [0, 0, i] as const;
+}
+
+// the instructions `e` repeated `lo` times, then up to `hi` (-1: without
+// end), greedy or lazy
+function repeated(e: Inst[m], lo: i64, hi: i64, lazy: boolean): Inst[] {
+    const need = copies(e, lo, noInsts());
+    if (hi < 0) {
+        // (e*: SPLIT into e or past; e jumps back to the SPLIT)
+        const star = concat(concat([lazy ? inst(SPLIT, m + 2, 1) : inst(SPLIT, 1, m + 2)], e), [inst(JMP, -(m + 1), 0)]);
+        return concat(need, star);
+    }
+    // (each optional copy: SPLIT into it or past all the rest)
+    const opt = hi - lo;
+    return concat(need, optional(e, opt, 0, lazy, noInsts()));
+}
+
+// `e` `k` times after `out`
+function copies(e: Inst[m], k: i64, out: Inst[]): Inst[] {
+    return k <= 0 ? out : copies(e, k - 1, concat(out, e));
+}
+
+// the `opt` copies of `e` each optional from the `k`-th: a SPLIT into it or
+// past all those left
+function optional(e: Inst[m], opt: i64, k: i64, lazy: boolean, out: Inst[]): Inst[] {
+    if (k >= opt) {
+        return out;
+    }
+    const left = (opt - k) * (m + 1);
+    return optional(e, opt, k + 1, lazy, concat(concat(out, [lazy ? inst(SPLIT, left, 1) : inst(SPLIT, 1, left)]), e));
+}
+
+// the bytes of the letters of ASCII as ranges of both cases
+function bothCases(ranges: i64[n]): i64[] {
+    return casesFrom(ranges, 0, ranges);
+}
+
+function casesFrom(ranges: i64[n], k: i64, out: i64[]): i64[] {
+    if (2 * k + 1 >= n) {
+        return out;
+    }
+    const lo = ranges[2 * k];
+    const hi = ranges[2 * k + 1];
+    const ulo = max(lo, 65);
+    const uhi = min(hi, 90);
+    const llo = max(lo, 97);
+    const lhi = min(hi, 122);
+    const a = ulo <= uhi ? [ulo + 32, uhi + 32] : noInts();
+    const c = llo <= lhi ? [llo - 32, lhi - 32] : noInts();
+    return casesFrom(ranges, k + 1, concat(concat(out, a), c));
+}
+
+const DIGITS: i64[] = [48, 57];
+const WORD: i64[] = [48, 57, 65, 90, 95, 95, 97, 122];
+const SPACES: i64[] = [9, 13, 32, 32];
+
+// an atom from `i`: a character, a class, an escape, a group, `.`, `^`, `$`
+function atom(b: u8[n], i: i64, groups: i64, fold: boolean): Part {
+    const c = b[i];
+    if (c == 40u8) {
+        // (a group, `(?:` one that keeps nothing)
+        const plain = i + 2 < n && b[i + 1] == 63u8 && b[i + 2] == 58u8;
+        if (i + 1 < n && b[i + 1] == 63u8 && !plain) {
+            return failed(i, groups);
+        }
+        const k = groups;
+        const inner = alternation(b, plain ? i + 3 : i + 1, plain ? groups : groups + 1, fold);
+        if (!inner.ok || inner.at >= n || b[inner.at] != 41u8) {
+            return failed(inner.at, inner.groups);
+        }
+        const prog = plain ? inner.prog : concat(concat([inst(SAVE, 2 * k, 0)], inner.prog), [inst(SAVE, 2 * k + 1, 0)]);
+        return { prog: prog, at: inner.at + 1, groups: inner.groups, ok: true };
+    }
+    if (c == 91u8) {
+        return classAt(b, i, groups, fold);
+    }
+    if (c == 46u8) {
+        return { prog: [inst(ANY, 0, 0)], at: i + 1, groups: groups, ok: true };
+    }
+    if (c == 94u8) {
+        return { prog: [inst(ASSERT, 0, 0)], at: i + 1, groups: groups, ok: true };
+    }
+    if (c == 36u8) {
+        return { prog: [inst(ASSERT, 1, 0)], at: i + 1, groups: groups, ok: true };
+    }
+    if (c == 42u8 || c == 43u8 || c == 63u8) {
+        return failed(i, groups);
+    }
+    if (c == 92u8) {
+        if (i + 1 >= n) {
+            return failed(i, groups);
+        }
+        const e = b[i + 1];
+        if (e == 98u8 || e == 66u8) {
+            return { prog: [inst(ASSERT, e == 98u8 ? 2 : 3, 0)], at: i + 2, groups: groups, ok: true };
+        }
+        const [r, neg, ok] = escaped(e);
+        return ok ? single(r, neg, i + 2, groups, fold) : failed(i, groups);
+    }
+    return single([i64(c), i64(c)], false, i + 1, groups, fold);
+}
+
+// a part of one byte among the ranges `r` (refused when `neg`)
+function single(r: i64[k], neg: boolean, at: i64, groups: i64, fold: boolean): Part {
+    const rs = fold ? bothCases(r) : concat(noInts(), r);
+    return { prog: [charOf(rs, neg)], at: at, groups: groups, ok: true };
+}
+
+// the escape `\e` as ranges: the classes, the controls, a sign as itself
+// (a letter or a digit that is none: refused)
+function escaped(e: u8): [i64[], boolean, boolean] {
+    if (e == 100u8 || e == 68u8) {
+        return [DIGITS, e == 68u8, true] as const;
+    }
+    if (e == 119u8 || e == 87u8) {
+        return [WORD, e == 87u8, true] as const;
+    }
+    if (e == 115u8 || e == 83u8) {
+        return [SPACES, e == 83u8, true] as const;
+    }
+    if (e == 116u8) {
+        return [[9, 9], false, true] as const;
+    }
+    if (e == 110u8) {
+        return [[10, 10], false, true] as const;
+    }
+    if (e == 114u8) {
+        return [[13, 13], false, true] as const;
+    }
+    const alnum = (e >= 48u8 && e <= 57u8) || (e >= 65u8 && e <= 90u8) || (e >= 97u8 && e <= 122u8);
+    return alnum ? [[], false, false] as const : [[i64(e), i64(e)], false, true] as const;
+}
+
+// a class `[...]` from `i` (`[^...]` refused bytes)
+function classAt(b: u8[n], i: i64, groups: i64, fold: boolean): Part {
+    const neg = i + 1 < n && b[i + 1] == 94u8;
+    const start = neg ? i + 2 : i + 1;
+    // (a `]` first is itself)
+    const [ranges, at, ok] = classFrom(b, start, start, []);
+    if (!ok) {
+        return failed(i, groups);
+    }
+    return { prog: [charOf(fold ? bothCases(ranges) : ranges, neg)], at: at, groups: groups, ok: true };
+}
+
+function classFrom(b: u8[n], i: i64, start: i64, out: i64[]): [i64[], i64, boolean] {
+    if (i >= n) {
+        return [out, i, false] as const;
+    }
+    if (b[i] == 93u8 && i > start) {
+        return [out, i + 1, true] as const;
+    }
+    // (one item: an escape, or a byte, then `-` and another for a range)
+    const [lo, hi, next, ok] = classItem(b, i);
+    if (!ok) {
+        return [out, i, false] as const;
+    }
+    if (hi != lo) {
+        return classFrom(b, next, start, concat(out, [lo, hi]));
+    }
+    if (next + 1 < n && b[next] == 45u8 && b[next + 1] != 93u8) {
+        const [lo2, hi2, next2, ok2] = classItem(b, next + 1);
+        if (!ok2 || hi2 != lo2 || lo2 < lo) {
+            return [out, i, false] as const;
+        }
+        return classFrom(b, next2, start, concat(out, [lo, lo2]));
+    }
+    return classFrom(b, next, start, concat(out, [lo, lo]));
+}
+
+// an item of a class at `i`: a byte (its range of one), or an escape (a
+// class as one range when it is one, else refused here: `\d` is, `\w` and
+// `\s` are taken by `classWide`)
+function classItem(b: u8[n], i: i64): [i64, i64, i64, boolean] {
+    if (b[i] != 92u8) {
+        return [i64(b[i]), i64(b[i]), i + 1, true] as const;
+    }
+    if (i + 1 >= n) {
+        return [0, 0, i, false] as const;
+    }
+    const [r, neg, ok] = escaped(b[i + 1]);
+    if (!ok || neg || r.length != 2) {
+        return [0, 0, i, false] as const;
+    }
+    return [r[0], r[1], i + 2, true] as const;
+}
+
+// ----- the match -----------------------------------------------------------------
+
+// whether the byte `c` is in the class `t`
+function inClass(t: Inst, c: i64): boolean {
+    const n = t.ranges.length / 2;
+    const found = findIndex(iota(n), (k) => c >= t.ranges[2 * k] && c <= t.ranges[2 * k + 1]) >= 0;
+    return found != t.neg;
+}
+
+function wordByte(c: u8): boolean {
+    return (c >= 48u8 && c <= 57u8) || (c >= 65u8 && c <= 90u8) || c == 95u8 || (c >= 97u8 && c <= 122u8) || c >= 128u8;
+}
+
+// the start of the character after `i` (UTF-8)
+function nextChar(s: u8[n], i: i64): i64 {
+    const k = findIndex(iota(min(3, max(0, n - i - 1))), (j) => (s[i + 1 + j] & 0xC0u8) != 0x80u8);
+    return k < 0 ? min(n, i + 1 + min(3, max(0, n - i - 1))) : i + 1 + k;
+}
+
+// what a try gives: the end of the match (-1: none), the places of the
+// groups, the steps left
+type Run = { end: i64, caps: i64[], steps: i64 };
+
+// the program from `pc` at the byte `i` of `s` (`caps` the groups so far,
+// `steps` the budget): the first match its choices reach in their order
+function run(prog: Inst[m], s: u8[n], pc: i64, i: i64, caps: i64[], steps: i64): Run {
+    if (steps <= 0 || pc < 0 || pc >= m) {
+        return { end: -1, caps: caps, steps: 0 };
+    }
+    const t = prog[pc];
+    if (t.op == MATCH) {
+        return { end: i, caps: caps, steps: steps };
+    }
+    if (t.op == CHAR) {
+        return i < n && inClass(t, i64(s[i])) ? run(prog, s, pc + 1, i + 1, caps, steps - 1) : { end: -1, caps: caps, steps: steps - 1 };
+    }
+    if (t.op == ANY) {
+        return i < n ? run(prog, s, pc + 1, nextChar(s, i), caps, steps - 1) : { end: -1, caps: caps, steps: steps - 1 };
+    }
+    if (t.op == JMP) {
+        return run(prog, s, pc + t.a, i, caps, steps - 1);
+    }
+    if (t.op == SAVE) {
+        const k = t.a;
+        return run(prog, s, pc + 1, i, map(iota(caps.length), (j) => j == k ? i : caps[j]), steps - 1);
+    }
+    if (t.op == ASSERT) {
+        const before = i > 0 && wordByte(s[i - 1]);
+        const after = i < n && wordByte(s[i]);
+        const holds = t.a == 0 ? i == 0 : (t.a == 1 ? i == n : (t.a == 2 ? before != after : before == after));
+        return holds ? run(prog, s, pc + 1, i, caps, steps - 1) : { end: -1, caps: caps, steps: steps - 1 };
+    }
+    // (SPLIT: its first choice, then its second)
+    const r = run(prog, s, pc + t.a, i, caps, steps - 1);
+    return r.end >= 0 || r.steps <= 0 ? r : run(prog, s, pc + t.b, i, caps, r.steps);
+}
+
+// the matches of the pattern `p` in the line `line` (bytes folded when
+// `fold`), one after the other: their starts and ends, and their groups
+// (a match of nothing taken, the next try a character after it)
+export function matchesOf(p: Pattern, line: string, fold: boolean): [i64, i64, i64[]][] {
+    if (!p.ok) {
+        return [];
+    }
+    const b0 = bytes(line);
+    const s = fold ? map(b0, (c) => c >= 65u8 && c <= 90u8 ? c + 32u8 : c) : b0;
+    return matchesFrom(p, s, 0, []);
+}
+
+function matchesFrom(p: Pattern, s: u8[n], i: i64, out: [i64, i64, i64[]][]): [i64, i64, i64[]][] {
+    if (i > n || out.length >= 1000) {
+        return out;
+    }
+    const r = run(p.prog, s, 0, i, fill(2 * (p.groups + 1), -1), 20000);
+    if (r.end < 0) {
+        return i >= n ? out : matchesFrom(p, s, nextChar(s, i), out);
+    }
+    const next = r.end > i ? r.end : (i >= n ? n + 1 : nextChar(s, i));
+    return matchesFrom(p, s, next, concat(out, [[i, r.end, r.caps] as const]));
+}
+
+// the replacement `to` of a match of `line` whose groups are `caps`: `$&`
+// (and `$0`) the match, `$1` to `$9` its groups, `$$` a dollar, `\n` and
+// `\t` a new line and a tab, `\\` a backslash
+export function substituted(to: string, line: string, caps: i64[n]): string {
+    const b = bytes(to);
+    return substFrom(b, 0, line, caps, "");
+}
+
+function substFrom(b: u8[m], i: i64, line: string, caps: i64[n], out: string): string {
+    if (i >= m) {
+        return out;
+    }
+    const c = b[i];
+    const nx = i + 1 < m ? b[i + 1] : 0u8;
+    if (c == 36u8 && (nx == 38u8 || (nx >= 48u8 && nx <= 57u8))) {
+        const k = nx == 38u8 ? 0 : i64(nx) - 48;
+        const s = 2 * k + 1 < n && caps[2 * k] >= 0 && caps[2 * k + 1] >= caps[2 * k] ? line.slice(caps[2 * k], caps[2 * k + 1]) : "";
+        return substFrom(b, i + 2, line, caps, out + s);
+    }
+    if (c == 36u8 && nx == 36u8) {
+        return substFrom(b, i + 2, line, caps, out + "$");
+    }
+    if (c == 92u8 && (nx == 110u8 || nx == 116u8 || nx == 92u8)) {
+        return substFrom(b, i + 2, line, caps, out + (nx == 110u8 ? "\n" : (nx == 116u8 ? "\t" : "\\")));
+    }
+    // (the bytes up to the next `$` or `\` as they are)
+    const k = findIndex(iota(m - i - 1), (j) => b[i + 1 + j] == 36u8 || b[i + 1 + j] == 92u8);
+    const end = k < 0 ? m : i + 1 + k;
+    return substFrom(b, end, line, caps, out + stringOf(map(iota(end - i), (j) => b[i + j])));
+}

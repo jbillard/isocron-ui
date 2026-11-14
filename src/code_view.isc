@@ -1,27 +1,43 @@
 // The lines of a document of the editor of code (src/doc.isc) as elements,
 // as Visual Studio Code draws them: those in sight alone (the others a
 // space of their height), each its number, the guides of its indentation,
-// its tokens coloured, its selection, the caret, the line of the cursor
-// lit; the lines of the blocks around the first line in sight kept at the
-// top (sticky scroll). Its spaces and tabs are drawn as spaces of no break:
-// a column of a font of fixed width each.
+// its tokens coloured, its selections, its carets, the texts found by the
+// search, the line of each cursor lit, the code scrolled across under its
+// numbers; the lines of the blocks around the first line in sight kept at
+// the top (sticky scroll); over them, the widget of the search, the map of
+// the document (the minimap) and the scrollbar across. Its spaces and tabs
+// are drawn as spaces of no break: a column of a font of fixed width each.
 import { rgb, rgba, Color, transparent } from "./paint";
-import { Element, Div, Label, Caret, style, textStyle, Px, Fill, Auto, Row, Column, Packed } from "./ui";
-import { Center, End } from "./text";
-import { Doc, Pos, selection, hasSelection, columnOf, LINE_HEIGHT, TAB_SIZE } from "./doc";
+import { Element, Div, Label, Caret, Image, style, textStyle, Px, Fill, Auto, Row, Column, Packed, Between, POINTER, TEXT, ARROW } from "./ui";
+import * as ui from "./ui";
+import { Center, End, Start } from "./text";
+import { Picture } from "./png";
+import { Editing } from "./edit";
+import * as inp from "./input";
+import { Effect, ScrollTo } from "./input";
+import { Doc, Pos, Sel, Match, selection, hasSelection, columnOf, allSelections, rangeOf, currentFound, findClicked, leftShown, widestShown, scrolledAcross, clickedWith, draggedTo, wrapped, wrapColumns, wrapIndent, rowsOfLine, lineOfRow, totalRows, positionAtRow, LINE_HEIGHT, TAB_SIZE, GUTTER, VBAR, FIND_QUERY, FIND_WITH, FIND_CASE, FIND_WORD, FIND_REGEX, FIND_PREV, FIND_NEXT, FIND_CLOSE, FIND_TOGGLE, FIND_ONE, FIND_ALL, FIND_SELECTION, FIND_PRESERVE } from "./doc";
 import { Piece, piecesOf, kindColor } from "./code";
 
 // how the code looks (the theme 2026 Dark of Visual Studio Code by
 // default): the width of a column of its font of fixed width at its size
 // (`advance`), the font (`face`), the message of the first line (`ids`: a
 // click on the line `k` gives `ids + k`), whether the editor has the focus
-// (the caret shown, the selection of its colour)
+// (the carets shown, the selection of its colour); the message of the
+// first of its other parts (`parts`: the widget of the search, the map,
+// the bar across, from `FIND_QUERY` to `HBAR`), the face of the icons, the
+// number of the box that scrolls it, the place under the pointer
 export type CodeLook = {
     advance: f32, em: f32, lineHeight: f32, face: i64, ids: i64, focused: boolean,
     gutter: f32, gap: f32,
     number: Color, numberActive: Color, current: Color, selection: Color, inactiveSelection: Color,
     caret: Color, guide: Color, background: Color, stickyLine: Color,
+    findMatch: Color, findHighlight: Color,
+    parts: i64, icons: i64, scroll: i64, hover: i64,
 };
+
+// the parts past those of the widget: the map, the bar across
+export const MAP: i64 = 20;
+export const HBAR: i64 = 21;
 
 export function codeLook(advance: f32, face: i64, ids: i64, focused: boolean): CodeLook {
     return {
@@ -31,16 +47,30 @@ export function codeLook(advance: f32, face: i64, ids: i64, focused: boolean): C
         selection: rgba(0.153f32, 0.404f32, 0.510f32, 0.867f32), inactiveSelection: rgba(0.153f32, 0.404f32, 0.510f32, 0.376f32),
         caret: rgb(0xBBBEBFu32), guide: rgba(0.514f32, 0.518f32, 0.522f32, 0.3f32), background: rgb(0x121314u32),
         stickyLine: rgb(0x2A2B2Cu32),
+        findMatch: rgb(0x9E6A03u32), findHighlight: rgba(0.918f32, 0.361f32, 0.0f32, 0.333f32),
+        parts: ids - 100, icons: 2, scroll: 1, hover: -1,
     };
 }
 
-// the lines in sight (a few more above and below), lines of `lineHeight`:
-// the first, the last (excluded)
+// the look with the messages of its parts, the face of its icons, its box,
+// the place under the pointer
+export function lookWith(look: CodeLook, parts: i64, icons: i64, scroll: i64, hover: i64): CodeLook {
+    return { ...look, parts: parts, icons: icons, scroll: scroll, hover: hover };
+}
+
+// the rows in sight (a few more above and below), rows of `lineHeight`:
+// the first, the last (excluded); a row a line unless they are wrapped
 export function sightOf(d: Doc, lineHeight: f32): [i64, i64] {
-    const n = d.lines.length;
+    const n = totalRows(d);
     const first = max(0, i64(d.top / lineHeight) - 5);
     const last = min(n, i64((d.top + d.height) / lineHeight) + 6);
     return [min(first, last), last] as const;
+}
+
+// every element of the box that scrolls the document: the lines kept at
+// its top, the lines, the map, the bar across, the widget of the search
+export function codeElements(d: Doc, look: CodeLook): Element[] {
+    return concat(concat(stickyOf(d, look), codeRows(d, look)), overlays(d, look));
 }
 
 // the elements of the box that scrolls the document: a space for the lines
@@ -48,47 +78,139 @@ export function sightOf(d: Doc, lineHeight: f32): [i64, i64] {
 export function codeRows(d: Doc, look: CodeLook): Element[] {
     const [first, last] = sightOf(d, look.lineHeight);
     const above = Div({ ...style(), height: Px(f32(first) * look.lineHeight) }, []);
-    const below = Div({ ...style(), height: Px(f32(d.lines.length - last) * look.lineHeight) }, []);
-    return concat(concat([above], map(iota(last - first), (i) => lineRow(d, look, first + i, true))), [below]);
+    const below = Div({ ...style(), height: Px(f32(totalRows(d) - last) * look.lineHeight) }, []);
+    const sels = allSelections(d);
+    const cur = currentFound(d);
+    const shift = leftShown(d);
+    if (wrapped(d)) {
+        const [k0, g0] = lineOfRow(d, first);
+        return concat(concat([above], wrappedRows(d, look, k0, g0, first, last, sels, cur, [])), [below]);
+    }
+    return concat(concat([above], map(iota(last - first), (i) => lineRow(d, look, first + i, true, sels, cur, shift, 0, -1, first + i, 0))), [below]);
 }
 
-// a run of the line to draw: its bytes, its colour, whether it is selected
-type Run = { start: i64, end: i64, color: Color, selected: boolean };
+// the rows of the lines wrapped from the row `g` of the line `k` (the row
+// `r` of the document) to the row `last`
+function wrappedRows(d: Doc, look: CodeLook, k: i64, g: i64, r: i64, last: i64, sels: Sel[ns], cur: i64, out: Element[]): Element[] {
+    if (r >= last || k >= d.lines.length) {
+        return out;
+    }
+    const st = rowsOfLine(d, k);
+    const n = bytes(d.lines[k]).length;
+    const end = g + 1 < st.length ? st[g + 1] : n;
+    const indent = g > 0 ? wrapIndent(d.lines[k], wrapColumns(d)) : 0;
+    const row = lineRow(d, look, k, true, sels, cur, 0.0f32, st[g], g + 1 < st.length ? end : -1, r, indent);
+    return g + 1 < st.length ? wrappedRows(d, look, k, g + 1, r + 1, last, sels, cur, concat(out, [row]))
+        : wrappedRows(d, look, k + 1, 0, r + 1, last, sels, cur, concat(out, [row]));
+}
 
-// the row of the line `k`: its number, its code (`live`: its selection,
-// its caret and the light of the line of the cursor; the sticky lines
-// have none)
-function lineRow(d: Doc, look: CodeLook, k: i64, live: boolean): Element {
+// a click on the row `row` at `x` units from its left: the cursor at the
+// line and the column under the pointer (lines wrapped: of the row)
+export function rowClicked(d: Doc, look: CodeLook, row: i64, x: f32, clicks: i64, mods: i64): Doc {
+    if (!wrapped(d)) {
+        return clickedWith(d, row, columnAtX(d, look, x), clicks, mods);
+    }
+    const p = positionAtRow(d, row, max(0, i64(floor((x - look.gutter - look.gap) / look.advance + 0.5f32))));
+    return clickedWith(d, p.line, columnOf(d.lines[p.line], p.col), clicks, mods);
+}
+
+// a drag from the row `row` to (x, y) of it: the selection to the line and
+// the column under the pointer
+export function rowDragged(d: Doc, look: CodeLook, row: i64, x: f32, y: f32): Doc {
+    const r = row + i64(floor(y / look.lineHeight));
+    if (!wrapped(d)) {
+        return draggedTo(d, r, columnAtX(d, look, x));
+    }
+    if (r < 0) {
+        return draggedTo(d, -1, 0);
+    }
+    const p = positionAtRow(d, r, max(0, i64(floor((x - look.gutter - look.gap) / look.advance + 0.5f32))));
+    return draggedTo(d, r >= totalRows(d) ? d.lines.length : p.line, columnOf(d.lines[p.line], p.col));
+}
+
+// the column of the code under the pointer at `x` units from the left of a
+// line (its number and the gap after it, the code scrolled across)
+export function columnAtX(d: Doc, look: CodeLook, x: f32): i64 {
+    return i64(floor((x - look.gutter - look.gap + leftShown(d)) / look.advance + 0.5f32));
+}
+
+// a run of the line to draw: its bytes, its colour, its background (none:
+// transparent)
+type Run = { start: i64, end: i64, color: Color, back: Color };
+
+// the bytes of the selections on a line: their starts and ends, whether
+// each goes on below it
+type Marks = { starts: i64[], ends: i64[], past: boolean[] };
+
+function marksOf(sels: Sel[n], k: i64, len: i64): Marks {
+    const on = filter(sels, (s) => {
+        const [a, b] = rangeOf(s);
+        return (a.line != b.line || a.col != b.col) && k >= a.line && k <= b.line;
+    });
+    return {
+        starts: map(on, (s) => {
+            const [a, b] = rangeOf(s);
+            return k == a.line ? a.col : 0;
+        }),
+        ends: map(on, (s) => {
+            const [a, b] = rangeOf(s);
+            return k == b.line ? b.col : len;
+        }),
+        past: map(on, (s) => {
+            const [a, b] = rangeOf(s);
+            return k < b.line;
+        }),
+    };
+}
+
+// the row of the line `k`: its number, its code (`live`: its selections,
+// its carets and the light of the lines of the cursors; the sticky lines
+// have none), the texts found on it (`cur` the index of the current one),
+// the code moved left by `shift`; of its bytes from `rs` to `re` (-1: its
+// end; a row of a line wrapped, `indent` columns in when not its first),
+// its message that of the row `row`
+function lineRow(d: Doc, look: CodeLook, k: i64, live: boolean, sels: Sel[ns], cur: i64, shift: f32, rs: i64, re0: i64, row: i64, indent: i64): Element {
     const text = d.lines[k];
     const n = bytes(text).length;
-    const active = live && k == d.cursor.line;
-    const number = Div({ ...style(), width: Px(look.gutter), height: Px(look.lineHeight), direction: Row, justify: Packed(End), align: Center, stretch: false }, [
-        Label({ ...textStyle(look.em, active ? look.numberActive : look.number), face: look.face }, `${k + 1}`),
-    ]);
+    const re = re0 < 0 ? n : re0;
+    const lastRow = re0 < 0;
+    // (the cursors on the line: their carets, the light of the line when
+    // one has no selection)
+    const cursors = live ? filter(sels, (s) => s.cursor.line == k) : [];
+    const active = cursors.length > 0;
+    const lit = count(cursors, (s) => s.cursor.line == s.anchor.line && s.cursor.col == s.anchor.col) > 0
+        && count(sels, (s) => {
+            const [a, b] = rangeOf(s);
+            return (a.line != b.line || a.col != b.col) && k >= a.line && k <= b.line;
+        }) == 0;
+    const number = Div({ ...style(), width: Px(look.gutter), height: Px(look.lineHeight), direction: Row, justify: Packed(End), align: Center, stretch: false },
+        rs == 0 ? [Label({ ...textStyle(look.em, active ? look.numberActive : look.number), face: look.face }, `${k + 1}`)] : []);
     const gap = Div({ ...style(), width: Px(look.gap), height: Px(1.0f32) }, []);
-    // (the bytes of the selection on this line, the end of the line when it
-    // goes on below)
-    const [a, b] = selection(d);
-    const some = live && hasSelection(d) && k >= a.line && k <= b.line;
-    const sa = some ? (k == a.line ? a.col : 0) : -1;
-    const sb = some ? (k == b.line ? b.col : n) : -1;
-    const past = some && k < b.line;
+    const ms = live ? marksOf(sels, k, n) : { starts: [], ends: [], past: [] };
+    const found = filter(iota(d.found.length), (i) => d.found[i].line == k);
     const [pieces, depth] = piecesOf(text, d.scans[k].raws, d.depths[k]);
     // (the indentation: its guides each `indent` columns, the runs within)
     const lead = leadColumns(text);
-    const levels = lead.bytes == n ? 0 : lead.columns / d.indent;
-    const caretAt = active && look.focused ? d.cursor.col : -1;
-    const cuts = sortedCuts(concat(concat([sa, sb, caretAt], guideCuts(text, levels, d.indent)), concat(map(pieces, (p) => p.start), map(pieces, (p) => p.end))), n);
-    const runs = runsOf(pieces, cuts, sa, sb);
+    const levels = lead.bytes == n || rs > 0 ? 0 : lead.columns / d.indent;
+    // (no caret while the widget of the search has the keyboard; those of
+    // this row of the line)
+    const carets = look.focused && d.find.field == 0 ? filter(map(cursors, (s) => s.cursor.col), (c) => c >= rs && (c < re || (lastRow && c == re))) : [];
+    const cuts = sortedCuts(concat(concat(concat(concat(concat(ms.starts, ms.ends), carets), guideCuts(text, levels, d.indent)), [rs, re]),
+        concat(concat(map(pieces, (p) => p.start), map(pieces, (p) => p.end)), concat(map(found, (i) => d.found[i].start), map(found, (i) => d.found[i].end)))), n);
     const selColor = look.focused ? look.selection : look.inactiveSelection;
-    const [guided, rest] = guidesOf(text, runs, levels, d.indent, look, selColor);
-    const drawn = runsDrawn(text, rest, guidedColumns(text, levels, d.indent), look, selColor, caretAt);
-    const caretFirst: Element[] = caretAt == 0 && levels == 0 ? [Caret(2.0f32, look.lineHeight, look.caret)] : [];
+    const runs = filter(runsOf(pieces, cuts, ms, d.found, found, cur, selColor, look), (r) => r.start >= rs && r.end <= re);
+    const [guided, rest] = guidesOf(text, runs, levels, d.indent, look, carets);
+    const drawn = runsDrawn(text, rest, look, filter(carets, (c) => c != rs));
+    const caretFirst: Element[] = count(carets, (c) => c == rs) > 0 ? [Caret(2.0f32, look.lineHeight, look.caret)] : [];
+    const past = lastRow && count(ms.past, (p) => p) > 0;
     const eol: Element[] = past ? [Div({ ...style(), width: Px(look.advance), height: Px(look.lineHeight), background: selColor }, [])] : [];
-    const caretEnd: Element[] = caretAt == n && n > 0 ? [Caret(2.0f32, look.lineHeight, look.caret)] : [];
+    const caretEnd: Element[] = count(carets, (c) => c == re) > 0 && re > rs ? [Caret(2.0f32, look.lineHeight, look.caret)] : [];
+    // (a row after the first of a line wrapped: its indentation)
+    const pad: Element[] = indent > 0 ? [Div({ ...style(), width: Px(f32(indent) * look.advance), height: Px(1.0f32) }, [])] : [];
+    // (the code cut to its box, moved left when scrolled across)
     const code = Div({ ...style(), width: Fill(1.0f32), height: Px(look.lineHeight), direction: Row, align: Center, stretch: false,
-        background: active && !hasSelection(d) ? look.current : transparent() }, concat(concat(concat(concat(caretFirst, guided), drawn), caretEnd), eol));
-    return Div({ ...style(), width: Fill(1.0f32), height: Px(look.lineHeight), direction: Row, align: Center, stretch: false, onClick: live ? look.ids + k : -1, cursor: 2 }, [number, gap, code]);
+        background: lit ? look.current : transparent(), clip: shift > 0.0f32, shiftX: shift }, concat(concat(concat(concat(concat(pad, caretFirst), guided), drawn), caretEnd), eol));
+    return Div({ ...style(), width: Fill(1.0f32), height: Px(look.lineHeight), direction: Row, align: Center, stretch: false, onClick: live ? look.ids + row : -1, cursor: TEXT }, [number, gap, code]);
 }
 
 // the leading spaces and tabs of a line: their bytes and their columns
@@ -114,11 +236,6 @@ function offsetAtColumn(text: string, c: i64): i64 {
     return k < 0 ? b.length : k;
 }
 
-// the end of the guides: the offset of their last column
-function guidedColumns(text: string, levels: i64, indent: i64): i64 {
-    return offsetAtColumn(text, levels * indent);
-}
-
 // the offsets where the runs are cut, sorted, each once, within the line
 function sortedCuts(xs: i64[n], len: i64): i64[] {
     return uniq(sort(filter(concat(xs, [0, len]), (x) => x >= 0 && x <= len)), 0, []);
@@ -131,44 +248,47 @@ function uniq(s: i64[n], i: i64, out: i64[]): i64[] {
     return uniq(s, i + 1, i > 0 && s[i] == s[i - 1] ? out : concat(out, [s[i]]));
 }
 
-// the runs between the cuts: the colour of the piece holding each, selected
-// when within [sa, sb)
-function runsOf(pieces: Piece[p], cuts: i64[n], sa: i64, sb: i64): Run[] {
+// the runs between the cuts: the colour of the piece holding each; its
+// background the current text found, a selection, another text found
+function runsOf(pieces: Piece[p], cuts: i64[n], ms: Marks, found: Match[f], on: i64[q], cur: i64, sel: Color, look: CodeLook): Run[] {
     return filter(map(iota(max(0, n - 1)), (i) => {
         const s = cuts[i];
         const e = cuts[i + 1];
-        const k = findIndex(pieces, (q) => q.start <= s && s < q.end);
-        return { start: s, end: e, color: k >= 0 ? pieces[k].color : kindColor(-1), selected: s >= sa && e <= sb && sa < sb };
+        const k = findIndex(pieces, (x) => x.start <= s && s < x.end);
+        const selected = findIndex(iota(ms.starts.length), (j) => s >= ms.starts[j] && e <= ms.ends[j]) >= 0;
+        const hit = findIndex(on, (j) => s >= found[j].start && e <= found[j].end);
+        const back = hit >= 0 && on[hit] == cur ? look.findMatch : (selected ? sel : (hit >= 0 ? look.findHighlight : transparent()));
+        return { start: s, end: e, color: k >= 0 ? pieces[k].color : kindColor(-1), back: back };
     }), (r) => r.end > r.start);
 }
 
 // the guides of the indentation (each a box with its line at its left, the
 // runs within it) and the runs after them
-function guidesOf(text: string, runs: Run[n], levels: i64, indent: i64, look: CodeLook, sel: Color): [Element[], Run[]] {
+function guidesOf(text: string, runs: Run[n], levels: i64, indent: i64, look: CodeLook, carets: i64[c]): [Element[], Run[]] {
     const ends = map(iota(levels), (g) => offsetAtColumn(text, (g + 1) * indent));
     const starts = map(iota(levels), (g) => offsetAtColumn(text, g * indent));
     const guided = map(iota(levels), (g) => Div({ ...style(), height: Px(look.lineHeight), direction: Row, align: Center, stretch: false, borderLeft: 1.0f32, borderColor: look.guide },
-        runsDrawn(text, filter(runs, (r) => r.start >= starts[g] && r.end <= ends[g]), -1, look, sel, -1)));
+        runsDrawn(text, filter(runs, (r) => r.start >= starts[g] && r.end <= ends[g]), look, carets)));
     const after = levels > 0 ? ends[levels - 1] : 0;
     return [guided, filter(runs, (r) => r.start >= after)] as const;
 }
 
 // the runs drawn: their text with spaces of no break, a tab up to its stop;
-// a selected run on the colour of the selection; the caret before the run
-// that begins at its offset (`caret`)
-function runsDrawn(text: string, runs: Run[n], unused: i64, look: CodeLook, sel: Color, caret: i64): Element[] {
-    return drawnFrom(text, runs, 0, look, sel, caret, []);
+// a run of a background on it; a caret before each run that begins at one
+// of `carets` (the first of the line drawn before them)
+function runsDrawn(text: string, runs: Run[n], look: CodeLook, carets: i64[c]): Element[] {
+    return drawnFrom(text, runs, 0, look, carets, []);
 }
 
-function drawnFrom(text: string, runs: Run[n], i: i64, look: CodeLook, sel: Color, caret: i64, out: Element[]): Element[] {
+function drawnFrom(text: string, runs: Run[n], i: i64, look: CodeLook, carets: i64[c], out: Element[]): Element[] {
     if (i >= n) {
         return out;
     }
     const r = runs[i];
     const label = Label({ ...textStyle(look.em, r.color), face: look.face }, spacedText(text, r.start, r.end));
-    const item = r.selected ? Div({ ...style(), height: Px(look.lineHeight), align: Center, stretch: false, background: sel, direction: Row }, [label]) : label;
-    const mark: Element[] = caret == r.start && caret > 0 ? [Caret(2.0f32, look.lineHeight, look.caret)] : [];
-    return drawnFrom(text, runs, i + 1, look, sel, caret, concat(concat(out, mark), [item]));
+    const item = r.back.a > 0.0f32 ? Div({ ...style(), height: Px(look.lineHeight), align: Center, stretch: false, background: r.back, direction: Row }, [label]) : label;
+    const mark: Element[] = r.start > 0 && count(carets, (x) => x == r.start) > 0 ? [Caret(2.0f32, look.lineHeight, look.caret)] : [];
+    return drawnFrom(text, runs, i + 1, look, carets, concat(concat(out, mark), [item]));
 }
 
 // the bytes [s, e) of the line as drawn: a space a space of no break, a tab
@@ -203,7 +323,7 @@ function spacedFrom(text: string, b: u8[n], i: i64, e: i64, from: i64, out: stri
 // after it, the outermost first, 5 at most (a line of a bracket alone left
 // out); in a box over the code, a line and a shadow under it
 export function stickyOf(d: Doc, look: CodeLook): Element[] {
-    const first = i64(d.top / look.lineHeight);
+    const [first, g] = lineOfRow(d, i64(d.top / look.lineHeight));
     if (first <= 0 || first >= d.lines.length) {
         return [];
     }
@@ -212,7 +332,9 @@ export function stickyOf(d: Doc, look: CodeLook): Element[] {
     if (n == 0) {
         return [];
     }
-    const rows = map(iota(n), (i) => lineRow(d, look, chain[chain.length - 1 - i], false));
+    const none: Sel[] = [];
+    const shift = leftShown(d);
+    const rows = map(iota(n), (i) => lineRow(d, look, chain[chain.length - 1 - i], false, none, -1, shift, 0, -1, -1, 0));
     return [Div({ ...style(), width: Fill(1.0f32), floating: true, background: look.background, borderBottom: 1.0f32, borderColor: look.stickyLine,
         shadowBlur: 3.0f32, shadowY: 2.0f32, shadowColor: rgba(0.098f32, 0.106f32, 0.114f32, 0.3f32) }, rows)];
 }
@@ -226,4 +348,305 @@ function stickyFrom(d: Doc, k: i64, level: i64, out: i64[]): i64[] {
     const body = d.lines[k].trim();
     const bare = body == "{" || body == "[" || body == "(";
     return lead.columns < level && !blank && !bare ? stickyFrom(d, k - 1, lead.columns, concat(out, [k])) : stickyFrom(d, k - 1, level, out);
+}
+
+// ----- over the code: the map, the bar across, the widget of the search ------
+
+function overlays(d: Doc, look: CodeLook): Element[] {
+    if (d.width <= 0.0f32) {
+        return [];
+    }
+    return concat(concat(mapOf(d, look), barAcross(d, look)), findWidget(d, look));
+}
+
+// the map: a line of 2 units, a column of a unit, as much of the document
+// as its height holds (moved with the box past it: in proportion)
+const MAP_LINE: f32 = 2.0f32;
+
+// the first line of the map and its offset: the map scrolled in
+// proportion with the box
+function mapScroll(d: Doc): f32 {
+    const content = f32(d.lines.length) * LINE_HEIGHT;
+    const mapped = f32(d.lines.length) * MAP_LINE;
+    return mapped > d.height && content > d.height ? min(1.0f32, d.top / (content - d.height)) * (mapped - d.height) : 0.0f32;
+}
+
+// the thumb of the map (the lines in sight): its top and height in the map
+function mapThumb(d: Doc): [f32, f32] {
+    return [d.top / LINE_HEIGHT * MAP_LINE - mapScroll(d), d.height / LINE_HEIGHT * MAP_LINE] as const;
+}
+
+// the image of the map: each character a column of a unit of its colour,
+// faded on the background of the editor; its lines from the offset of the
+// map
+function mapPicture(d: Doc, look: CodeLook, w: i64, h: i64): Picture {
+    const scroll = mapScroll(d);
+    const first = i64(scroll / MAP_LINE);
+    const count = min(d.lines.length - first, i64(f32(h) / MAP_LINE) + 2);
+    const bg = look.background;
+    // (each line its colours by columns, 0 for a space)
+    const rows = map(iota(max(0, count)), (i) => ({ px: rowColors(d, first + i, w, bg) }));
+    const off = scroll - f32(first) * MAP_LINE;
+    const back = 0xFF000000u32 | (u32(bg.r * 255.0f32) << 16u32) | (u32(bg.g * 255.0f32) << 8u32) | u32(bg.b * 255.0f32);
+    const pixels = map(iota(w * h), (i) => {
+        const r = i64((f32(i / w) + off) / MAP_LINE);
+        const x = i % w;
+        return r < rows.length && rows[r].px[x] != 0u32 ? rows[r].px[x] : back;
+    });
+    return { width: w, height: h, pixels: pixels };
+}
+
+// the colours of the columns of the line `k` on the map (0: none)
+function rowColors(d: Doc, k: i64, w: i64, bg: Color): u32[] {
+    const text = d.lines[k];
+    const b = bytes(text);
+    const [pieces, depth] = piecesOf(text, d.scans[k].raws, d.depths[k]);
+    // (the byte at each column: tabs to their stops)
+    const cols = map(iota(w), (x) => {
+        const o = offsetAtColumnOf(text, x);
+        return o < b.length && b[o] != 32u8 && b[o] != 9u8 ? o : -1;
+    });
+    return map(cols, (o) => {
+        if (o < 0) {
+            return 0u32;
+        }
+        const p = findIndex(pieces, (x) => x.start <= o && o < x.end);
+        const c = p >= 0 ? pieces[p].color : kindColor(-1);
+        // (the colour faded to 60 % on the background)
+        const mix = (a: f32, z: f32) => u32(min(255.0f32, (a * 0.6f32 + z * 0.4f32) * 255.0f32));
+        return 0xFF000000u32 | (mix(c.r, bg.r) << 16u32) | (mix(c.g, bg.g) << 8u32) | mix(c.b, bg.b);
+    });
+}
+
+// the offset of the line at the column `c` (a tab spans its columns), its
+// length past its end
+function offsetAtColumnOf(text: string, c: i64): i64 {
+    const b = bytes(text);
+    if (findIndex(b, (x) => x == 9u8) < 0) {
+        return c;
+    }
+    const k = findIndex(iota(b.length), (j) => columnOf(text, j + 1) > c);
+    return k < 0 ? b.length : k;
+}
+
+function mapOf(d: Doc, look: CodeLook): Element[] {
+    const w = i64(d.mapWidth);
+    const h = i64(d.height);
+    if (w <= 8 || h <= 0) {
+        return [];
+    }
+    const pic = mapPicture(d, look, w, h);
+    // (its thumb under the pointer alone, as Visual Studio Code)
+    const hot = look.hover == look.parts + MAP;
+    const [ty, th] = mapThumb(d);
+    const thumb: Element[] = hot ? [Div({ ...style(), width: Fill(1.0f32), height: Px(max(0.0f32, ty)) }, []), Div({ ...style(), width: Fill(1.0f32), height: Px(th), background: rgba(0.475f32, 0.475f32, 0.475f32, 0.2f32) }, [])] : [];
+    const area = Div({ ...style(), width: Px(f32(w)), height: Fill(1.0f32), clip: true, onClick: look.parts + MAP, cursor: ARROW }, concat([
+        Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), floating: true, under: true }, [Image(pic, f32(w), f32(h))]),
+    ], thumb));
+    return [Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), floating: true, direction: Row, justify: Packed(End), stretch: true }, [
+        area, Div({ ...style(), width: Px(VBAR), height: Px(1.0f32) }, []),
+    ])];
+}
+
+// the bar across, under the code, when its lines in sight pass its width:
+// its thumb as long as the share of them shown
+const HBAR_HEIGHT: f32 = 12.0f32;
+
+function barThumb(d: Doc): [f32, f32] {
+    const total = widestShown(d) + 30.0f32;
+    const w = d.width;
+    const tw = max(20.0f32, w * w / total);
+    return [(w - tw) * leftShown(d) / max(1.0f32, total - w), tw] as const;
+}
+
+function barAcross(d: Doc, look: CodeLook): Element[] {
+    if (widestShown(d) + 30.0f32 <= d.width) {
+        return [];
+    }
+    const [tx, tw] = barThumb(d);
+    const hot = look.hover == look.parts + HBAR;
+    const track = Div({ ...style(), width: Px(d.width), height: Px(HBAR_HEIGHT), direction: Row, align: Center, stretch: false, onClick: look.parts + HBAR, cursor: ARROW }, [
+        Div({ ...style(), width: Px(tx), height: Px(1.0f32) }, []),
+        Div({ ...style(), width: Px(tw), height: Px(HBAR_HEIGHT), background: hot ? rgba(0.659f32, 0.663f32, 0.667f32, 0.565f32) : rgba(0.659f32, 0.663f32, 0.667f32, 0.52f32) }, []),
+    ]);
+    return [Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), floating: true, direction: Column, justify: Packed(End), stretch: false }, [
+        Div({ ...style(), width: Fill(1.0f32), height: Px(HBAR_HEIGHT), direction: Row, stretch: false }, [
+            Div({ ...style(), width: Px(GUTTER), height: Px(1.0f32) }, []), track,
+        ]),
+    ])];
+}
+
+// ----- the widget of the search ------------------------------------------------
+
+// its colours: those of the widgets of the editor and of their fields
+const WIDGET: u32 = 0x202122u32;
+const WIDGET_BORDER: u32 = 0x2A2B2Cu32;
+const FIELD_BACK: u32 = 0x191A1Bu32;
+const FIELD_BORDER: u32 = 0x333536u32;
+const TEXT_COLOR: u32 = 0xBFBFBFu32;
+const NO_RESULTS: u32 = 0xF48771u32;
+
+// the icons of the widget (codicons)
+const I_CHEVRON_RIGHT: string = "\u{EAB6}";
+const I_CHEVRON_DOWN: string = "\u{EAB4}";
+const I_CASE: string = "\u{EAB1}";
+const I_WORD: string = "\u{EB7E}";
+const I_REGEX: string = "\u{EB38}";
+const I_UP: string = "\u{EAA1}";
+const I_DOWN: string = "\u{EA9A}";
+const I_SELECTION: string = "\u{EB85}";
+const I_CLOSE: string = "\u{EA76}";
+const I_REPLACE: string = "\u{EB3D}";
+const I_REPLACE_ALL: string = "\u{EB3C}";
+const I_PRESERVE: string = "\u{EB2E}";
+
+// a button of the widget: its icon, 16 units in a box of 22 (its tip),
+// lit under the pointer, faded when it does nothing (`off`), marked when
+// it is an option turned on
+function button(look: CodeLook, part: i64, icon: string, tip: string, on: boolean, off: boolean, side: f32): Element {
+    const hot = look.hover == look.parts + part && !off;
+    return Div({ ...style(), width: Px(side), height: Px(side), direction: Row, justify: Packed(Center), align: Center, stretch: false, radius: 4.0f32,
+        onClick: off ? -1 : look.parts + part, tip: tip, cursor: off ? ARROW : POINTER, opacity: off ? 0.4f32 : 1.0f32,
+        background: on ? rgba(0.224f32, 0.580f32, 0.737f32, 0.4f32) : (hot ? rgba(1.0f32, 1.0f32, 1.0f32, 0.1f32) : transparent()),
+        border: on ? 1.0f32 : 0.0f32, borderColor: rgb(0x3994BCu32) }, [
+        Label({ ...textStyle(16.0f32, rgb(0xCCCCCCu32)), face: look.icons, lineHeight: 16.0f32 }, icon),
+    ]);
+}
+
+// a field of the widget: its text, its hint, its options inside it
+function field(look: CodeLook, part: i64, e: Editing, focused: boolean, hint: string, error: boolean, inside: Element[]): Element {
+    return Div({ ...style(), width: Fill(1.0f32), height: Px(25.0f32), direction: Row, align: Center, stretch: false, background: rgb(FIELD_BACK),
+        border: 1.0f32, borderColor: error ? rgb(0xBE1100u32) : (focused ? rgba(0.224f32, 0.580f32, 0.737f32, 0.7f32) : rgb(FIELD_BORDER)), radius: 2.0f32, padX: 4.0f32 }, concat([
+        Div({ ...style(), width: Fill(1.0f32), height: Px(23.0f32), direction: Row, align: Center, stretch: false, onClick: look.parts + part, cursor: TEXT }, [
+            ui.Input({ ...textStyle(13.0f32, rgb(TEXT_COLOR)), caret: rgb(0xBBBEBFu32) }, e, focused, hint),
+        ]),
+    ], inside));
+}
+
+// the count of the texts found: `No results`, `? of N` (the selection is
+// none of them), `K of N`
+export function foundText(d: Doc): string {
+    if (d.find.query.text == "") {
+        return "No results";
+    }
+    const n = d.found.length;
+    if (n == 0) {
+        return "No results";
+    }
+    const k = currentFound(d);
+    return k < 0 ? `? of ${n}` : `${k + 1} of ${n}`;
+}
+
+function findWidget(d: Doc, look: CodeLook): Element[] {
+    const f = d.find;
+    if (!f.shown) {
+        return [];
+    }
+    const none = f.query.text != "" && d.found.length == 0;
+    const focusedQuery = f.field == 1 && look.focused;
+    const focusedWith = f.field == 2 && look.focused;
+    const queryField = field(look, FIND_QUERY, f.query, focusedQuery, "Find", false, [
+        button(look, FIND_CASE, I_CASE, "Match Case (Alt+C)", f.matchCase, false, 20.0f32),
+        button(look, FIND_WORD, I_WORD, "Match Whole Word (Alt+W)", f.wholeWord, false, 20.0f32),
+        button(look, FIND_REGEX, I_REGEX, "Use Regular Expression (Alt+R)", f.regex, false, 20.0f32),
+    ]);
+    const countText = Div({ ...style(), width: Px(69.0f32), height: Px(25.0f32), direction: Row, align: Center, stretch: false, padX: 4.0f32 }, [
+        Label(textStyle(12.0f32, none ? rgb(NO_RESULTS) : rgb(TEXT_COLOR)), foundText(d)),
+    ]);
+    const empty = d.found.length == 0;
+    const findRow = Div({ ...style(), width: Fill(1.0f32), height: Px(33.0f32), direction: Row, align: Center, stretch: false, gap: 3.0f32 }, [
+        queryField, countText,
+        button(look, FIND_PREV, I_UP, "Previous Match (Shift+Enter)", false, empty, 22.0f32),
+        button(look, FIND_NEXT, I_DOWN, "Next Match (Enter)", false, empty, 22.0f32),
+        button(look, FIND_SELECTION, I_SELECTION, "Find in Selection (Alt+L)", f.inSelection, false, 22.0f32),
+        Div({ ...style(), width: Px(2.0f32), height: Px(1.0f32) }, []),
+        button(look, FIND_CLOSE, I_CLOSE, "Close (Escape)", false, false, 22.0f32),
+    ]);
+    const withField = field(look, FIND_WITH, f.replaceText, focusedWith, "Replace", false, [
+        button(look, FIND_PRESERVE, I_PRESERVE, "Preserve Case (Alt+P)", f.preserveCase, false, 20.0f32),
+    ]);
+    const replaceRow: Element[] = f.replacing ? [Div({ ...style(), width: Fill(1.0f32), height: Px(28.0f32), direction: Row, align: Start, stretch: false, gap: 3.0f32 }, [
+        withField,
+        button(look, FIND_ONE, I_REPLACE, "Replace (Enter)", false, empty, 22.0f32),
+        button(look, FIND_ALL, I_REPLACE_ALL, "Replace All (Ctrl+Alt+Enter)", false, empty, 22.0f32),
+        Div({ ...style(), width: Px(101.0f32), height: Px(1.0f32) }, []),
+    ])] : [];
+    // (the button that shows the replacement: along the left edge)
+    const toggle = Div({ ...style(), width: Px(18.0f32), height: Fill(1.0f32), direction: Row, justify: Packed(Center), align: Center, stretch: false,
+        onClick: look.parts + FIND_TOGGLE, tip: "Toggle Replace", cursor: POINTER,
+        background: look.hover == look.parts + FIND_TOGGLE ? rgba(1.0f32, 1.0f32, 1.0f32, 0.1f32) : transparent() }, [
+        Label({ ...textStyle(16.0f32, rgb(0xCCCCCCu32)), face: look.icons, lineHeight: 16.0f32 }, f.replacing ? I_CHEVRON_DOWN : I_CHEVRON_RIGHT),
+    ]);
+    const height = f.replacing ? 61.0f32 : 33.0f32;
+    const box = Div({ ...style(), width: Px(min(419.0f32, max(260.0f32, d.width + d.mapWidth - 20.0f32))), height: Px(height), direction: Row, stretch: true,
+        background: rgb(WIDGET), radiusBottomLeft: 4.0f32, radiusBottomRight: 4.0f32, radiusTopLeft: 0.0f32, radiusTopRight: 0.0f32,
+        border: 1.0f32, borderColor: rgb(WIDGET_BORDER), borderTop: 0.0f32,
+        shadowBlur: 8.0f32, shadowY: 2.0f32, shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.36f32), cursor: ARROW }, [
+        toggle,
+        Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), padX: 4.0f32, direction: Column, stretch: true }, concat([findRow], replaceRow)),
+    ]);
+    return [Div({ ...style(), width: Fill(1.0f32), floating: true, direction: Row, justify: Packed(End), stretch: false }, [
+        box, Div({ ...style(), width: Px(d.mapWidth + VBAR), height: Px(1.0f32) }, []),
+    ])];
+}
+
+// ----- the parts clicked and dragged --------------------------------------------
+
+// a click on the part `part` (its message less `look.parts`), the input it
+// is: the widget of the search; the map (the thumb taken, else the box
+// scrolled to the line under the pointer, in the middle); the bar across
+// (the thumb taken, else a page across)
+export function codePartClicked(d: Doc, look: CodeLook, part: i64, i: inp.Input): [Doc, Effect[]] {
+    if (part < MAP) {
+        return findClicked(d, part, i);
+    }
+    return match (i) {
+        inp.Click(p, x, y, at, clicks, mods) => {
+            if (part == MAP) {
+                const [ty, th] = mapThumb(d);
+                if (y >= ty && y < ty + th) {
+                    return [{ ...d, grab: y - ty }, []] as const;
+                }
+                const line = (y + mapScroll(d)) / MAP_LINE;
+                const top = max(0.0f32, line * LINE_HEIGHT - d.height * 0.5f32);
+                return [{ ...d, grab: th * 0.5f32 }, [ScrollTo(look.scroll, top)]] as const;
+            }
+            const [tx, tw] = barThumb(d);
+            if (x >= tx && x < tx + tw) {
+                return [{ ...d, grab: x - tx }, []] as const;
+            }
+            return [{ ...scrolledAcross(d, leftShown(d) + (x < tx ? -d.width : d.width)), grab: -1.0f32 }, []] as const;
+        },
+        _ => [d, []] as const,
+    };
+}
+
+// a drag from the part `part` to (x, y) of it: the thumb of the map or of
+// the bar across moved with the pointer (the place it was taken at kept)
+export function codePartDragged(d: Doc, look: CodeLook, part: i64, i: inp.Input): [Doc, Effect[]] {
+    if (part < MAP) {
+        return findClicked(d, part, i);
+    }
+    return match (i) {
+        inp.Drag(p, x, y, at) => {
+            if (d.grab < 0.0f32) {
+                return [d, []] as const;
+            }
+            if (part == MAP) {
+                // (the top of the thumb under the pointer: the box at the
+                // offset whose thumb is there)
+                const content = f32(d.lines.length) * LINE_HEIGHT;
+                const mapped = f32(d.lines.length) * MAP_LINE;
+                const [ty, th] = mapThumb(d);
+                const room = min(d.height, mapped) - th;
+                const ratio = room > 0.0f32 ? max(0.0f32, min(1.0f32, (y - d.grab) / room)) : 0.0f32;
+                return [d, [ScrollTo(look.scroll, ratio * max(0.0f32, content - d.height))]] as const;
+            }
+            const total = widestShown(d) + 30.0f32;
+            const [tx, tw] = barThumb(d);
+            const room = d.width - tw;
+            return [scrolledAcross(d, room > 0.0f32 ? (x - d.grab) / room * (total - d.width) : 0.0f32), []] as const;
+        },
+        _ => [d, []] as const,
+    };
 }

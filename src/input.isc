@@ -25,6 +25,16 @@ export const HOME: i64 = 0x110006;
 export const END: i64 = 0x110007;
 export const PAGE_UP: i64 = 0x110008;
 export const PAGE_DOWN: i64 = 0x110009;
+// the keys of functions: F1 is 0x110010, F12 0x11001B
+export const F1: i64 = 0x110010;
+export const F3: i64 = 0x110012;
+export const F12: i64 = 0x11001B;
+// the signs of the shortcuts of lines, held with Ctrl: as Visual Studio
+// Code, the key at the place of `/`, `[` and `]` of an American keyboard
+// whatever the keyboard (Ctrl+: is Ctrl+/ on a French one under Windows)
+export const SLASH: i64 = 47;
+export const BRACKET_LEFT: i64 = 91;
+export const BRACKET_RIGHT: i64 = 93;
 
 // a dead key (an accent typed before its letter, `^` then `e`: `ê`), as a
 // character of the hand: DEAD plus its accent, in the order of the symbols
@@ -110,7 +120,17 @@ export function spacingAccent(k: i64): i64 {
 //   when it changes (Visual Studio Code dims its bar of the title in a
 //   window inactive); under Windows, X11 (FocusIn, FocusOut) and Wayland
 //   (the state `activated` of its configuration)
-export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i64) | Release(i64) | Hover(i64) | Text(i64) | Key(i64, i64) | Paste(string) | Focus(i64) | Viewport(i64, f32, f32) | Tick(i64) | TextRead(string, string, boolean) | FolderListed(string, string[], boolean) | WindowState(boolean) | WindowSize(f32, f32) | WindowActive(boolean) | TextWritten(string, boolean, string);
+// - `CloseAsked`: the window asked to close (its button, Alt+F4, the
+//   system): it closes after it unless the application answers `KeepOpen`
+//   (an editor whose files are not saved asks first, then `CloseWindow`)
+// - `WheelX(place, dx)`: the wheel turned across over the place whose
+//   message is `place` (-1: none), `dx` units, right positive: a wheel
+//   tilted, two fingers on a touchpad, the wheel turned with Shift held
+// - `BoxSized(scroll, width, height)`: the box that scrolls whose offset is
+//   the `scroll`-th laid out at `width` by `height` units (its inside, the
+//   room of its scrollbar with it), told when it changes (an editor of code
+//   lays its long lines out across it)
+export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i64) | Release(i64) | Hover(i64) | Text(i64) | Key(i64, i64) | Paste(string) | Focus(i64) | Viewport(i64, f32, f32) | Tick(i64) | TextRead(string, string, boolean) | FolderListed(string, string[], boolean) | WindowState(boolean) | WindowSize(f32, f32) | WindowActive(boolean) | TextWritten(string, boolean, string) | CloseAsked | WheelX(i64, f32) | BoxSized(i64, f32, f32);
 
 // what an application asks after an input: a text copied to the clipboard,
 // the text of the clipboard (it comes as `Paste`), the next frame of an
@@ -124,5 +144,6 @@ export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i6
 // `ScrollTo(box, offset)`: the box that scrolls `box` at `offset` units
 // from its top; `Reveal(box, y, height)`: that box scrolled as little as
 // shows the band of `height` units at `y` from the top of its content,
-// whole (the line of the cursor of an editor in sight))
-export type Effect = Copy(string) | AskPaste | Animate | ReadText(string) | ListFolder(string) | Minimize | ToggleMaximized | CloseWindow | WriteText(string, string) | ScrollTo(i64, f32) | Reveal(i64, f32, f32);
+// whole (the line of the cursor of an editor in sight); `KeepOpen`: the
+// window kept open after `CloseAsked`)
+export type Effect = Copy(string) | AskPaste | Animate | ReadText(string) | ListFolder(string) | Minimize | ToggleMaximized | CloseWindow | WriteText(string, string) | ScrollTo(i64, f32) | Reveal(i64, f32, f32) | KeepOpen;

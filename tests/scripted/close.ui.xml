@@ -1,0 +1,7 @@
+<!-- A view that asks before it closes (`onbeforeclose`): kept open while
+     `keep` is true; Ctrl+A lets it close; Ctrl+S saves its document under
+     another path (`host.saveAs`). -->
+<view onbeforeclose="asked = asked + 1; return keep" script="close.lua"
+      onkey="return key == 'a' and letGo() or (key == 's' and savedAs())">
+  <box/>
+</view>

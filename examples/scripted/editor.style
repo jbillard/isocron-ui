@@ -1026,3 +1026,147 @@
     size: 14;
     color: #8C8C8C;
 }
+
+/* the title of the palette when it asks a path (Save As) */
+.paletteTitle {
+    width: fill;
+    height: 22;
+    justify: center;
+    align: center;
+    stretch: false;
+}
+
+.paletteTitleText {
+    size: 12;
+    color: #BFBFBF;
+}
+
+/* the dialog asking to save (the dialog of Visual Studio Code: 500 units
+   at least, its warning of 48, its message of 18, its buttons at the
+   right), over the window dimmed */
+.modal {
+    width: fill;
+    height: fill;
+    floating: true;
+    background: rgba(0, 0, 0, 0.3);
+    justify: center;
+    align: center;
+    stretch: false;
+    cursor: arrow;
+}
+
+.dialog {
+    width: 520;
+    padding: 10;
+    gap: 14;
+    radius: 8;
+    background: #202122;
+    border: 1;
+    borderColor: #2A2B2C;
+    shadowBlur: 16;
+    shadowY: 4;
+    shadowColor: rgba(0, 0, 0, 0.36);
+}
+
+.dialogTools {
+    width: fill;
+    height: 22;
+    direction: row;
+    align: center;
+    stretch: false;
+}
+
+.dialogClose {
+    width: 22;
+    height: 22;
+    radius: 4;
+    justify: center;
+    align: center;
+    stretch: false;
+}
+
+.dialogClose:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.dialogCloseIcon {
+    size: 16;
+    color: #CCCCCC;
+}
+
+.dialogBody {
+    width: fill;
+    padX: 10;
+    gap: 24;
+    direction: row;
+    align: start;
+    stretch: false;
+}
+
+.dialogIcon {
+    size: 48;
+    color: #CCA700;
+}
+
+.dialogTexts {
+    width: fill;
+    gap: 4;
+}
+
+.dialogMessage {
+    size: 18;
+    color: #CCCCCC;
+}
+
+.dialogDetail {
+    size: 13;
+    color: #BFBFBF;
+}
+
+.dialogButtons {
+    width: fill;
+    padY: 0;
+    gap: 10;
+    direction: row;
+    justify: end;
+    align: center;
+    stretch: false;
+}
+
+.dialogPrimary {
+    height: 28;
+    padX: 12;
+    radius: 4;
+    background: #297AA0;
+    justify: center;
+    align: center;
+    stretch: false;
+}
+
+.dialogPrimary:hover {
+    background: #2B7DA3;
+}
+
+.dialogPrimaryText {
+    size: 13;
+    color: #FFFFFF;
+}
+
+.dialogButton {
+    height: 28;
+    padX: 12;
+    radius: 4;
+    background: #313233;
+    justify: center;
+    align: center;
+    stretch: false;
+}
+
+.dialogButton:hover {
+    background: #3A3B3C;
+}
+
+.dialogButtonText {
+    size: 13;
+    color: #CCCCCC;
+}

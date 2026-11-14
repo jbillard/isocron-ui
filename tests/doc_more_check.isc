@@ -1,0 +1,146 @@
+// The document of the editor of code (src/doc.isc), what Visual Studio Code
+// does past the typing: several cursors (Ctrl+D, Ctrl+Shift+L, Alt+click,
+// Ctrl+Alt+Down, a paste spread over them), the commands of lines (Ctrl+/,
+// Alt+Up and Down, Shift+Alt+Down, Ctrl+Shift+K, Ctrl+], Ctrl+L,
+// Ctrl+Shift+Enter), the search and the replacement (Ctrl+F, Enter, the
+// options, a regular expression and its groups, Ctrl+H), the code scrolled
+// across. Each step prints the text, then each selection (cursor and
+// anchor, line:offset), the primary first.
+import { Doc, docOf, keyed, typedCode, pasted, textOf, clickedAt, clickedWith, allSelections, currentFound, findClicked, sized, wheeledAcross, leftShown, rowStarts, totalRows, positionAtRow, FIND_ALL, FIND_CASE } from "../src/doc";
+import { compiled, matchesOf, substituted } from "../src/regex";
+import { Effect, Copy, Click, WITH_SHIFT, WITH_CTRL, WITH_ALT, ENTER, ESCAPE, UP, DOWN, END, HOME, F3, SLASH, BRACKET_RIGHT } from "../src/input";
+
+function shown(d: Doc): string {
+    const text = join(split(textOf(d), "\n"), "⏎");
+    const sels = join(map(allSelections(d), (s) => `${s.cursor.line}:${s.cursor.col}-${s.anchor.line}:${s.anchor.col}`), " ");
+    return `${text} | ${sels}`;
+}
+
+function key(d: Doc, k: i64, mods: i64): Doc {
+    const [d1, fx] = keyed(d, k, mods);
+    return d1;
+}
+
+function copied(d: Doc, k: i64, mods: i64): string {
+    const [d1, fx] = keyed(d, k, mods);
+    return join(map(fx, (e) => match (e) {
+        Copy(s) => `Copy(${join(split(s, "\n"), "⏎")})`,
+        _ => "other",
+    }), " ");
+}
+
+function typedAll(d: Doc, s: string): Doc {
+    return fold(bytes(s), d, (acc, c) => typedCode(acc, i64(c)));
+}
+
+// the matches of a pattern in a line: start-end, and its groups
+function rx(p: string, line: string, fold: boolean): string {
+    const c = compiled(p, fold);
+    if (!c.ok) {
+        return "invalid";
+    }
+    return join(map(matchesOf(c, line, fold), (t) => {
+        const [s, e, caps] = t;
+        return `${s}-${e}`;
+    }), ",");
+}
+
+action main(args: string[k]): i32 {
+    // Ctrl+D: the word of the cursor, then its next places, whole words
+    const d0 = docOf("a.lua", "foo = foo + food\nfoo(1)");
+    const d1 = key(clickedAt(d0, 0, 1, 1, false), 100, WITH_CTRL);
+    print(shown(d1));
+    const d2 = key(d1, 100, WITH_CTRL);
+    const d3 = key(d2, 100, WITH_CTRL);
+    print(shown(d3));
+    // typed at the three: each replaced
+    print(shown(typedAll(d3, "bar")));
+    // Escape: the first cursor alone
+    print(shown(key(d3, ESCAPE, 0)));
+    // Ctrl+Shift+L: every place at once
+    print(shown(key(clickedAt(d0, 1, 1, 1, false), 108, WITH_CTRL | WITH_SHIFT)));
+    // Alt+click adds a cursor, again on it removes it
+    const a1 = clickedWith(clickedAt(d0, 0, 3, 1, false), 1, 3, 1, WITH_ALT);
+    print(shown(a1));
+    print(shown(clickedWith(a1, 1, 3, 1, WITH_ALT)));
+    // Ctrl+Alt+Down: a cursor below at the same column; Backspace at both
+    const c0 = docOf("b.txt", "abcd\nefgh\nij");
+    const c1 = key(key(clickedAt(c0, 0, 3, 1, false), DOWN, WITH_CTRL | WITH_ALT), DOWN, WITH_CTRL | WITH_ALT);
+    print(shown(c1));
+    print(shown(key(c1, 8, 0)));
+    // a paste of as many lines as cursors: one at each; else the whole at each
+    print(shown(pasted(c1, "1\n2\n3")));
+    print(shown(pasted(c1, "XY")));
+    // Ctrl+C at cursors alone: their lines; pasted at a cursor alone, above
+    // its line
+    print(copied(clickedAt(c0, 1, 2, 1, false), 99, WITH_CTRL));
+    const p0 = key(clickedAt(c0, 1, 2, 1, false), 99, WITH_CTRL);
+    print(shown(pasted(clickedAt(p0, 2, 1, 1, false), "efgh\n")));
+    // Ctrl+/: commented at the smallest indentation, then uncommented
+    const m0 = docOf("c.lua", "if x then\n  y = 1\n    z = 2\nend");
+    const m1 = key(clickedAt(m0, 1, 0, 1, false), DOWN, WITH_SHIFT);
+    const m2 = key(key(m1, DOWN, WITH_SHIFT), SLASH, WITH_CTRL);
+    print(shown(m2));
+    print(shown(key(m2, SLASH, WITH_CTRL)));
+    // in XML: the comment of a block around the lines
+    print(shown(key(docOf("d.xml", "<a/>"), SLASH, WITH_CTRL)));
+    // Alt+Down, Alt+Up: the line moved; Shift+Alt+Down: copied, the cursor
+    // on the copy; Ctrl+Shift+K: removed
+    const l0 = docOf("e.txt", "one\ntwo\nthree");
+    print(shown(key(l0, DOWN, WITH_ALT)));
+    print(shown(key(key(l0, DOWN, WITH_ALT), UP, WITH_ALT)));
+    print(shown(key(clickedAt(l0, 1, 1, 1, false), DOWN, WITH_ALT | WITH_SHIFT)));
+    print(shown(key(clickedAt(l0, 1, 1, 1, false), 107, WITH_CTRL | WITH_SHIFT)));
+    // Ctrl+]: indented by a step; Ctrl+L: the line, then the next one
+    print(shown(key(clickedAt(l0, 1, 1, 1, false), BRACKET_RIGHT, WITH_CTRL)));
+    print(shown(key(key(l0, 108, WITH_CTRL), 108, WITH_CTRL)));
+    // Ctrl+Shift+Enter: a line above, indented as the cursor's
+    print(shown(key(clickedAt(m0, 2, 6, 1, false), ENTER, WITH_CTRL | WITH_SHIFT)));
+    // the search: Ctrl+F takes the word of the cursor, Enter the next
+    const f0 = docOf("f.txt", "Cat cat\ncat concat");
+    const f1 = key(clickedAt(f0, 0, 5, 1, false), 102, WITH_CTRL);
+    print(`${shown(f1)} ${f1.found.length} ${currentFound(f1)}`);
+    const f2 = key(f1, ENTER, 0);
+    const f3 = key(f2, ENTER, WITH_SHIFT);
+    print(`${shown(f2)} ${shown(f3)}`);
+    // typed in its field: searched again; the case, whole words
+    const g1 = typedAll(key(clickedAt(f0, 0, 0, 1, false), 102, WITH_CTRL), "Cat");
+    print(`${g1.find.query.text} ${g1.found.length}`);
+    const [g2, fx2] = findClicked(g1, FIND_CASE, Click(0, 0.0f32, 0.0f32, -1, 1, 0));
+    print(`${g2.found.length} ${key(key(g1, 99, WITH_ALT), 119, WITH_ALT).found.length}`);
+    // Ctrl+H: replaced one (Enter in its field), then all, one undo
+    const h0 = key(clickedAt(f0, 0, 4, 1, false), 104, WITH_CTRL);
+    const h1 = typedAll(key(typedAll(h0, "cat"), 9, 0), "dog");
+    const h2 = key(h1, ENTER, 0);
+    print(shown(h2));
+    const [h3, fx3] = findClicked(h1, FIND_ALL, Click(0, 0.0f32, 0.0f32, -1, 1, 0));
+    print(shown(h3));
+    print(shown(key(key(h3, ESCAPE, 0), 122, WITH_CTRL)));
+    // a regular expression and its groups in the replacement
+    const r0 = key(key(clickedAt(docOf("g.txt", "a1 b22 c"), 0, 0, 1, false), 104, WITH_CTRL), 114, WITH_ALT);
+    const r1 = typedAll(key(typedAll(r0, "([a-z])(\\d+)"), 9, 0), "$2$1");
+    const [r2, fx4] = findClicked(r1, FIND_ALL, Click(0, 0.0f32, 0.0f32, -1, 1, 0));
+    print(`${r1.found.length} ${shown(r2)}`);
+    // the engine: classes, alternation, lazy, anchors, a pattern refused
+    print(rx("a+?b|c[0-9]{2}", "aab c12 c1", false));
+    print(rx("^\\w+$", "word", false));
+    print(rx("CAT", "a cat", true));
+    print(rx("(x", "x", false));
+    print(rx("[^ ]+", "ab  cd", false));
+    print(substituted("<$1|$&|$$>", "key=val", [0, 7, 0, 3]));
+    // across: the cursor at the end of a long line shown, the wheel
+    const w0 = sized(docOf("h.txt", join(map(iota(100), (i) => "x"), "")), 400.0f32, 300.0f32, 8.0f32);
+    const w1 = key(w0, END, 0);
+    print(`${w1.left} ${leftShown(w1)} ${leftShown(wheeledAcross(w1, -100.0f32))} ${leftShown(key(w1, HOME, 0))}`);
+    // Alt+Z: the lines wrapped at the width (10 columns of 8 units), after
+    // their spaces, the rows after the first indented as the line; Down by
+    // rows
+    const z0 = key(sized(docOf("i.txt", "alpha beta gamma delta\nshort\n  indented line here"), 80.0f32, 300.0f32, 8.0f32), 122, WITH_ALT);
+    print(`${z0.wrap} ${join(map(rowStarts(z0.lines[0], 10), (x) => `${x}`), ",")} ${join(map(rowStarts(z0.lines[2], 10), (x) => `${x}`), ",")} ${totalRows(z0)}`);
+    const z1 = key(z0, DOWN, 0);
+    const z2 = key(z1, DOWN, 0);
+    print(`${z1.cursor.line}:${z1.cursor.col} ${z2.cursor.line}:${z2.cursor.col} ${key(z2, DOWN, 0).cursor.line}:${key(z2, DOWN, 0).cursor.col} ${leftShown(key(z0, END, 0))}`);
+    const p5 = positionAtRow(z0, 5, 3);
+    print(`${p5.line}:${p5.col} ${key(z0, 122, WITH_ALT).wrap}`);
+    return 0;
+}

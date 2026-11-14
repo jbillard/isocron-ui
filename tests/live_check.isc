@@ -38,7 +38,10 @@ action main(args: string[k]): i32 {
     return match (parse(readBytes("tests/fonts/DejaVuSans.ttf"))) {
         Ok(f) => {
             const m0 = initial([]);
-            const [ps0, u0] = laidOut(interface(1280, 800, 0u64), f, m0, view, 0u64);
+            const [ps0, u0x] = laidOut(interface(1280, 800, 0u64), f, m0, view, 0u64);
+            // (the sizes of its boxes that scroll told, as the loop tells them
+            // after the first frame: no wake for them after)
+            const u0 = { ...u0x, boxes: u0x.boxesSeen };
             // the pointer over "?" at 1000 ms
             const [hx, hy] = centre(u0, HELP);
             const [u1, m1] = at(f, u0, m0, Moved(hx, hy), 1000u64);

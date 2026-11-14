@@ -16,3 +16,4 @@ flag: tests/scripted/flag.ui.xml:1: <view resizable="maybe">: true or false
 (0, 5, go, go)
 (59,130,246,255, 0,0,0,0, 130.0)
 ([read tests/scripted/hello.txt], relu : texte, )
+(keep, , 2, write b.lua one, 0, )

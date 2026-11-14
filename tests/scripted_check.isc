@@ -11,7 +11,7 @@ import { parse, Font } from "../src/font";
 import { render, rgb } from "../src/paint";
 import { interface, laidOut, laidOutFonts } from "../src/app";
 import { editing } from "../src/edit";
-import { Input, Effect, Click, Drag, Release, Hover, Key, Text, TextRead, ReadText, ENTER, WITH_CTRL } from "../src/input";
+import { Input, Effect, Click, Drag, Release, Hover, Key, Text, TextRead, ReadText, CloseAsked, KeepOpen, WriteText, ENTER, WITH_CTRL } from "../src/input";
 import { Element, Div } from "../src/ui";
 import * as lua from "../src/lua_vm";
 import * as todo from "../examples/todo";
@@ -102,6 +102,32 @@ action features(f: Font): void {
     };
 }
 
+// the effects of closing and of writing as texts
+function said(fx: Effect[n]): string {
+    return join(map(fx, (e) => match (e) {
+        KeepOpen => "keep",
+        WriteText(p, t) => `write ${p} ${t}`,
+        _ => "other",
+    }), " ");
+}
+
+// the window asked to close (tests/scripted/close.ui.xml): kept open by
+// `onbeforeclose` (`KeepOpen`), then let close; a document saved under
+// another path then closed: written there before it is closed (its
+// language that of its new name while it was open)
+action closing(): void {
+    match (sc.load("tests/scripted/close.ui.xml")) {
+        Err(e) => print(e),
+        Ok(a0) => {
+            const [a1, fx1] = sc.update(a0, CloseAsked);
+            const [a2, fx2] = sc.update(a1, Key(97, WITH_CTRL));
+            const [a3, fx3] = sc.update(a2, CloseAsked);
+            const [a4, fx4] = sc.update(a3, Key(115, WITH_CTRL));
+            print([said(fx1), said(fx3), globalOf(a3, "asked"), said(fx4), a4.docs.length, a4.err] as const);
+        },
+    };
+}
+
 // the faulty views of tests/scripted/ read: their faults (each at its file
 // and line); the error of an expression shown by the view
 action faults(names: string[n], i: i64): void {
@@ -138,6 +164,7 @@ action main(args: string[k]): i32 {
                 print([a4.resizable, a4.minimizable, a4.maximizable] as const);
                 faults(["tag", "value", "style", "syntax", "script", "runtime", "flag"], 0);
                 features(f);
+                closing();
                 return 0;
             },
             Err(e) => {

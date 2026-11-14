@@ -9,7 +9,10 @@
 // files of styles, beside it, separated by spaces), `script` (its files of
 // Lua, run in their order: they make the globals the view reads), `menu`
 // (the entries of the menu of a field, separated by commas), `onclose`
-// (Lua run when the window is closed). Its one child is the root of the
+// (Lua run when the window is closed), `onbeforeclose` (Lua run when the
+// window asks to close, before it: a true value keeps it open, an editor
+// asks to save its files first, then calls `host.close()`). Its one child
+// is the root of the
 // interface. The elements, attributes and properties are those of uigen,
 // with these changes:
 //   - a value `{...}` is an expression of Lua, made a function of Lua once
@@ -37,11 +40,12 @@ import { Element, Div, Label, Input, Image, Length, Px, Fill, Auto, Direction, R
 import { Align, Start, Center, End } from "./text";
 import { Editing, editing, edited, utf8 } from "./edit";
 import { button, iconButton, textField, checkbox, toggleAt, progress, restyled, Hand } from "./widgets";
-import { Doc, docOf, keyed as docKeyed, typedCode, pasted, textOf, saved, dirty, clickedAt, draggedTo, viewed, topFor, cursorBand, columnOf, symbolsAt, LINE_HEIGHT } from "./doc";
-import { codeLook, codeRows, stickyOf, sightOf } from "./code_view";
+import { renamed } from "./doc";
+import { Doc, docOf, keyed as docKeyed, typedCode, pasted, textOf, saved, dirty, clickedWith, draggedTo, viewed, topFor, cursorBand, columnOf, symbolsAt, boxSized, wheeledAcross, findFrom, statusOf, LINE_HEIGHT } from "./doc";
+import { CodeLook, codeLook, lookWith, codeElements, sightOf, columnAtX, codePartClicked, codePartDragged, rowClicked, rowDragged } from "./code_view";
 import { Symbol } from "./doc";
 import * as inp from "./input";
-import { Input as HandInput, Effect, Click, Drag, Release, Hover, Key, Paste, Focus, Viewport, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, WriteText, ScrollTo, Reveal, ENTER, ESCAPE, BACKSPACE, TAB, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END, WITH_CTRL, WITH_SHIFT, WITH_ALT } from "./input";
+import { Input as HandInput, Effect, Click, Drag, Release, Hover, Key, Paste, Focus, Viewport, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, BoxSized, WheelX, CloseAsked, KeepOpen, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, WriteText, ScrollTo, Reveal, ENTER, ESCAPE, BACKSPACE, TAB, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END, WITH_CTRL, WITH_SHIFT, WITH_ALT } from "./input";
 import { decode, Picture } from "./png";
 import * as sys from "sys";
 
@@ -749,6 +753,10 @@ const H_COMP: i64 = 1;
 const H_FIELD: i64 = 2;
 // (a line of a document: `bind` its line, `change` the document)
 const H_CODE: i64 = 3;
+// (a part of the editor of a document: the widget of its search, its map,
+// its bar across; `bind` its number, `change` the document)
+const H_PART: i64 = 4;
+const PARTS: i64 = 22;
 
 // the application: its machine of Lua, the file of its view, its template,
 // its classes, the globals of its fields and their editing, the elements
@@ -763,6 +771,8 @@ const H_CODE: i64 = 3;
 export type App = {
     vm: lua.Vm, cx: Cx, tpl: Tpl[], eds: Editing[], tree: Element, hs: H[],
     focus: i64, hover: i64, pressed: i64, err: string, title: string, width: i64, height: i64, resizable: boolean, minimizable: boolean, maximizable: boolean, drawn: boolean, menu: string[], close: i64,
+    // the function run when the window asks to close (-1: none)
+    beforeClose: i64,
     key: i64, seen: boolean[], pressX: f32, pressY: f32,
     memo: V[], memoErr: string, luaRan: boolean,
     // the documents the host keeps (`host.openDoc`), whether the keyboard
@@ -770,6 +780,8 @@ export type App = {
     // column of the font of fixed width; the document shown and the box
     // that scrolls it
     docs: Doc[], codeFocus: boolean, active: boolean, advance: f32, shownPath: string, shownScroll: i64,
+    // the size of the box of the documents (each made laid out at it)
+    codeWidth: f32, codeHeight: f32,
 };
 
 // what making the elements reads: the file of the view, its classes, the
@@ -798,8 +810,14 @@ const HOST_LUA: string = join([
     "function host.save(path)",
     "  host.requests[#host.requests + 1] = { \"save\", path }",
     "end",
+    "function host.saveAs(path, to)",
+    "  host.requests[#host.requests + 1] = { \"saveas\", path, to }",
+    "end",
     "function host.focusCode()",
     "  host.requests[#host.requests + 1] = { \"focus\", \"\" }",
+    "end",
+    "function host.blurCode()",
+    "  host.requests[#host.requests + 1] = { \"blur\", \"\" }",
     "end",
     "function host.minimize()",
     "  host.requests[#host.requests + 1] = { \"min\", \"\" }",
@@ -821,7 +839,7 @@ const HOST_LUA: string = join([
     "  for _, r in ipairs(host.requests) do",
     "    out[#out + 1] = r[1]",
     "    out[#out + 1] = r[2]",
-    "    out[#out + 1] = r[1] == \"doc\" and r[3] or \"\"",
+    "    out[#out + 1] = (r[1] == \"doc\" or r[1] == \"saveas\") and r[3] or \"\"",
     "    if r[1] == \"read\" or r[1] == \"list\" then",
     "      host.pending[#host.pending + 1] = r[3]",
     "    end",
@@ -925,7 +943,7 @@ action loaded(path: string, rattrs: Attr[n], rkids: Node[m], rline: i64): Result
     const read = map(rules, (r) => classOf(r));
     const bases = map(filter(read, (c) => c.name.indexOf(":") >= 0), (c) => c.name.slice(0, c.name.indexOf(":")));
     const classes = concat(read, map(filter(bases, (x) => findIndex(read, (c) => c.name == x) < 0), (x) => ({ name: x, box: [], text: [] })));
-    const known = ["title", "width", "height", "resizable", "minimizable", "maximizable", "titlebar", "styles", "script", "menu", "onclose", "onkey", "images"];
+    const known = ["title", "width", "height", "resizable", "minimizable", "maximizable", "titlebar", "styles", "script", "menu", "onclose", "onbeforeclose", "onkey", "images"];
     const g0 = onlyAttrs({ file: path, classes: map(classes, (c) => c.name), code: "local F = {} ", line: 1, n: 0, binds: [], faults: [], images: namesIn(attr(rattrs, "images"), " ") }, rattrs, "<view>", known, rline);
     const tags = filter(rkids, (k) => match (k) {
         Tag(name, a, c, l) => true,
@@ -933,7 +951,8 @@ action loaded(path: string, rattrs: Attr[n], rkids: Node[m], rline: i64): Result
     });
     const [g1, ts] = tags.length == 1 ? tplOf(g0, [], tags[0]) : [fault(g0, rline, `<view> holds one element (it has ${tags.length})`), []] as const;
     const [g2a, close] = handlerOf(g1, [], rattrs, "onclose", rline);
-    const [g2, key] = handlerOf(g2a, ["key", "ctrl", "shift", "alt"], rattrs, "onkey", rline);
+    const [g2b, key] = handlerOf(g2a, ["key", "ctrl", "shift", "alt"], rattrs, "onkey", rline);
+    const [g2, beforeClose] = handlerOf(g2b, [], rattrs, "onbeforeclose", rline);
     const [pics, ifaults] = picturesIn(dir, g2.images, 0, [], []);
     // the buttons of the window (D669 of isocron): `true` (by default) or
     // `false`
@@ -990,10 +1009,10 @@ action loaded(path: string, rattrs: Attr[n], rkids: Node[m], rline: i64): Result
                 vm: v3, cx: { file: path, classes: classes, binds: g2.binds, pics: pics, names: g2.images }, tpl: ts, eds: map(g2.binds, (b) => editing("")), tree: Div(style(), []), hs: [],
                 focus: -1, hover: -1, pressed: -1, err: "", title: has(rattrs, "title") ? attr(rattrs, "title") : "Isocron", width: dim("width", 480), height: dim("height", 400),
                 resizable: attr(rattrs, "resizable") != "false", minimizable: attr(rattrs, "minimizable") != "false", maximizable: attr(rattrs, "maximizable") != "false",
-                drawn: attr(rattrs, "titlebar") == "custom", menu: menu, close: close,
+                drawn: attr(rattrs, "titlebar") == "custom", menu: menu, close: close, beforeClose: beforeClose,
                 key: key, seen: map(g2.binds, (x) => false), pressX: 0.0f32, pressY: 0.0f32,
                 memo: [], memoErr: "", luaRan: true,
-                docs: [], codeFocus: false, active: true, advance: 7.7f32, shownPath: "", shownScroll: -1,
+                docs: [], codeFocus: false, active: true, advance: 7.7f32, shownPath: "", shownScroll: -1, codeWidth: 0.0f32, codeHeight: 0.0f32,
             };
             return Ok(rebuilt(filesAtOnce(a)));
         },
@@ -1050,37 +1069,39 @@ function requested(a: App): [App, Effect[]] {
     const paths = map(iota(n), (k) => lua.plainText(v1, lua.element(v1, t, 3 * k + 2)));
     const texts = map(iota(n), (k) => lua.plainText(v1, lua.element(v1, t, 3 * k + 3)));
     // (the documents opened, closed, the focus given to the code)
-    const a1 = docsAsked({ ...a, vm: v1 }, kinds, paths, texts, 0);
-    return [a1, effectsAsked(a1, kinds, paths, 0, [])] as const;
+    // (each request in its order: a document saved under another path,
+    // then closed, written before it is closed)
+    return requestsDone({ ...a, vm: v1 }, kinds, paths, texts, 0, []);
 }
 
 // the effects of the requests of the scripts: a file or a folder read, the
 // window minimized, maximized, closed, a document written
-function effectsAsked(a: App, kinds: string[n], paths: string[n], k: i64, out: Effect[]): Effect[] {
+// (a document saved under another path: renamed, then written there)
+function requestsDone(a: App, kinds: string[n], paths: string[n], texts: string[n], k: i64, out: Effect[]): [App, Effect[]] {
     if (k >= n) {
-        return out;
+        return [a, out] as const;
     }
+    const a1 = docAsked(a, kinds, paths, texts, k);
     const kind = kinds[k];
-    const path = paths[k];
-    const di = findIndex(a.docs, (d) => d.path == path);
+    const path = kind == "saveas" ? texts[k] : paths[k];
+    const di = findIndex(a1.docs, (d) => d.path == path);
     const fx: Effect[] = kind == "read" ? [ReadText(path)] : (kind == "list" ? [ListFolder(path)] : (kind == "min" ? [Minimize] : (kind == "max" ? [ToggleMaximized]
-        : (kind == "close" ? [CloseWindow] : (kind == "save" && di >= 0 ? [WriteText(path, textOf(a.docs[di]))] : [])))));
-    return effectsAsked(a, kinds, paths, k + 1, concat(out, fx));
+        : (kind == "close" ? [CloseWindow] : ((kind == "save" || kind == "saveas") && di >= 0 ? [WriteText(path, textOf(a1.docs[di]))] : [])))));
+    return requestsDone(a1, kinds, paths, texts, k + 1, concat(out, fx));
 }
 
-// the documents asked by the scripts: opened (`doc`: made of its text, kept
-// when it is open already), closed, the focus given to the code
-function docsAsked(a: App, kinds: string[n], paths: string[n], texts: string[n], k: i64): App {
-    if (k >= n) {
-        return a;
-    }
+// the document asked by the `k`-th request of the scripts: opened (`doc`:
+// made of its text, kept when it is open already), closed, saved under
+// another path, the focus given to the code or taken
+function docAsked(a: App, kinds: string[n], paths: string[n], texts: string[n], k: i64): App {
     const kind = kinds[k];
     const path = paths[k];
     const open = findIndex(a.docs, (d) => d.path == path) >= 0;
-    const a1 = kind == "doc" && !open ? { ...a, docs: concat(a.docs, [docOf(path, texts[k])]) }
+    const a1 = kind == "doc" && !open ? { ...a, docs: concat(a.docs, [boxSized(docOf(path, texts[k]), a.codeWidth, a.codeHeight, a.advance)]) }
         : (kind == "closedoc" ? { ...a, docs: filter(a.docs, (d) => d.path != path) }
-        : (kind == "focus" ? { ...a, codeFocus: true, focus: -1 } : a));
-    return docsAsked(a1, kinds, paths, texts, k + 1);
+        : (kind == "saveas" ? { ...a, docs: map(a.docs, (d) => d.path == path ? renamed(d, texts[k]) : d), shownPath: a.shownPath == path ? texts[k] : a.shownPath }
+        : (kind == "focus" ? { ...a, codeFocus: true, focus: -1 } : (kind == "blur" ? { ...a, codeFocus: false } : a))));
+    return a1;
 }
 
 // the offset and the height of the box that scrolls `k` set in Lua
@@ -1255,6 +1276,16 @@ function applied<S>(b: B, file: string, s: S, ps: Prop[n], names: string[k], kin
 }
 
 // a place added: its message
+// the places of the parts of the editor of the document `di`, from the
+// `k`-th
+function placedParts(b: B, di: i64, k: i64, args: V[n]): B {
+    if (k >= PARTS) {
+        return b;
+    }
+    const [b1, id] = place(b, { kind: H_PART, click: -1, drag: -1, enter: -1, change: di, bind: k, args: args });
+    return placedParts(b1, di, k + 1, args);
+}
+
 // the places of the lines `k` to `last` (excluded) of the document `di`
 function placedLines(b: B, di: i64, k: i64, last: i64, args: V[n]): B {
     if (k >= last) {
@@ -1341,8 +1372,10 @@ function made(b: B, cx: Cx, t: Tpl, args: V[m]): [B, Element[]] {
             const [first, last] = sightOf(d, LINE_HEIGHT);
             const firstId = b1.hs.length;
             const b2 = placedLines(b1, di, first, last, args);
-            const look = codeLook(b1.advance, 1, firstId - first, b1.codeFocus);
-            return [{ ...b2, shownPath: path, shownScroll: sc }, concat(stickyOf(d, look), codeRows(d, look))] as const;
+            const partsId = b2.hs.length;
+            const b3 = placedParts(b2, di, 0, args);
+            const look = lookWith(codeLook(b1.advance, 1, firstId - first, b1.codeFocus), partsId, 2, sc, b1.hover);
+            return [{ ...b3, shownPath: path, shownScroll: sc }, codeElements(d, look)] as const;
         },
         TEach(f, kid, line) => {
             const [b1, seq] = called(b, f, args);
@@ -1490,8 +1523,15 @@ function rebuiltUnless(a: App, waits: boolean): App {
     const focus = b2.focus >= 0 && !b2.now[b2.focus] ? -1 : b2.focus;
     // (the parts of `b2` read where the application is made of them: a text
     // of it read before would hold it, its arrays then copied)
+    // (another document shown: the widget of the search of the one before
+    // kept, as in Visual Studio Code)
+    const prev = findIndex(a.docs, (d) => d.path == a.shownPath);
+    const docs = prev >= 0 && b2.shownPath != a.shownPath && b2.shownPath != ""
+        ? map(a.docs, (d) => d.path == b2.shownPath ? findFrom(d, a.docs[prev]) : d) : a.docs;
     return { ...a, vm: b2.vm, hs: b2.hs, eds: b2.eds, focus: focus, seen: b2.now, tree: es.length > 0 ? es[0] : Div(style(), []), err: a.err == "" ? (replay ? a.memoErr : b2.err) : a.err, memo: b2.memo, memoErr: replay ? a.memoErr : b2.err, luaRan: false,
-        shownPath: b2.shownPath, shownScroll: b2.shownScroll };
+        shownPath: b2.shownPath, shownScroll: b2.shownScroll, docs: docs,
+        // (a field given the focus as it appears: the keyboard leaves the code)
+        codeFocus: focus >= 0 && focus != a.focus ? false : a.codeFocus };
 }
 
 // the elements of the application: an error shown above them
@@ -1530,7 +1570,8 @@ function keyName(k: i64): string {
     return k == ENTER ? "Enter" : (k == ESCAPE ? "Escape" : (k == BACKSPACE ? "Backspace" : (k == TAB ? "Tab"
         : (k == LEFT ? "Left" : (k == UP ? "Up" : (k == RIGHT ? "Right" : (k == DOWN ? "Down"
         : (k == DELETE ? "Delete" : (k == HOME ? "Home" : (k == END ? "End"
-        : (k == inp.PAGE_UP ? "PageUp" : (k == inp.PAGE_DOWN ? "PageDown" : stringOf(utf8(k))))))))))))));
+        : (k == inp.PAGE_UP ? "PageUp" : (k == inp.PAGE_DOWN ? "PageDown"
+        : (k >= inp.F1 && k <= inp.F12 ? `F${k - inp.F1 + 1}` : stringOf(utf8(k)))))))))))))));
 }
 
 // the key `k` given to `onkey` (its name, Ctrl, Shift, Alt): whether it
@@ -1583,10 +1624,23 @@ export function update(a0: App, i: HandInput): [App, Effect[]] {
 
 function answered(a: App, i: HandInput): [App, Effect[]] {
     return match (i) {
-        Viewport(k, offset, height) => [k >= 0 ? viewported(k == a.shownScroll ? withShown(a, (d) => viewed(d, offset, height)) : a, k, offset, height) : a, []] as const,
+        Viewport(k, offset, height) => [k >= 0 ? viewported(k == a.shownScroll ? withShown(a, (d) => viewed(d, offset, a.codeHeight > 0.0f32 ? a.codeHeight : height)) : a, k, offset, height) : a, []] as const,
         WindowState(z) => [maximizedSet(a, z), []] as const,
         WindowSize(w, h) => [sizeSet(a, w, h), []] as const,
         WindowActive(z) => [flagSet({ ...a, active: z }, "active", z), []] as const,
+        // (the window asks to close: `onbeforeclose` keeps it open by a true
+        // value)
+        CloseAsked => {
+            if (a.beforeClose < 0) {
+                return [a, []] as const;
+            }
+            const [a1, v] = ranValue(a, a.beforeClose, []);
+            return [a1, lua.truthy(v) ? [KeepOpen] : []] as const;
+        },
+        // (the box of the documents laid out: each told its size)
+        BoxSized(k, w, h) => [k == a.shownScroll ? { ...a, codeWidth: w, codeHeight: h, docs: map(a.docs, (d) => boxSized(d, w, h, a.advance)) } : a, []] as const,
+        // (the wheel across over the code shown: it scrolls across)
+        WheelX(p, dx) => [p >= 0 && p < a.hs.length && (a.hs[p].kind == H_CODE || a.hs[p].kind == H_PART) ? withShown(a, (d) => wheeledAcross(d, dx)) : a, []] as const,
         TextWritten(p, ok, reason) => [ok ? { ...a, docs: map(a.docs, (d) => d.path == p ? saved(d) : d) } : { ...a, err: `${p}: ${reason}` }, []] as const,
         TextRead(p, t, ok) => [delivered(a, i), []] as const,
         FolderListed(p, names, ok) => [delivered(a, i), []] as const,
@@ -1597,9 +1651,17 @@ function answered(a: App, i: HandInput): [App, Effect[]] {
             }
             const h = a.hs[p];
             if (h.kind == H_CODE) {
-                // (the cursor of the document at the line and the column clicked)
+                // (the cursor of the document at the line and the column
+                // clicked; with Alt, a cursor more)
                 const a1 = { ...a, pressed: p, focus: -1, codeFocus: true, pressX: x, pressY: y };
-                return codeChanged(a1, h.change, clickedAt(a.docs[h.change], h.bind, columnAt(a, x), clicks, (mods & WITH_SHIFT) != 0), []);
+                return codeChanged(a1, h.change, rowClicked(a.docs[h.change], lookOf(a), h.bind, x, clicks, mods), []);
+            }
+            if (h.kind == H_PART) {
+                // (a part of its editor: the widget of the search, the map, the
+                // bar across)
+                const a1 = { ...a, pressed: p, focus: -1, codeFocus: true, pressX: x, pressY: y };
+                const [d1, fx] = codePartClicked(a.docs[h.change], lookOf(a), h.bind, i);
+                return codeChanged(a1, h.change, d1, fx);
             }
             if (h.kind == H_FIELD) {
                 return fieldEdited({ ...a, focus: h.bind, pressed: p, codeFocus: false }, h, i, p);
@@ -1613,7 +1675,12 @@ function answered(a: App, i: HandInput): [App, Effect[]] {
             // the column under the pointer)
             if (p >= 0 && p < a.hs.length && a.hs[p].kind == H_CODE) {
                 const h = a.hs[p];
-                return codeChanged(a, h.change, draggedTo(a.docs[h.change], h.bind + i64(floor(y / LINE_HEIGHT)), columnAt(a, x)), []);
+                return codeChanged(a, h.change, rowDragged(a.docs[h.change], lookOf(a), h.bind, x, y), []);
+            }
+            if (p >= 0 && p < a.hs.length && a.hs[p].kind == H_PART) {
+                const h = a.hs[p];
+                const [d1, fx] = codePartDragged(a.docs[h.change], lookOf(a), h.bind, i);
+                return [{ ...a, docs: map(iota(a.docs.length), (k) => k == h.change ? d1 : a.docs[k]) }, fx] as const;
             }
             if (p >= 0 && p < a.hs.length && a.hs[p].drag >= 0) {
                 return [ran(a, a.hs[p].drag, concat(a.hs[p].args, [lua.floatValue(f64(x - a.pressX)), lua.floatValue(f64(y - a.pressY))])), []] as const;
@@ -1653,10 +1720,9 @@ function withShown(a: App, f: (Doc) => Doc): App {
     return { ...a, docs: map(a.docs, (d) => d.path == a.shownPath ? f(d) : d) };
 }
 
-// the column of the code under the pointer at `x` units from the left of a
-// line (its number and the gap after it before the code)
-function columnAt(a: App, x: f32): i64 {
-    return i64(floor((x - 42.4f32 - 25.6f32) / a.advance + 0.5f32));
+// how the code looks for the inputs: its box, the place under the pointer
+function lookOf(a: App): CodeLook {
+    return lookWith(codeLook(a.advance, 1, 0, a.codeFocus), 0, 2, a.shownScroll, a.hover);
 }
 
 // the document `di` made `d`: the line of its cursor revealed in the box
@@ -1670,7 +1736,7 @@ function codeChanged(a: App, di: i64, d: Doc, fx: Effect[n]): [App, Effect[]] {
 // what the scripts read of the documents changed: their cursors, whether
 // they are saved
 function docsSig(a: App): string {
-    return join(map(a.docs, (d) => `${d.path}:${d.cursor.line}:${d.cursor.col}:${d.version}:${d.saved}`), "|");
+    return join(map(a.docs, (d) => `${d.path}:${d.cursor.line}:${d.cursor.col}:${d.anchor.line}:${d.anchor.col}:${d.others.length}:${d.version}:${d.saved}`), "|");
 }
 
 // `host.docs[path]` of each document: `line`, `col` (from 1, a tab to its
@@ -1704,7 +1770,7 @@ function docEntries(vm: lua.Vm, t: i64, docs: Doc[n], k: i64): lua.Vm {
     const [v1, e] = lua.newTable(vm, 0, 8);
     const v2 = fieldSet(fieldSet(v1, e, "line", lua.integerValue(d.cursor.line + 1)), e, "col", lua.integerValue(columnOf(d.lines[d.cursor.line], d.cursor.col) + 1));
     const v3 = fieldSet(fieldSet(v2, e, "dirty", lua.booleanValue(dirty(d))), e, "indent", lua.integerValue(d.indent));
-    const v4 = textSet(textSet(v3, e, "lang", d.lang.name), e, "eol", d.crlf ? "CRLF" : "LF");
+    const v4 = textSet(textSet(textSet(v3, e, "lang", d.lang.name), e, "eol", d.crlf ? "CRLF" : "LF"), e, "status", statusOf(d));
     const syms = symbolsAt(d);
     const [v5, st] = lua.newTable(v4, syms.length, 0);
     const v6 = symbolEntries(v5, st, syms, 0);

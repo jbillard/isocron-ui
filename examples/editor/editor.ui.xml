@@ -6,7 +6,7 @@
      tools/uigen makes examples/editor/editor_view.isc of it before
      examples/editor_app.isc is compiled. -->
 <view function="view" model="Editor" styles="../scripted/editor.style" lib="../../src"
-      import="./editor: Editor, Node, Tab, visibleNodes, when, viewTitle, shown, commandWidth, winGlyph, captionFace, captionSize, chevron, rel, crumbs, codeArea, tabDirty, found, matches, baseName, statusItems, langName, divided, FILES, NOTHING, MENU_MORE, COMMAND, CHAT, COPILOT, SIGN_IN, LAYOUT, TOGGLE_SIDEBAR, TOGGLE_PANEL, ASIDE, MINIMIZE, MAXIMIZE, CLOSE_WINDOW, ACCOUNTS, MANAGE, SIDE_MORE, ROOT_SECTION, SASH_V, SASH_H, SPLIT, TAB_MORE, QUERY, SEARCH, REMOTE, PROBLEMS, BELL, STATUS_COPILOT, LANGUAGE, MENU, ACTIVITY, SECTION, STATUS, TAB, CLOSE_TAB, MATCH, NODE, FOUND, LINE, MENUS, SECTIONS, ACTIVITY_ICONS, ACTIVITY_TIPS, I_MORE, I_BACK, I_FORWARD, I_CHAT, I_DOWN, I_RIGHT, I_COPILOT, I_LAYOUT, I_SIDEBAR_ON, I_SIDEBAR_OFF, I_PANEL_ON, I_PANEL_OFF, I_ASIDE_OFF, I_ACCOUNT, I_GEAR, I_CLOSE, I_DIRTY, I_SPLIT, I_ERROR, I_WARNING, I_BELL, I_REMOTE, I_BRACES, ICONS, SETI, MONO; ./icons: fileIcon, fileIconColor">
+      import="./editor: Editor, Node, Tab, visibleNodes, when, viewTitle, shown, commandWidth, winGlyph, captionFace, captionSize, chevron, rel, crumbs, codeArea, tabDirty, found, matches, baseName, statusItems, langName, divided, dialogMessage, dialogNames, dialogSaveText, matchesShown, DIALOG_SAVE, DIALOG_DONT, DIALOG_CANCEL, FILES, NOTHING, MENU_MORE, COMMAND, CHAT, COPILOT, SIGN_IN, LAYOUT, TOGGLE_SIDEBAR, TOGGLE_PANEL, ASIDE, MINIMIZE, MAXIMIZE, CLOSE_WINDOW, ACCOUNTS, MANAGE, SIDE_MORE, ROOT_SECTION, SASH_V, SASH_H, SPLIT, TAB_MORE, QUERY, SEARCH, REMOTE, PROBLEMS, BELL, STATUS_COPILOT, LANGUAGE, MENU, ACTIVITY, SECTION, STATUS, TAB, CLOSE_TAB, MATCH, NODE, FOUND, LINE, MENUS, SECTIONS, ACTIVITY_ICONS, ACTIVITY_TIPS, I_MORE, I_BACK, I_FORWARD, I_CHAT, I_DOWN, I_RIGHT, I_COPILOT, I_LAYOUT, I_SIDEBAR_ON, I_SIDEBAR_OFF, I_PANEL_ON, I_PANEL_OFF, I_ASIDE_OFF, I_ACCOUNT, I_GEAR, I_CLOSE, I_DIRTY, I_SPLIT, I_ERROR, I_WARNING, I_BELL, I_REMOTE, I_BRACES, ICONS, SETI, MONO; ./icons: fileIcon, fileIconColor">
   <column class="window" background="{m.windowActive ? rgb(0x191A1Bu32) : rgb(0x121314u32)}">
     <row class="titlebar" moves="true">
       <row class="titleLeft" opacity="{m.windowActive ? 1.0f32 : 0.6f32}">
@@ -140,8 +140,12 @@
         <each items="{when(m.palette)}" as="pal">
           <row class="paletteRow">
             <column class="palette">
+              <!-- (Save As: its title, the path in the field) -->
+              <each items="{when(m.saveAs)}" as="sa">
+                <row class="paletteTitle"><text class="paletteTitleText">Save As</text></row>
+              </each>
               <field class="qinput" edit="{m.query}" focused="{m.field == QUERY}" hint="Search files by name" id="{QUERY}"/>
-              <each items="{matches(m)}" as="p" index="k">
+              <each items="{matchesShown(m)}" as="p" index="k">
                 <row class="match" id="{MATCH + k}" background="{k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)}">
                   <box class="fileIcon"><text size="19.5" font="{SETI}" color="{fileIconColor(p)}">{fileIcon(p)}</text></box>
                   <text class="matchText" color="{k == m.choice ? rgb(0xFFFFFFu32) : rgb(0xBFBFBFu32)}">{baseName(p)}</text>
@@ -279,5 +283,33 @@
       <box class="statusGap"/>
       <row class="statusFirst" id="{BELL}"><text class="statusIcon" font="{ICONS}">{I_BELL}</text></row>
     </row>
+    <!-- the dialog asking to save a file changed before its tab or the
+         window closes, over the window dimmed (that of Visual Studio Code:
+         its warning, its message, its buttons) -->
+    <each items="{when(m.dialog.paths.length > 0)}" as="dlg">
+      <column class="modal" id="{NOTHING}">
+        <column class="dialog">
+          <row class="dialogTools">
+            <box width="fill"/>
+            <row class="dialogClose" id="{DIALOG_CANCEL}" tip="Close"><text class="dialogCloseIcon" font="{ICONS}">{I_CLOSE}</text></row>
+          </row>
+          <row class="dialogBody">
+            <text class="dialogIcon" font="{ICONS}">{I_WARNING}</text>
+            <column class="dialogTexts">
+              <text class="dialogMessage">{dialogMessage(m)}</text>
+              <each items="{dialogNames(m)}" as="nm">
+                <text class="dialogDetail">{nm}</text>
+              </each>
+              <text class="dialogDetail">Your changes will be lost if you don't save them.</text>
+            </column>
+          </row>
+          <row class="dialogButtons">
+            <row class="dialogPrimary" id="{DIALOG_SAVE}"><text class="dialogPrimaryText">{dialogSaveText(m)}</text></row>
+            <row class="dialogButton" id="{DIALOG_DONT}"><text class="dialogButtonText">Don't Save</text></row>
+            <row class="dialogButton" id="{DIALOG_CANCEL}"><text class="dialogButtonText">Cancel</text></row>
+          </row>
+        </column>
+      </column>
+    </each>
   </column>
 </view>

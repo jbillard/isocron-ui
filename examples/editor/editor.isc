@@ -8,10 +8,11 @@
 // and the panel shown or hidden (Ctrl+B, Ctrl+J), a tab closed (Ctrl+W).
 import { rgb, rgba, Color } from "../../src/paint";
 import * as sys from "sys";
-import { Input, Effect, Click, Drag, Release, Hover, Key, Text, Paste, Focus, Viewport, Tick, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, WriteText, ScrollTo, Reveal, ENTER, ESCAPE, UP, DOWN, WITH_CTRL, WITH_SHIFT } from "../../src/input";
+import { Input, Effect, Click, Drag, Release, Hover, Key, Text, Paste, Focus, Viewport, Tick, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, CloseAsked, WheelX, BoxSized, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, WriteText, ScrollTo, Reveal, KeepOpen, ENTER, ESCAPE, UP, DOWN, WITH_CTRL, WITH_SHIFT } from "../../src/input";
 import { Editing, editing, edited } from "../../src/edit";
-import { Doc, docOf, keyed, typedCode, pasted, textOf, saved, dirty, clickedAt, draggedTo, viewed, topFor, cursorBand, columnOf, symbolsAt, LINE_HEIGHT } from "../../src/doc";
-import { CodeLook, codeLook, codeRows, stickyOf } from "../../src/code_view";
+import { renamed } from "../../src/doc";
+import { Doc, docOf, keyed, typedCode, pasted, textOf, saved, dirty, clickedWith, draggedTo, viewed, topFor, cursorBand, columnOf, symbolsAt, boxSized, wheeledAcross, findFrom, statusOf, LINE_HEIGHT } from "../../src/doc";
+import { CodeLook, codeLook, lookWith, codeElements, columnAtX, codePartClicked, codePartDragged, rowClicked, rowDragged } from "../../src/code_view";
 import { Element } from "../../src/ui";
 
 // a file or a folder of the tree, in the order it is shown (a folder
@@ -20,6 +21,10 @@ export type Node = { path: string, name: string, dir: boolean, depth: i64, open:
 
 // a file open: its document (its lines, its cursor, its undo)
 export type Tab = { path: string, name: string, doc: Doc };
+
+// the dialog asking to save files changed (none: no paths) before the tab
+// `k` closes (`window` false) or the window
+export type Dialog = { window: boolean, k: i64, paths: string[] };
 
 export type Editor = {
     root: string, rootName: string, system: string,
@@ -30,8 +35,12 @@ export type Editor = {
     palette: boolean, query: Editing, choice: i64, search: Editing, field: i64,
     log: string[], rootOpen: boolean,
     hover: i64, pressed: i64, width: f32, height: f32, maximized: boolean, windowActive: boolean,
-    // the width of a column of the font of the code, in units
-    advance: f32,
+    // the width of a column of the font of the code, in units; the size of
+    // the box of the code
+    advance: f32, codeWidth: f32, codeHeight: f32,
+    // the dialog asking to save, what it closes once a file made is saved
+    // under a path, whether the palette asks that path, the files made
+    dialog: Dialog, afterSave: Dialog, saveAs: boolean, untitled: i64,
 };
 
 // ----- the messages of the places ---------------------------------------
@@ -66,6 +75,10 @@ export const PROBLEMS: i64 = 25;
 export const BELL: i64 = 26;
 export const STATUS_COPILOT: i64 = 27;
 export const LANGUAGE: i64 = 28;
+// (the buttons of the dialog asking to save)
+export const DIALOG_SAVE: i64 = 40;
+export const DIALOG_DONT: i64 = 41;
+export const DIALOG_CANCEL: i64 = 42;
 export const MENU: i64 = 100;
 export const ACTIVITY: i64 = 200;
 export const SECTION: i64 = 220;
@@ -73,6 +86,9 @@ export const STATUS: i64 = 240;
 export const TAB: i64 = 30000;
 export const CLOSE_TAB: i64 = 31000;
 export const MATCH: i64 = 32000;
+// (the parts of the editor of code: the widget of the search, the map, the
+// bar across; `PART` and those after it)
+export const PART: i64 = 999000;
 export const NODE: i64 = 100000;
 export const FOUND: i64 = 200000;
 export const LINE: i64 = 1000000;
@@ -142,8 +158,13 @@ export function initial(root: string, rootName: string, system: string, nodes: N
         palette: false, query: editing(""), choice: 0, search: editing(""), field: -1,
         log: ["Isocron : éditeur prêt."], rootOpen: true,
         hover: -1, pressed: -1, width: 1100.0f32, height: 720.0f32, maximized: false, windowActive: true,
-        advance: advance,
+        advance: advance, codeWidth: 0.0f32, codeHeight: 0.0f32,
+        dialog: noDialog(), afterSave: noDialog(), saveAs: false, untitled: 0,
     };
+}
+
+export function noDialog(): Dialog {
+    return { window: false, k: -1, paths: [] };
 }
 
 // the folders ignored
@@ -287,7 +308,7 @@ export function crumbs(m: Editor): Crumb[] {
 // how the code looks: the width of a column of its font, its messages
 // (LINE and the line), the focus of the keyboard in it
 function lookOf(m: Editor): CodeLook {
-    return codeLook(m.advance, MONO, LINE, m.field == CODE && m.windowActive);
+    return lookWith(codeLook(m.advance, MONO, LINE, m.field == CODE && m.windowActive), PART, ICONS, 1, m.hover);
 }
 
 // the elements of the box of the code: the lines of the blocks around the
@@ -296,8 +317,7 @@ export function codeArea(m: Editor): Element[] {
     if (m.active < 0 || m.active >= m.tabs.length) {
         return [];
     }
-    const d = m.tabs[m.active].doc;
-    return concat(stickyOf(d, lookOf(m)), codeRows(d, lookOf(m)));
+    return codeElements(m.tabs[m.active].doc, lookOf(m));
 }
 
 // the files whose path holds the letters of `text` in their order, `most`
@@ -322,6 +342,11 @@ export function matches(m: Editor): string[] {
     return found(m, m.query.text, 12);
 }
 
+// the files the palette shows: none while it asks a path (Save As)
+export function matchesShown(m: Editor): string[] {
+    return m.saveAs ? [] : matches(m);
+}
+
 export function baseName(p: string): string {
     const k = max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
     return k < 0 ? p : p.slice(k + 1, p.length);
@@ -335,8 +360,7 @@ export function statusItems(m: Editor): string[] {
         return [];
     }
     const d = m.tabs[m.active].doc;
-    const col = columnOf(d.lines[d.cursor.line], d.cursor.col) + 1;
-    return [`Ln ${d.cursor.line + 1}, Col ${col}`, `Spaces: ${d.indent}`, "UTF-8", d.crlf ? "CRLF" : "LF"];
+    return [statusOf(d), `Spaces: ${d.indent}`, "UTF-8", d.crlf ? "CRLF" : "LF"];
 }
 
 export function langName(m: Editor): string {
@@ -353,6 +377,20 @@ export function tabDirty(m: Editor, k: i64): boolean {
 // shown side by side)
 export function divided(m: Editor, k: i64): boolean {
     return k > 0 && k != m.active && k - 1 != m.active;
+}
+
+// the texts of the dialog asking to save
+export function dialogMessage(m: Editor): string {
+    const ps = m.dialog.paths;
+    return ps.length == 1 ? `Do you want to save the changes you made to ${baseName(ps[0])}?` : `Do you want to save the changes to the following ${ps.length} files?`;
+}
+
+export function dialogNames(m: Editor): string[] {
+    return m.dialog.paths.length > 1 ? map(m.dialog.paths, baseName) : [];
+}
+
+export function dialogSaveText(m: Editor): string {
+    return m.dialog.paths.length > 1 ? "Save All" : "Save";
 }
 
 // ----- what the inputs do -----------------------------------------------
@@ -378,7 +416,8 @@ function readIn(m: Editor, path: string, text: string, ok: boolean): Editor {
     }
     const name = baseName(path);
     const binary = text.indexOf("\u{0}") >= 0;
-    const doc = docOf(path, binary ? "The file is not displayed in the text editor because it is either binary or uses an unsupported text encoding." : text);
+    const doc0 = boxSized(docOf(path, binary ? "The file is not displayed in the text editor because it is either binary or uses an unsupported text encoding." : text), m.codeWidth, m.codeHeight, m.advance);
+    const doc = m.active >= 0 && m.active < m.tabs.length ? findFrom(doc0, m.tabs[m.active].doc) : doc0;
     const tab = { path: path, name: name, doc: doc };
     return say({ ...m, tabs: concat(m.tabs, [tab]), active: m.tabs.length, current: path }, `Ouvert : ${rel(m, path)} (${doc.lines.length} lignes)`);
 }
@@ -425,6 +464,9 @@ function showView(m: Editor, v: i64): Editor {
 }
 
 function openChoice(m: Editor): [Editor, Effect[]] {
+    if (m.saveAs) {
+        return savedAs(m, m.query.text);
+    }
     const ms = matches(m);
     // (the file found opened, the keyboard then in its code)
     const m1 = { ...m, palette: false, field: CODE };
@@ -432,7 +474,128 @@ function openChoice(m: Editor): [Editor, Effect[]] {
 }
 
 function togglePalette(m: Editor): Editor {
-    return { ...m, palette: !m.palette, query: editing(""), choice: 0, field: m.palette ? -1 : QUERY };
+    return { ...m, palette: !m.palette, saveAs: false, query: editing(""), choice: 0, field: m.palette ? -1 : QUERY };
+}
+
+// ----- the files made, saved, not saved -----------------------------------
+
+// whether `p` is a file made and never saved (Untitled-1, ...)
+function isUntitled(p: string): boolean {
+    const b = bytes(p);
+    return p.startsWith("Untitled-") && b.length > 9 && count(iota(b.length - 9), (j) => b[9 + j] < 48u8 || b[9 + j] > 57u8) == 0;
+}
+
+// the paths of the tabs whose files changed and are not saved
+function dirtyPaths(m: Editor): string[] {
+    return map(filter(m.tabs, (t) => dirty(t.doc)), (t) => t.path);
+}
+
+// Ctrl+N: a file made, empty, in a tab of its own
+function newFile(m: Editor): Editor {
+    const n = m.untitled + 1;
+    const path = `Untitled-${n}`;
+    const doc = boxSized(docOf(path, ""), m.codeWidth, m.codeHeight, m.advance);
+    return { ...m, untitled: n, tabs: concat(m.tabs, [{ path: path, name: path, doc: doc }]), active: m.tabs.length, current: path, field: CODE };
+}
+
+// Ctrl+Shift+S: the palette asks the path the file is saved under (that of
+// the file, else the folder and its name)
+function openSaveAs(m: Editor): Editor {
+    if (m.active < 0 || m.active >= m.tabs.length) {
+        return m;
+    }
+    const t = m.tabs[m.active];
+    return { ...m, palette: true, saveAs: true, query: editing(isUntitled(t.path) ? joined(m.root, t.name) : t.path), choice: 0, field: QUERY };
+}
+
+// Ctrl+S: the file of the tab written (a file made: its path asked)
+function saveActive(m: Editor): [Editor, Effect[]] {
+    if (m.active < 0 || m.active >= m.tabs.length) {
+        return [m, []] as const;
+    }
+    return isUntitled(m.tabs[m.active].path) ? [openSaveAs(m), []] as const : save(m);
+}
+
+// the file of the tab saved under `to`: the tab renamed, written there,
+// shown in the tree; what the dialog closes then closed
+function savedAs(m: Editor, to: string): [Editor, Effect[]] {
+    const m0 = { ...m, palette: false, saveAs: false, field: CODE };
+    if (m.active < 0 || m.active >= m.tabs.length || to == "") {
+        return [m0, []] as const;
+    }
+    const t = m.tabs[m.active];
+    const doc = renamed(t.doc, to);
+    const m1 = nodeAdded({ ...m0, tabs: map(iota(m.tabs.length), (k) => k == m.active ? { path: to, name: baseName(to), doc: doc } : m.tabs[k]), current: to }, to);
+    const fx = [WriteText(to, textOf(doc))];
+    if (m.afterSave.paths.length == 0) {
+        return [m1, fx] as const;
+    }
+    const [m2, fx2] = closeAfter({ ...m1, afterSave: noDialog() }, m.afterSave);
+    return [m2, concat(fx, fx2)] as const;
+}
+
+// the node of the file `path` added to the tree, among the files of its
+// folder in their order (its folder shown, the file not in it)
+function nodeAdded(m: Editor, path: string): Editor {
+    if (findIndex(m.nodes, (x) => x.path == path) >= 0) {
+        return m;
+    }
+    const k = max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+    const dir = k < 0 ? "." : path.slice(0, k);
+    const name = path.slice(k + 1, path.length);
+    const atRoot = dir == m.root || (k < 0 && m.root == ".");
+    const parent = atRoot ? -1 : findIndex(m.nodes, (x) => x.dir && x.path == dir);
+    if (!atRoot && parent < 0) {
+        return { ...m, files: concat(m.files, [path]) };
+    }
+    const depth = atRoot ? 0 : m.nodes[parent].depth + 1;
+    // (the end of the folder: the first node after it no deeper than it)
+    const from = parent + 1;
+    const endRel = findIndex(iota(max(0, m.nodes.length - from)), (j) => m.nodes[from + j].depth < depth);
+    const end = endRel < 0 ? m.nodes.length : from + endRel;
+    const key = nameKey(name);
+    const beforeRel = findIndex(iota(end - from), (j) => {
+        const x = m.nodes[from + j];
+        return x.depth == depth && !x.dir && nameKey(x.name) > key;
+    });
+    const at = beforeRel < 0 ? end : from + beforeRel;
+    const node = { path: path, name: name, dir: false, depth: depth, open: false, loaded: false };
+    return { ...m, nodes: map(iota(m.nodes.length + 1), (j) => j < at ? m.nodes[j] : (j == at ? node : m.nodes[j - 1])), files: concat(m.files, [path]) };
+}
+
+// the tab `k` closed, its file asked to be saved first when it changed
+function requestCloseTab(m: Editor, k: i64): Editor {
+    if (k < 0 || k >= m.tabs.length) {
+        return m;
+    }
+    return dirty(m.tabs[k].doc) ? { ...m, dialog: { window: false, k: k, paths: [m.tabs[k].path] }, field: -1 } : closed(m, k);
+}
+
+// the window asks to close: its files changed asked to be saved first
+// (kept open meanwhile)
+function beforeClose(m: Editor): [Editor, Effect[]] {
+    const ps = dirtyPaths(m);
+    return ps.length == 0 ? [m, [CloseWindow]] as const : [{ ...m, dialog: { window: true, k: -1, paths: ps }, field: -1 }, [KeepOpen]] as const;
+}
+
+// what the dialog closes, its files saved or not
+function closeAfter(m: Editor, dl: Dialog): [Editor, Effect[]] {
+    return dl.window ? [m, [CloseWindow]] as const : [closed(m, dl.k), []] as const;
+}
+
+// the buttons of the dialog: the files saved (a file made: its path asked
+// first), then the tab or the window closed; not saved; nothing done
+function dialogSave(m: Editor): [Editor, Effect[]] {
+    const dl = m.dialog;
+    const m0 = { ...m, dialog: noDialog() };
+    const u = findIndex(dl.paths, (p) => isUntitled(p));
+    if (u >= 0) {
+        const k = findIndex(m.tabs, (t) => t.path == dl.paths[u]);
+        return [openSaveAs({ ...m0, active: k, current: dl.paths[u], afterSave: dl }), []] as const;
+    }
+    const writes = map(filter(m.tabs, (t) => findIndex(dl.paths, (p) => p == t.path) >= 0), (t) => WriteText(t.path, textOf(t.doc)));
+    const [m1, fx] = closeAfter(m0, dl);
+    return [{ ...m1, field: CODE }, concat(writes, fx)] as const;
 }
 
 // the document of the tab shown changed by `f`
@@ -444,7 +607,7 @@ function withDoc(m: Editor, f: (Doc) => Doc): Editor {
 // the column of the code under the pointer at `x` units from the left of
 // a line (its number and the gap after it before the code)
 function columnAt(m: Editor, x: f32): i64 {
-    return i64(floor((x - 42.4f32 - 25.6f32) / m.advance + 0.5f32));
+    return m.active >= 0 && m.active < m.tabs.length ? columnAtX(m.tabs[m.active].doc, lookOf(m), x) : 0;
 }
 
 // the document changed by a key: the line of its cursor revealed in the
@@ -495,7 +658,17 @@ function clicked(m: Editor, p: i64, i: Input): [Editor, Effect[]] {
         return [m0, [ToggleMaximized]] as const;
     }
     if (p == CLOSE_WINDOW) {
-        return [m0, [CloseWindow]] as const;
+        return beforeClose(m0);
+    }
+    if (p == DIALOG_SAVE) {
+        return dialogSave(m0);
+    }
+    if (p == DIALOG_DONT) {
+        const [m1, fx] = closeAfter({ ...m0, dialog: noDialog(), field: CODE }, m.dialog);
+        return [m1, fx] as const;
+    }
+    if (p == DIALOG_CANCEL) {
+        return [{ ...m0, dialog: noDialog(), field: CODE }, []] as const;
     }
     if (p == ROOT_SECTION) {
         return [{ ...m0, rootOpen: !m.rootOpen }, []] as const;
@@ -510,13 +683,23 @@ function clicked(m: Editor, p: i64, i: Input): [Editor, Effect[]] {
         return [showView(m0, p - ACTIVITY), []] as const;
     }
     if (p >= LINE) {
-        // (the cursor at the line clicked, at the column under the pointer)
+        // (the cursor at the line clicked, at the column under the pointer;
+        // with Alt, a cursor more)
         return match (i) {
-            Click(q, x, y, at, clicks, mods) => [withDoc({ ...m0, field: CODE }, (d) => clickedAt(d, p - LINE, columnAt(m, x), clicks, (mods & WITH_SHIFT) != 0)), []] as const,
+            Click(q, x, y, at, clicks, mods) => [withDoc({ ...m0, field: CODE }, (d) => rowClicked(d, lookOf(m), p - LINE, x, clicks, mods)), []] as const,
             _ => [m0, []] as const,
         };
     }
-    if (p >= FOUND && p < LINE) {
+    if (p >= PART && p < PART + 100) {
+        // (a part of the editor of code: the widget of the search, the map,
+        // the bar across)
+        if (m.active < 0 || m.active >= m.tabs.length) {
+            return [m0, []] as const;
+        }
+        const [d1, fx] = codePartClicked(m.tabs[m.active].doc, lookOf(m), p - PART, i);
+        return docChanged({ ...m0, field: CODE }, d1, fx);
+    }
+    if (p >= FOUND && p < PART) {
         const hits = found(m, m.search.text, 200);
         return p - FOUND < hits.length ? opened(m0, hits[p - FOUND]) : [m0, []] as const;
     }
@@ -527,19 +710,38 @@ function clicked(m: Editor, p: i64, i: Input): [Editor, Effect[]] {
         return openChoice({ ...m0, choice: p - MATCH });
     }
     if (p >= CLOSE_TAB && p < MATCH) {
-        return [closed(m0, p - CLOSE_TAB), []] as const;
+        return [requestCloseTab(m0, p - CLOSE_TAB), []] as const;
     }
     if (p >= TAB && p < CLOSE_TAB) {
         const k = p - TAB;
-        return k < m.tabs.length ? [{ ...m0, active: k, current: m.tabs[k].path, field: CODE }, [ScrollTo(1, m.tabs[k].doc.top)]] as const : [m0, []] as const;
+        return k < m.tabs.length ? [shownTab(m0, k), [ScrollTo(1, m.tabs[k].doc.top)]] as const : [m0, []] as const;
     }
     return [m0, []] as const;
+}
+
+// the tab `k` shown: the widget of the search of the one shown before kept
+function shownTab(m: Editor, k: i64): Editor {
+    const before = m.active;
+    const tabs = before >= 0 && before < m.tabs.length && before != k
+        ? map(iota(m.tabs.length), (j) => j == k ? { ...m.tabs[j], doc: findFrom(m.tabs[j].doc, m.tabs[before].doc) } : m.tabs[j]) : m.tabs;
+    return { ...m, tabs: tabs, active: k, current: m.tabs[k].path, field: CODE };
 }
 
 // a key held with Ctrl or one that edits: the shortcuts, then the field
 // with the focus
 function shortcut(m: Editor, k: i64, mods: i64, i: Input): [Editor, Effect[]] {
     const ctrl = (mods & WITH_CTRL) != 0;
+    const shift = (mods & WITH_SHIFT) != 0;
+    // (the dialog: Enter saves, Escape cancels, the other keys nothing)
+    if (m.dialog.paths.length > 0) {
+        return k == ENTER ? dialogSave(m) : (k == ESCAPE ? [{ ...m, dialog: noDialog(), field: CODE }, []] as const : [m, []] as const);
+    }
+    if (ctrl && k == 110) {
+        return [newFile(m), []] as const;
+    }
+    if (ctrl && shift && k == 115) {
+        return [openSaveAs(m), []] as const;
+    }
     if (ctrl && k == 112) {
         return [togglePalette(m), []] as const;
     }
@@ -550,14 +752,14 @@ function shortcut(m: Editor, k: i64, mods: i64, i: Input): [Editor, Effect[]] {
         return [{ ...m, panelShown: !m.panelShown }, []] as const;
     }
     if (ctrl && k == 119) {
-        return [closed(m, m.active), []] as const;
+        return [requestCloseTab(m, m.active), []] as const;
     }
     if (ctrl && k == 115) {
-        return save(m);
+        return saveActive(m);
     }
     if (m.palette) {
         if (k == ESCAPE) {
-            return [{ ...m, palette: false, field: -1 }, []] as const;
+            return [{ ...m, palette: false, saveAs: false, afterSave: noDialog(), field: m.active >= 0 ? CODE : -1 }, []] as const;
         }
         if (k == DOWN) {
             return [{ ...m, choice: min(m.choice + 1, max(0, matches(m).length - 1)) }, []] as const;
@@ -572,8 +774,11 @@ function shortcut(m: Editor, k: i64, mods: i64, i: Input): [Editor, Effect[]] {
     return typed(m, i);
 }
 
-// an input given to the field with the focus
+// an input given to the field with the focus (none while the dialog asks)
 function typed(m: Editor, i: Input): [Editor, Effect[]] {
+    if (m.dialog.paths.length > 0) {
+        return [m, []] as const;
+    }
     if (m.field == QUERY) {
         const [f, fx, own] = edited(m.query, i, QUERY);
         return [{ ...m, query: f, choice: f.text == m.query.text ? m.choice : 0 }, fx] as const;
@@ -613,24 +818,38 @@ export function update(m: Editor, i: Input): [Editor, Effect[]] {
             if (p == SASH_H) {
                 return [{ ...m, panelHeight: max(60.0f32, min(400.0f32, m.from - (y - m.pressY))) }, []] as const;
             }
+            // (a drag from a part of the editor of code: the thumb of its map,
+            // of its bar across; the selection of a field of its search)
+            if (p >= PART && p < PART + 100 && m.active >= 0 && m.active < m.tabs.length) {
+                const [d1, fx] = codePartDragged(m.tabs[m.active].doc, lookOf(m), p - PART, i);
+                return [withDoc(m, (d) => d1), fx] as const;
+            }
             // (a drag from a line of the code: the selection to the line and the
             // column under the pointer)
             if (p >= LINE && m.field == CODE) {
-                const line = p - LINE + i64(floor(y / LINE_HEIGHT));
-                const m1 = withDoc(m, (d) => draggedTo(d, line, columnAt(m, x)));
+                const m1 = withDoc(m, (d) => rowDragged(d, lookOf(m), p - LINE, x, y));
                 return m1.active >= 0 ? docChanged(m1, m1.tabs[m1.active].doc, []) : [m1, []] as const;
             }
             return p == m.field ? typed(m, i) : [m, []] as const;
         },
         Release(p) => [{ ...m, pressed: -1 }, []] as const,
         Key(k, mods) => shortcut(m, k, mods, i),
-        Viewport(k, offset, height) => [k == 1 ? withDoc(m, (d) => viewed(d, offset, height)) : m, []] as const,
+        Viewport(k, offset, height) => [k == 1 ? withDoc(m, (d) => viewed(d, offset, d.height)) : m, []] as const,
+        // (the box of the code laid out: each document told its size)
+        BoxSized(k, w, h) => [k == 1 ? { ...m, codeWidth: w, codeHeight: h, tabs: map(m.tabs, (t) => ({ ...t, doc: boxSized(t.doc, w, h, m.advance) })) } : m, []] as const,
+        // (the wheel across over the code: it scrolls across)
+        WheelX(p, dx) => [(p >= LINE || (p >= PART && p < PART + 100)) ? withDoc(m, (d) => wheeledAcross(d, dx)) : m, []] as const,
         TextWritten(p, ok, reason) => [written(m, p, ok, reason), []] as const,
         TextRead(p, t, ok) => [readIn(m, p, t, ok), []] as const,
         FolderListed(p, names, ok) => [listedIn(m, p, names, ok), []] as const,
         WindowState(z) => [{ ...m, maximized: z }, []] as const,
         WindowSize(w, h) => [{ ...m, width: w, height: h }, []] as const,
         WindowActive(z) => [{ ...m, windowActive: z }, []] as const,
+        // (the window asks to close: its files changed asked to be saved)
+        CloseAsked => {
+            const [m1, fx] = beforeClose(m);
+            return [m1, filter(fx, (e) => e != CloseWindow)] as const;
+        },
         Focus(p) => [{ ...m, field: p == QUERY || p == SEARCH ? p : (m.field == CODE ? CODE : -1) }, []] as const,
         _ => typed(m, i),
     };

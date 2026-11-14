@@ -4,7 +4,7 @@ import { Element, Div, Label, Px, Fill, Auto, Row, Column, Packed, Between, styl
 import { Start, Center, End } from "../../src/text";
 import { editing } from "../../src/edit";
 import { button, iconButton, textField, checkbox, toggleAt, progress, restyled, retexted } from "../../src/widgets";
-import { Editor, Node, Tab, visibleNodes, when, viewTitle, shown, commandWidth, winGlyph, captionFace, captionSize, chevron, rel, crumbs, codeArea, tabDirty, found, matches, baseName, statusItems, langName, divided, FILES, NOTHING, MENU_MORE, COMMAND, CHAT, COPILOT, SIGN_IN, LAYOUT, TOGGLE_SIDEBAR, TOGGLE_PANEL, ASIDE, MINIMIZE, MAXIMIZE, CLOSE_WINDOW, ACCOUNTS, MANAGE, SIDE_MORE, ROOT_SECTION, SASH_V, SASH_H, SPLIT, TAB_MORE, QUERY, SEARCH, REMOTE, PROBLEMS, BELL, STATUS_COPILOT, LANGUAGE, MENU, ACTIVITY, SECTION, STATUS, TAB, CLOSE_TAB, MATCH, NODE, FOUND, LINE, MENUS, SECTIONS, ACTIVITY_ICONS, ACTIVITY_TIPS, I_MORE, I_BACK, I_FORWARD, I_CHAT, I_DOWN, I_RIGHT, I_COPILOT, I_LAYOUT, I_SIDEBAR_ON, I_SIDEBAR_OFF, I_PANEL_ON, I_PANEL_OFF, I_ASIDE_OFF, I_ACCOUNT, I_GEAR, I_CLOSE, I_DIRTY, I_SPLIT, I_ERROR, I_WARNING, I_BELL, I_REMOTE, I_BRACES, ICONS, SETI, MONO } from "./editor";
+import { Editor, Node, Tab, visibleNodes, when, viewTitle, shown, commandWidth, winGlyph, captionFace, captionSize, chevron, rel, crumbs, codeArea, tabDirty, found, matches, baseName, statusItems, langName, divided, dialogMessage, dialogNames, dialogSaveText, matchesShown, DIALOG_SAVE, DIALOG_DONT, DIALOG_CANCEL, FILES, NOTHING, MENU_MORE, COMMAND, CHAT, COPILOT, SIGN_IN, LAYOUT, TOGGLE_SIDEBAR, TOGGLE_PANEL, ASIDE, MINIMIZE, MAXIMIZE, CLOSE_WINDOW, ACCOUNTS, MANAGE, SIDE_MORE, ROOT_SECTION, SASH_V, SASH_H, SPLIT, TAB_MORE, QUERY, SEARCH, REMOTE, PROBLEMS, BELL, STATUS_COPILOT, LANGUAGE, MENU, ACTIVITY, SECTION, STATUS, TAB, CLOSE_TAB, MATCH, NODE, FOUND, LINE, MENUS, SECTIONS, ACTIVITY_ICONS, ACTIVITY_TIPS, I_MORE, I_BACK, I_FORWARD, I_CHAT, I_DOWN, I_RIGHT, I_COPILOT, I_LAYOUT, I_SIDEBAR_ON, I_SIDEBAR_OFF, I_PANEL_ON, I_PANEL_OFF, I_ASIDE_OFF, I_ACCOUNT, I_GEAR, I_CLOSE, I_DIRTY, I_SPLIT, I_ERROR, I_WARNING, I_BELL, I_REMOTE, I_BRACES, ICONS, SETI, MONO } from "./editor";
 import { fileIcon, fileIconColor } from "./icons";
 
 function cls_window(s: Style): Style {
@@ -1103,9 +1103,169 @@ function text_statusIcon(s: TextStyle): TextStyle {
     return { ...s, em: 14.0f32, color: rgb(0x8C8C8Cu32) };
 }
 
+function cls_paletteTitle(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(22.0f32), justify: Packed(Center), align: Center, stretch: false };
+}
+
+function text_paletteTitle(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_paletteTitleText(s: Style): Style {
+    return s;
+}
+
+function text_paletteTitleText(s: TextStyle): TextStyle {
+    return { ...s, em: 12.0f32, color: rgb(0xBFBFBFu32) };
+}
+
+function cls_modal(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Fill(1.0f32), floating: true, background: rgba(0.0f32, 0.0f32, 0.0f32, 0.3f32), justify: Packed(Center), align: Center, stretch: false, cursor: ARROW };
+}
+
+function text_modal(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_dialog(s: Style): Style {
+    return { ...s, width: Px(520.0f32), padding: 10.0f32, gap: 14.0f32, radius: 8.0f32, background: rgb(0x202122u32), border: 1.0f32, borderColor: rgb(0x2A2B2Cu32), shadowBlur: 16.0f32, shadowY: 4.0f32, shadowColor: rgba(0.0f32, 0.0f32, 0.0f32, 0.36f32) };
+}
+
+function text_dialog(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_dialogTools(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), height: Px(22.0f32), direction: Row, align: Center, stretch: false };
+}
+
+function text_dialogTools(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_dialogClose(s: Style): Style {
+    return { ...s, width: Px(22.0f32), height: Px(22.0f32), radius: 4.0f32, justify: Packed(Center), align: Center, stretch: false };
+}
+
+function text_dialogClose(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_dialogClose__hover(s: Style): Style {
+    return { ...s, background: rgba(1.0f32, 1.0f32, 1.0f32, 0.1f32) };
+}
+
+function text_dialogClose__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_dialogCloseIcon(s: Style): Style {
+    return s;
+}
+
+function text_dialogCloseIcon(s: TextStyle): TextStyle {
+    return { ...s, em: 16.0f32, color: rgb(0xCCCCCCu32) };
+}
+
+function cls_dialogBody(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), padX: 10.0f32, gap: 24.0f32, direction: Row, align: Start, stretch: false };
+}
+
+function text_dialogBody(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_dialogIcon(s: Style): Style {
+    return s;
+}
+
+function text_dialogIcon(s: TextStyle): TextStyle {
+    return { ...s, em: 48.0f32, color: rgb(0xCCA700u32) };
+}
+
+function cls_dialogTexts(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), gap: 4.0f32 };
+}
+
+function text_dialogTexts(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_dialogMessage(s: Style): Style {
+    return s;
+}
+
+function text_dialogMessage(s: TextStyle): TextStyle {
+    return { ...s, em: 18.0f32, color: rgb(0xCCCCCCu32) };
+}
+
+function cls_dialogDetail(s: Style): Style {
+    return s;
+}
+
+function text_dialogDetail(s: TextStyle): TextStyle {
+    return { ...s, em: 13.0f32, color: rgb(0xBFBFBFu32) };
+}
+
+function cls_dialogButtons(s: Style): Style {
+    return { ...s, width: Fill(1.0f32), padY: 0.0f32, gap: 10.0f32, direction: Row, justify: Packed(End), align: Center, stretch: false };
+}
+
+function text_dialogButtons(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_dialogPrimary(s: Style): Style {
+    return { ...s, height: Px(28.0f32), padX: 12.0f32, radius: 4.0f32, background: rgb(0x297AA0u32), justify: Packed(Center), align: Center, stretch: false };
+}
+
+function text_dialogPrimary(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_dialogPrimary__hover(s: Style): Style {
+    return { ...s, background: rgb(0x2B7DA3u32) };
+}
+
+function text_dialogPrimary__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_dialogPrimaryText(s: Style): Style {
+    return s;
+}
+
+function text_dialogPrimaryText(s: TextStyle): TextStyle {
+    return { ...s, em: 13.0f32, color: rgb(0xFFFFFFu32) };
+}
+
+function cls_dialogButton(s: Style): Style {
+    return { ...s, height: Px(28.0f32), padX: 12.0f32, radius: 4.0f32, background: rgb(0x313233u32), justify: Packed(Center), align: Center, stretch: false };
+}
+
+function text_dialogButton(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_dialogButton__hover(s: Style): Style {
+    return { ...s, background: rgb(0x3A3B3Cu32) };
+}
+
+function text_dialogButton__hover(s: TextStyle): TextStyle {
+    return s;
+}
+
+function cls_dialogButtonText(s: Style): Style {
+    return s;
+}
+
+function text_dialogButtonText(s: TextStyle): TextStyle {
+    return { ...s, em: 13.0f32, color: rgb(0xCCCCCCu32) };
+}
+
 export function view(m: Editor): Element {
     return 
-        /* examples/editor/editor.ui.xml:10 */ Div({ ...cls_window({ ...style(), direction: Column }), background: (m.windowActive ? rgb(0x191A1Bu32) : rgb(0x121314u32)) }, concat(concat(concat([
+        /* examples/editor/editor.ui.xml:10 */ Div({ ...cls_window({ ...style(), direction: Column }), background: (m.windowActive ? rgb(0x191A1Bu32) : rgb(0x121314u32)) }, concat(concat(concat(concat([
         /* examples/editor/editor.ui.xml:11 */ Div({ ...cls_titlebar({ ...style(), direction: Row }), moves: true }, concat(concat([
         /* examples/editor/editor.ui.xml:12 */ Div({ ...cls_titleLeft({ ...style(), direction: Row }), opacity: (m.windowActive ? 1.0f32 : 0.6f32) }, concat([
         /* examples/editor/editor.ui.xml:13 */ Div(cls_appIcon(style()), [
@@ -1253,164 +1413,194 @@ export function view(m: Editor): Element {
         const pal = (when(m.palette))[index];
         return 
         /* examples/editor/editor.ui.xml:141 */ Div(cls_paletteRow({ ...style(), direction: Row }), [
-        /* examples/editor/editor.ui.xml:142 */ Div(cls_palette({ ...style(), direction: Column }), concat([
-        /* examples/editor/editor.ui.xml:143 */ retexted(restyled(textField((m.query), (m.field == QUERY), "Search files by name", (QUERY), Fill(1.0f32)), (s) => ((m.field == QUERY) ? cls_qinput__focus(cls_qinput(s)) : cls_qinput(s))), (t) => text_qinput(t))], map(iota((matches(m)).length), (k) => {
-        const p = (matches(m))[k];
+        /* examples/editor/editor.ui.xml:142 */ Div(cls_palette({ ...style(), direction: Column }), concat(concat(map(iota((when(m.saveAs)).length), (index) => {
+        const sa = (when(m.saveAs))[index];
         return 
-        /* examples/editor/editor.ui.xml:145 */ Div((m.pressed == ((MATCH + k)) ? (m.hover == ((MATCH + k)) ? { ...cls_match__hover(cls_match({ ...style(), direction: Row })), background: (k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (MATCH + k) } : { ...cls_match({ ...style(), direction: Row }), background: (k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (MATCH + k) }) : (m.hover == ((MATCH + k)) ? { ...cls_match__hover(cls_match({ ...style(), direction: Row })), background: (k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (MATCH + k) } : { ...cls_match({ ...style(), direction: Row }), background: (k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (MATCH + k) })), concat(concat([
-        /* examples/editor/editor.ui.xml:146 */ Div(cls_fileIcon(style()), [
-        /* examples/editor/editor.ui.xml:146 */ Label({ ...textStyle(19.5f32, (fileIconColor(p))), face: (SETI) }, `${fileIcon(p)}`)])], [
-        /* examples/editor/editor.ui.xml:147 */ Label({ ...text_matchText(textStyle(14.0f32, (k == m.choice ? rgb(0xFFFFFFu32) : rgb(0xBFBFBFu32)))), color: (k == m.choice ? rgb(0xFFFFFFu32) : rgb(0xBFBFBFu32)) }, `${baseName(p)}`)]), [
-        /* examples/editor/editor.ui.xml:148 */ Label({ ...text_matchPath(textStyle(14.0f32, (k == m.choice ? rgb(0xFFFFFFu32) : rgb(0x8C8C8Cu32)))), color: (k == m.choice ? rgb(0xFFFFFFu32) : rgb(0x8C8C8Cu32)) }, `${rel(m, p)}`)]));
+        /* examples/editor/editor.ui.xml:145 */ Div(cls_paletteTitle({ ...style(), direction: Row }), [
+        /* examples/editor/editor.ui.xml:145 */ Label(text_paletteTitleText(textStyle(14.0f32, rgb(0x111827u32))), `Save As`)]);
+    }), [
+        /* examples/editor/editor.ui.xml:147 */ retexted(restyled(textField((m.query), (m.field == QUERY), "Search files by name", (QUERY), Fill(1.0f32)), (s) => ((m.field == QUERY) ? cls_qinput__focus(cls_qinput(s)) : cls_qinput(s))), (t) => text_qinput(t))]), map(iota((matchesShown(m)).length), (k) => {
+        const p = (matchesShown(m))[k];
+        return 
+        /* examples/editor/editor.ui.xml:149 */ Div((m.pressed == ((MATCH + k)) ? (m.hover == ((MATCH + k)) ? { ...cls_match__hover(cls_match({ ...style(), direction: Row })), background: (k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (MATCH + k) } : { ...cls_match({ ...style(), direction: Row }), background: (k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (MATCH + k) }) : (m.hover == ((MATCH + k)) ? { ...cls_match__hover(cls_match({ ...style(), direction: Row })), background: (k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (MATCH + k) } : { ...cls_match({ ...style(), direction: Row }), background: (k == m.choice ? rgb(0x297AA0u32) : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32)), onClick: (MATCH + k) })), concat(concat([
+        /* examples/editor/editor.ui.xml:150 */ Div(cls_fileIcon(style()), [
+        /* examples/editor/editor.ui.xml:150 */ Label({ ...textStyle(19.5f32, (fileIconColor(p))), face: (SETI) }, `${fileIcon(p)}`)])], [
+        /* examples/editor/editor.ui.xml:151 */ Label({ ...text_matchText(textStyle(14.0f32, (k == m.choice ? rgb(0xFFFFFFu32) : rgb(0xBFBFBFu32)))), color: (k == m.choice ? rgb(0xFFFFFFu32) : rgb(0xBFBFBFu32)) }, `${baseName(p)}`)]), [
+        /* examples/editor/editor.ui.xml:152 */ Label({ ...text_matchPath(textStyle(14.0f32, (k == m.choice ? rgb(0xFFFFFFu32) : rgb(0x8C8C8Cu32)))), color: (k == m.choice ? rgb(0xFFFFFFu32) : rgb(0x8C8C8Cu32)) }, `${rel(m, p)}`)]));
     })))]);
     }), [
-        /* examples/editor/editor.ui.xml:154 */ Div(cls_editorCard({ ...style(), direction: Column }), concat(map(iota((when(m.tabs.length > 0)).length), (index) => {
+        /* examples/editor/editor.ui.xml:158 */ Div(cls_editorCard({ ...style(), direction: Column }), concat(map(iota((when(m.tabs.length > 0)).length), (index) => {
         const strip = (when(m.tabs.length > 0))[index];
         return 
-        /* examples/editor/editor.ui.xml:156 */ Div({ ...{ ...style(), direction: Column }, width: Fill(1.0f32) }, concat([
-        /* examples/editor/editor.ui.xml:157 */ Div(cls_tabs({ ...style(), direction: Row }), concat(concat(map(iota((m.tabs).length), (k) => {
+        /* examples/editor/editor.ui.xml:160 */ Div({ ...{ ...style(), direction: Column }, width: Fill(1.0f32) }, concat([
+        /* examples/editor/editor.ui.xml:161 */ Div(cls_tabs({ ...style(), direction: Row }), concat(concat(map(iota((m.tabs).length), (k) => {
         const t = (m.tabs)[k];
         return 
-        /* examples/editor/editor.ui.xml:159 */ Div({ ...style(), direction: Column }, concat(map(iota((when(k != m.active)).length), (index) => {
+        /* examples/editor/editor.ui.xml:163 */ Div({ ...style(), direction: Column }, concat(map(iota((when(k != m.active)).length), (index) => {
         const x = (when(k != m.active))[index];
         return 
-        /* examples/editor/editor.ui.xml:161 */ Div((m.pressed == ((TAB + k)) ? (m.hover == ((TAB + k)) ? { ...cls_tab__hover(cls_tab({ ...style(), direction: Row })), onClick: (TAB + k) } : { ...cls_tab({ ...style(), direction: Row }), onClick: (TAB + k) }) : (m.hover == ((TAB + k)) ? { ...cls_tab__hover(cls_tab({ ...style(), direction: Row })), onClick: (TAB + k) } : { ...cls_tab({ ...style(), direction: Row }), onClick: (TAB + k) })), concat(concat(concat(concat(concat(map(iota((when(divided(m, k))).length), (index) => {
+        /* examples/editor/editor.ui.xml:165 */ Div((m.pressed == ((TAB + k)) ? (m.hover == ((TAB + k)) ? { ...cls_tab__hover(cls_tab({ ...style(), direction: Row })), onClick: (TAB + k) } : { ...cls_tab({ ...style(), direction: Row }), onClick: (TAB + k) }) : (m.hover == ((TAB + k)) ? { ...cls_tab__hover(cls_tab({ ...style(), direction: Row })), onClick: (TAB + k) } : { ...cls_tab({ ...style(), direction: Row }), onClick: (TAB + k) })), concat(concat(concat(concat(concat(map(iota((when(divided(m, k))).length), (index) => {
         const d = (when(divided(m, k)))[index];
         return 
-        /* examples/editor/editor.ui.xml:162 */ Div({ ...{ ...style(), direction: Row }, align: Center, stretch: false }, concat([
-        /* examples/editor/editor.ui.xml:162 */ Div(cls_tabDivider(style()), [])], [
-        /* examples/editor/editor.ui.xml:162 */ Div({ ...style(), width: Px(5.0f32), height: Px(1.0f32) }, [])]));
+        /* examples/editor/editor.ui.xml:166 */ Div({ ...{ ...style(), direction: Row }, align: Center, stretch: false }, concat([
+        /* examples/editor/editor.ui.xml:166 */ Div(cls_tabDivider(style()), [])], [
+        /* examples/editor/editor.ui.xml:166 */ Div({ ...style(), width: Px(5.0f32), height: Px(1.0f32) }, [])]));
     }), map(iota((when(!divided(m, k))).length), (index) => {
         const d = (when(!divided(m, k)))[index];
         return 
-        /* examples/editor/editor.ui.xml:163 */ Div(cls_tabPad(style()), []);
+        /* examples/editor/editor.ui.xml:167 */ Div(cls_tabPad(style()), []);
     })), [
-        /* examples/editor/editor.ui.xml:164 */ Div(cls_fileIcon(style()), [
-        /* examples/editor/editor.ui.xml:164 */ Label({ ...textStyle(19.5f32, (fileIconColor(t.name))), face: (SETI) }, `${fileIcon(t.name)}`)])]), [
-        /* examples/editor/editor.ui.xml:165 */ Div(cls_tabGap(style()), [])]), [
-        /* examples/editor/editor.ui.xml:166 */ Label(textStyle(13.0f32, rgb(0x8C8C8Cu32)), `${t.name}`)]), [
-        /* examples/editor/editor.ui.xml:167 */ Div(cls_tabEnd(style()), [])]));
+        /* examples/editor/editor.ui.xml:168 */ Div(cls_fileIcon(style()), [
+        /* examples/editor/editor.ui.xml:168 */ Label({ ...textStyle(19.5f32, (fileIconColor(t.name))), face: (SETI) }, `${fileIcon(t.name)}`)])]), [
+        /* examples/editor/editor.ui.xml:169 */ Div(cls_tabGap(style()), [])]), [
+        /* examples/editor/editor.ui.xml:170 */ Label(textStyle(13.0f32, rgb(0x8C8C8Cu32)), `${t.name}`)]), [
+        /* examples/editor/editor.ui.xml:171 */ Div(cls_tabEnd(style()), [])]));
     }), map(iota((when(k == m.active)).length), (index) => {
         const x = (when(k == m.active))[index];
         return 
-        /* examples/editor/editor.ui.xml:171 */ Div({ ...cls_tabOn({ ...style(), direction: Column }), onClick: (TAB + k) }, concat(concat([
-        /* examples/editor/editor.ui.xml:172 */ Div(cls_tabShape({ ...style(), direction: Column }), concat([
-        /* examples/editor/editor.ui.xml:173 */ Div(cls_capRow({ ...style(), direction: Row }), concat(concat([
-        /* examples/editor/editor.ui.xml:174 */ Div(cls_capSide(style()), [])], [
-        /* examples/editor/editor.ui.xml:175 */ Div({ ...cls_cap(style()), borderLeft: (k == 0 ? 0.0f32 : 1.0f32), radiusTopLeft: (k == 0 ? 0.0f32 : 7.0f32) }, [])]), [
-        /* examples/editor/editor.ui.xml:176 */ Div(cls_capSide(style()), [])]))], [
-        /* examples/editor/editor.ui.xml:178 */ Div(cls_baseRow({ ...style(), direction: Row }), concat(concat(concat(map(iota((when(k != 0)).length), (index) => {
+        /* examples/editor/editor.ui.xml:175 */ Div({ ...cls_tabOn({ ...style(), direction: Column }), onClick: (TAB + k) }, concat(concat([
+        /* examples/editor/editor.ui.xml:176 */ Div(cls_tabShape({ ...style(), direction: Column }), concat([
+        /* examples/editor/editor.ui.xml:177 */ Div(cls_capRow({ ...style(), direction: Row }), concat(concat([
+        /* examples/editor/editor.ui.xml:178 */ Div(cls_capSide(style()), [])], [
+        /* examples/editor/editor.ui.xml:179 */ Div({ ...cls_cap(style()), borderLeft: (k == 0 ? 0.0f32 : 1.0f32), radiusTopLeft: (k == 0 ? 0.0f32 : 7.0f32) }, [])]), [
+        /* examples/editor/editor.ui.xml:180 */ Div(cls_capSide(style()), [])]))], [
+        /* examples/editor/editor.ui.xml:182 */ Div(cls_baseRow({ ...style(), direction: Row }), concat(concat(concat(map(iota((when(k != 0)).length), (index) => {
         const f = (when(k != 0))[index];
         return 
-        /* examples/editor/editor.ui.xml:179 */ Div(cls_shoulder(style()), [
-        /* examples/editor/editor.ui.xml:179 */ Div(cls_shoulderLeft(style()), [])]);
+        /* examples/editor/editor.ui.xml:183 */ Div(cls_shoulder(style()), [
+        /* examples/editor/editor.ui.xml:183 */ Div(cls_shoulderLeft(style()), [])]);
     }), map(iota((when(k == 0)).length), (index) => {
         const f = (when(k == 0))[index];
         return 
-        /* examples/editor/editor.ui.xml:180 */ Div({ ...style(), width: Px(7.0f32), height: Px(7.0f32) }, []);
+        /* examples/editor/editor.ui.xml:184 */ Div({ ...style(), width: Px(7.0f32), height: Px(7.0f32) }, []);
     })), [
-        /* examples/editor/editor.ui.xml:181 */ Div(cls_base(style()), [])]), [
-        /* examples/editor/editor.ui.xml:182 */ Div(cls_shoulder(style()), [
-        /* examples/editor/editor.ui.xml:182 */ Div(cls_shoulderRight(style()), [])])]))]))], [
-        /* examples/editor/editor.ui.xml:185 */ Div(cls_tabBody({ ...style(), direction: Row }), concat(concat(concat(concat([
-        /* examples/editor/editor.ui.xml:186 */ Div(cls_tabPad(style()), [])], [
-        /* examples/editor/editor.ui.xml:187 */ Div(cls_fileIcon(style()), [
-        /* examples/editor/editor.ui.xml:187 */ Label({ ...textStyle(19.5f32, (fileIconColor(t.name))), face: (SETI) }, `${fileIcon(t.name)}`)])]), [
-        /* examples/editor/editor.ui.xml:188 */ Div(cls_tabGap(style()), [])]), [
-        /* examples/editor/editor.ui.xml:189 */ Label(textStyle(13.0f32, rgb(0xEDEDEDu32)), `${t.name}`)]), [
-        /* examples/editor/editor.ui.xml:190 */ Div(cls_tabEnd({ ...style(), direction: Row }), concat([
-        /* examples/editor/editor.ui.xml:191 */ Div({ ...style(), width: Px(4.0f32), height: Px(1.0f32) }, [])], [
-        /* examples/editor/editor.ui.xml:192 */ Div((m.pressed == ((CLOSE_TAB + k)) ? (m.hover == ((CLOSE_TAB + k)) ? { ...cls_close__hover(cls_close({ ...style(), direction: Row })), onClick: (CLOSE_TAB + k) } : { ...cls_close({ ...style(), direction: Row }), onClick: (CLOSE_TAB + k) }) : (m.hover == ((CLOSE_TAB + k)) ? { ...cls_close__hover(cls_close({ ...style(), direction: Row })), onClick: (CLOSE_TAB + k) } : { ...cls_close({ ...style(), direction: Row }), onClick: (CLOSE_TAB + k) })), [
-        /* examples/editor/editor.ui.xml:192 */ Label({ ...text_closeIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${tabDirty(m, k) && m.hover != CLOSE_TAB + k ? I_DIRTY : I_CLOSE}`)])]))]))]), [
-        /* examples/editor/editor.ui.xml:195 */ Div({ ...style(), width: Px(1.0f32), height: Px(1.0f32) }, [])]));
+        /* examples/editor/editor.ui.xml:185 */ Div(cls_base(style()), [])]), [
+        /* examples/editor/editor.ui.xml:186 */ Div(cls_shoulder(style()), [
+        /* examples/editor/editor.ui.xml:186 */ Div(cls_shoulderRight(style()), [])])]))]))], [
+        /* examples/editor/editor.ui.xml:189 */ Div(cls_tabBody({ ...style(), direction: Row }), concat(concat(concat(concat([
+        /* examples/editor/editor.ui.xml:190 */ Div(cls_tabPad(style()), [])], [
+        /* examples/editor/editor.ui.xml:191 */ Div(cls_fileIcon(style()), [
+        /* examples/editor/editor.ui.xml:191 */ Label({ ...textStyle(19.5f32, (fileIconColor(t.name))), face: (SETI) }, `${fileIcon(t.name)}`)])]), [
+        /* examples/editor/editor.ui.xml:192 */ Div(cls_tabGap(style()), [])]), [
+        /* examples/editor/editor.ui.xml:193 */ Label(textStyle(13.0f32, rgb(0xEDEDEDu32)), `${t.name}`)]), [
+        /* examples/editor/editor.ui.xml:194 */ Div(cls_tabEnd({ ...style(), direction: Row }), concat([
+        /* examples/editor/editor.ui.xml:195 */ Div({ ...style(), width: Px(4.0f32), height: Px(1.0f32) }, [])], [
+        /* examples/editor/editor.ui.xml:196 */ Div((m.pressed == ((CLOSE_TAB + k)) ? (m.hover == ((CLOSE_TAB + k)) ? { ...cls_close__hover(cls_close({ ...style(), direction: Row })), onClick: (CLOSE_TAB + k) } : { ...cls_close({ ...style(), direction: Row }), onClick: (CLOSE_TAB + k) }) : (m.hover == ((CLOSE_TAB + k)) ? { ...cls_close__hover(cls_close({ ...style(), direction: Row })), onClick: (CLOSE_TAB + k) } : { ...cls_close({ ...style(), direction: Row }), onClick: (CLOSE_TAB + k) })), [
+        /* examples/editor/editor.ui.xml:196 */ Label({ ...text_closeIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${tabDirty(m, k) && m.hover != CLOSE_TAB + k ? I_DIRTY : I_CLOSE}`)])]))]))]), [
+        /* examples/editor/editor.ui.xml:199 */ Div({ ...style(), width: Px(1.0f32), height: Px(1.0f32) }, [])]));
     })));
     }), [
-        /* examples/editor/editor.ui.xml:200 */ Div({ ...style(), width: Fill(1.0f32) }, [])]), map(iota((when(m.tabs.length > 0)).length), (index) => {
+        /* examples/editor/editor.ui.xml:204 */ Div({ ...style(), width: Fill(1.0f32) }, [])]), map(iota((when(m.tabs.length > 0)).length), (index) => {
         const e = (when(m.tabs.length > 0))[index];
         return 
-        /* examples/editor/editor.ui.xml:202 */ Div(cls_tabTools({ ...style(), direction: Row }), concat([
-        /* examples/editor/editor.ui.xml:203 */ Div((m.pressed == ((SPLIT)) ? (m.hover == ((SPLIT)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Split Editor Right", onClick: (SPLIT) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Split Editor Right", onClick: (SPLIT) }) : (m.hover == ((SPLIT)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Split Editor Right", onClick: (SPLIT) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Split Editor Right", onClick: (SPLIT) })), [
-        /* examples/editor/editor.ui.xml:203 */ Label({ ...text_toolIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_SPLIT}`)])], [
-        /* examples/editor/editor.ui.xml:204 */ Div((m.pressed == ((TAB_MORE)) ? (m.hover == ((TAB_MORE)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "More Actions...", onClick: (TAB_MORE) } : { ...cls_tool({ ...style(), direction: Row }), tip: "More Actions...", onClick: (TAB_MORE) }) : (m.hover == ((TAB_MORE)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "More Actions...", onClick: (TAB_MORE) } : { ...cls_tool({ ...style(), direction: Row }), tip: "More Actions...", onClick: (TAB_MORE) })), [
-        /* examples/editor/editor.ui.xml:204 */ Label({ ...text_toolIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_MORE}`)])]));
+        /* examples/editor/editor.ui.xml:206 */ Div(cls_tabTools({ ...style(), direction: Row }), concat([
+        /* examples/editor/editor.ui.xml:207 */ Div((m.pressed == ((SPLIT)) ? (m.hover == ((SPLIT)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Split Editor Right", onClick: (SPLIT) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Split Editor Right", onClick: (SPLIT) }) : (m.hover == ((SPLIT)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "Split Editor Right", onClick: (SPLIT) } : { ...cls_tool({ ...style(), direction: Row }), tip: "Split Editor Right", onClick: (SPLIT) })), [
+        /* examples/editor/editor.ui.xml:207 */ Label({ ...text_toolIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_SPLIT}`)])], [
+        /* examples/editor/editor.ui.xml:208 */ Div((m.pressed == ((TAB_MORE)) ? (m.hover == ((TAB_MORE)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "More Actions...", onClick: (TAB_MORE) } : { ...cls_tool({ ...style(), direction: Row }), tip: "More Actions...", onClick: (TAB_MORE) }) : (m.hover == ((TAB_MORE)) ? { ...cls_tool__hover(cls_tool({ ...style(), direction: Row })), tip: "More Actions...", onClick: (TAB_MORE) } : { ...cls_tool({ ...style(), direction: Row }), tip: "More Actions...", onClick: (TAB_MORE) })), [
+        /* examples/editor/editor.ui.xml:208 */ Label({ ...text_toolIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_MORE}`)])]));
     })))], [
-        /* examples/editor/editor.ui.xml:208 */ Div(cls_crumbs({ ...style(), direction: Row }), map(iota((crumbs(m)).length), (index) => {
+        /* examples/editor/editor.ui.xml:212 */ Div(cls_crumbs({ ...style(), direction: Row }), map(iota((crumbs(m)).length), (index) => {
         const c = (crumbs(m))[index];
         return 
-        /* examples/editor/editor.ui.xml:210 */ Div(cls_crumb({ ...style(), direction: Row }), concat(concat(concat(map(iota((when(c.file)).length), (index) => {
+        /* examples/editor/editor.ui.xml:214 */ Div(cls_crumb({ ...style(), direction: Row }), concat(concat(concat(map(iota((when(c.file)).length), (index) => {
         const f = (when(c.file))[index];
         return 
-        /* examples/editor/editor.ui.xml:212 */ Div(cls_fileIcon(style()), [
-        /* examples/editor/editor.ui.xml:212 */ Label({ ...textStyle(19.5f32, (fileIconColor(c.name))), face: (SETI) }, `${fileIcon(c.name)}`)]);
+        /* examples/editor/editor.ui.xml:216 */ Div(cls_fileIcon(style()), [
+        /* examples/editor/editor.ui.xml:216 */ Label({ ...textStyle(19.5f32, (fileIconColor(c.name))), face: (SETI) }, `${fileIcon(c.name)}`)]);
     }), map(iota((when(c.icon != "")).length), (index) => {
         const f = (when(c.icon != ""))[index];
         return 
-        /* examples/editor/editor.ui.xml:215 */ Label({ ...text_crumbIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${c.icon}`);
+        /* examples/editor/editor.ui.xml:219 */ Label({ ...text_crumbIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${c.icon}`);
     })), [
-        /* examples/editor/editor.ui.xml:217 */ Label(text_crumbText(textStyle(14.0f32, rgb(0x111827u32))), `${c.name}`)]), map(iota((when(!c.last)).length), (index) => {
+        /* examples/editor/editor.ui.xml:221 */ Label(text_crumbText(textStyle(14.0f32, rgb(0x111827u32))), `${c.name}`)]), map(iota((when(!c.last)).length), (index) => {
         const f = (when(!c.last))[index];
         return 
-        /* examples/editor/editor.ui.xml:219 */ Label({ ...text_crumbSep({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_RIGHT}`);
+        /* examples/editor/editor.ui.xml:223 */ Label({ ...text_crumbSep({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_RIGHT}`);
     })));
     }))]));
     }), [
-        /* examples/editor/editor.ui.xml:226 */ Div({ ...cls_code(style()), scroll: 1 }, concat((codeArea(m)), map(iota((when(m.tabs.length == 0)).length), (index) => {
+        /* examples/editor/editor.ui.xml:230 */ Div({ ...cls_code(style()), scroll: 1 }, concat((codeArea(m)), map(iota((when(m.tabs.length == 0)).length), (index) => {
         const e = (when(m.tabs.length == 0))[index];
         return 
-        /* examples/editor/editor.ui.xml:229 */ Div(cls_welcome({ ...style(), direction: Column }), concat(concat([
-        /* examples/editor/editor.ui.xml:230 */ Label(text_welcomeTitle(textStyle(14.0f32, rgb(0x111827u32))), `Isocron`)], [
-        /* examples/editor/editor.ui.xml:231 */ Label(text_welcomeText(textStyle(14.0f32, rgb(0x111827u32))), `Open a file in the explorer, or Ctrl+P to find it.`)]), [
-        /* examples/editor/editor.ui.xml:232 */ Label(text_welcomeText(textStyle(14.0f32, rgb(0x111827u32))), `Ctrl+B: the side bar · Ctrl+J: the panel · Ctrl+W: close the tab`)]));
+        /* examples/editor/editor.ui.xml:233 */ Div(cls_welcome({ ...style(), direction: Column }), concat(concat([
+        /* examples/editor/editor.ui.xml:234 */ Label(text_welcomeTitle(textStyle(14.0f32, rgb(0x111827u32))), `Isocron`)], [
+        /* examples/editor/editor.ui.xml:235 */ Label(text_welcomeText(textStyle(14.0f32, rgb(0x111827u32))), `Open a file in the explorer, or Ctrl+P to find it.`)]), [
+        /* examples/editor/editor.ui.xml:236 */ Label(text_welcomeText(textStyle(14.0f32, rgb(0x111827u32))), `Ctrl+B: the side bar · Ctrl+J: the panel · Ctrl+W: close the tab`)]));
     })))]))]), map(iota((when(m.panelShown)).length), (index) => {
         const q = (when(m.panelShown))[index];
         return 
-        /* examples/editor/editor.ui.xml:238 */ Div(cls_panelWrap({ ...style(), direction: Column }), concat([
-        /* examples/editor/editor.ui.xml:239 */ Div((m.pressed == ((SASH_H)) ? (m.hover == ((SASH_H)) ? { ...cls_sashH__active(cls_sashH__hover(cls_sashH(style()))), onClick: (SASH_H) } : { ...cls_sashH__active(cls_sashH(style())), onClick: (SASH_H) }) : (m.hover == ((SASH_H)) ? { ...cls_sashH__hover(cls_sashH(style())), onClick: (SASH_H) } : { ...cls_sashH(style()), onClick: (SASH_H) })), [])], [
-        /* examples/editor/editor.ui.xml:240 */ Div({ ...cls_panel({ ...style(), direction: Column }), height: (Px(m.panelHeight)) }, concat([
-        /* examples/editor/editor.ui.xml:241 */ Div(cls_panelTabs({ ...style(), direction: Row }), concat(concat(concat([
-        /* examples/editor/editor.ui.xml:242 */ Div(cls_panelTab(style()), [
-        /* examples/editor/editor.ui.xml:242 */ Label(text_panelTabText(textStyle(14.0f32, rgb(0x111827u32))), `Problems`)])], [
-        /* examples/editor/editor.ui.xml:243 */ Div(cls_panelTabOn(style()), [
-        /* examples/editor/editor.ui.xml:243 */ Label(text_panelTabOnText(textStyle(14.0f32, rgb(0x111827u32))), `Output`)])]), [
-        /* examples/editor/editor.ui.xml:244 */ Div(cls_panelTab(style()), [
-        /* examples/editor/editor.ui.xml:244 */ Label(text_panelTabText(textStyle(14.0f32, rgb(0x111827u32))), `Debug Console`)])]), [
-        /* examples/editor/editor.ui.xml:245 */ Div(cls_panelTab(style()), [
-        /* examples/editor/editor.ui.xml:245 */ Label(text_panelTabText(textStyle(14.0f32, rgb(0x111827u32))), `Terminal`)])]))], [
-        /* examples/editor/editor.ui.xml:247 */ Div({ ...cls_panelBody(style()), scroll: 2 }, map(iota((m.log).length), (index) => {
+        /* examples/editor/editor.ui.xml:242 */ Div(cls_panelWrap({ ...style(), direction: Column }), concat([
+        /* examples/editor/editor.ui.xml:243 */ Div((m.pressed == ((SASH_H)) ? (m.hover == ((SASH_H)) ? { ...cls_sashH__active(cls_sashH__hover(cls_sashH(style()))), onClick: (SASH_H) } : { ...cls_sashH__active(cls_sashH(style())), onClick: (SASH_H) }) : (m.hover == ((SASH_H)) ? { ...cls_sashH__hover(cls_sashH(style())), onClick: (SASH_H) } : { ...cls_sashH(style()), onClick: (SASH_H) })), [])], [
+        /* examples/editor/editor.ui.xml:244 */ Div({ ...cls_panel({ ...style(), direction: Column }), height: (Px(m.panelHeight)) }, concat([
+        /* examples/editor/editor.ui.xml:245 */ Div(cls_panelTabs({ ...style(), direction: Row }), concat(concat(concat([
+        /* examples/editor/editor.ui.xml:246 */ Div(cls_panelTab(style()), [
+        /* examples/editor/editor.ui.xml:246 */ Label(text_panelTabText(textStyle(14.0f32, rgb(0x111827u32))), `Problems`)])], [
+        /* examples/editor/editor.ui.xml:247 */ Div(cls_panelTabOn(style()), [
+        /* examples/editor/editor.ui.xml:247 */ Label(text_panelTabOnText(textStyle(14.0f32, rgb(0x111827u32))), `Output`)])]), [
+        /* examples/editor/editor.ui.xml:248 */ Div(cls_panelTab(style()), [
+        /* examples/editor/editor.ui.xml:248 */ Label(text_panelTabText(textStyle(14.0f32, rgb(0x111827u32))), `Debug Console`)])]), [
+        /* examples/editor/editor.ui.xml:249 */ Div(cls_panelTab(style()), [
+        /* examples/editor/editor.ui.xml:249 */ Label(text_panelTabText(textStyle(14.0f32, rgb(0x111827u32))), `Terminal`)])]))], [
+        /* examples/editor/editor.ui.xml:251 */ Div({ ...cls_panelBody(style()), scroll: 2 }, map(iota((m.log).length), (index) => {
         const l = (m.log)[index];
         return 
-        /* examples/editor/editor.ui.xml:249 */ Label(text_logText(textStyle(14.0f32, rgb(0x111827u32))), `${l}`);
+        /* examples/editor/editor.ui.xml:253 */ Label(text_logText(textStyle(14.0f32, rgb(0x111827u32))), `${l}`);
     }))]))]));
     })))]))]), [
-        /* examples/editor/editor.ui.xml:257 */ Div(cls_belowCards(style()), [])]), [
-        /* examples/editor/editor.ui.xml:258 */ Div(cls_status({ ...style(), direction: Row }), concat(concat(concat(concat(concat(concat(concat(concat([
-        /* examples/editor/editor.ui.xml:259 */ Div((m.pressed == ((REMOTE)) ? (m.hover == ((REMOTE)) ? { ...cls_statusFirst__hover(cls_statusFirst({ ...style(), direction: Row })), onClick: (REMOTE) } : { ...cls_statusFirst({ ...style(), direction: Row }), onClick: (REMOTE) }) : (m.hover == ((REMOTE)) ? { ...cls_statusFirst__hover(cls_statusFirst({ ...style(), direction: Row })), onClick: (REMOTE) } : { ...cls_statusFirst({ ...style(), direction: Row }), onClick: (REMOTE) })), [
-        /* examples/editor/editor.ui.xml:259 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_REMOTE}`)])], [
-        /* examples/editor/editor.ui.xml:260 */ Div(cls_statusGap(style()), [])]), [
-        /* examples/editor/editor.ui.xml:261 */ Div((m.pressed == ((PROBLEMS)) ? (m.hover == ((PROBLEMS)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (PROBLEMS) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (PROBLEMS) }) : (m.hover == ((PROBLEMS)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (PROBLEMS) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (PROBLEMS) })), concat(concat(concat([
-        /* examples/editor/editor.ui.xml:262 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_ERROR}`)], [
-        /* examples/editor/editor.ui.xml:262 */ Label(text_statusText(textStyle(14.0f32, rgb(0x111827u32))), `0`)]), [
-        /* examples/editor/editor.ui.xml:263 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_WARNING}`)]), [
-        /* examples/editor/editor.ui.xml:263 */ Label(text_statusText(textStyle(14.0f32, rgb(0x111827u32))), `0`)]))]), [
-        /* examples/editor/editor.ui.xml:265 */ Div({ ...style(), width: Fill(1.0f32) }, [])]), map(iota((statusItems(m)).length), (k) => {
+        /* examples/editor/editor.ui.xml:261 */ Div(cls_belowCards(style()), [])]), [
+        /* examples/editor/editor.ui.xml:262 */ Div(cls_status({ ...style(), direction: Row }), concat(concat(concat(concat(concat(concat(concat(concat([
+        /* examples/editor/editor.ui.xml:263 */ Div((m.pressed == ((REMOTE)) ? (m.hover == ((REMOTE)) ? { ...cls_statusFirst__hover(cls_statusFirst({ ...style(), direction: Row })), onClick: (REMOTE) } : { ...cls_statusFirst({ ...style(), direction: Row }), onClick: (REMOTE) }) : (m.hover == ((REMOTE)) ? { ...cls_statusFirst__hover(cls_statusFirst({ ...style(), direction: Row })), onClick: (REMOTE) } : { ...cls_statusFirst({ ...style(), direction: Row }), onClick: (REMOTE) })), [
+        /* examples/editor/editor.ui.xml:263 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_REMOTE}`)])], [
+        /* examples/editor/editor.ui.xml:264 */ Div(cls_statusGap(style()), [])]), [
+        /* examples/editor/editor.ui.xml:265 */ Div((m.pressed == ((PROBLEMS)) ? (m.hover == ((PROBLEMS)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (PROBLEMS) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (PROBLEMS) }) : (m.hover == ((PROBLEMS)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (PROBLEMS) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (PROBLEMS) })), concat(concat(concat([
+        /* examples/editor/editor.ui.xml:266 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_ERROR}`)], [
+        /* examples/editor/editor.ui.xml:266 */ Label(text_statusText(textStyle(14.0f32, rgb(0x111827u32))), `0`)]), [
+        /* examples/editor/editor.ui.xml:267 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_WARNING}`)]), [
+        /* examples/editor/editor.ui.xml:267 */ Label(text_statusText(textStyle(14.0f32, rgb(0x111827u32))), `0`)]))]), [
+        /* examples/editor/editor.ui.xml:269 */ Div({ ...style(), width: Fill(1.0f32) }, [])]), map(iota((statusItems(m)).length), (k) => {
         const it = (statusItems(m))[k];
         return 
-        /* examples/editor/editor.ui.xml:267 */ Div({ ...{ ...style(), direction: Row }, align: Center, stretch: false }, concat([
-        /* examples/editor/editor.ui.xml:268 */ Div((m.pressed == ((STATUS + k)) ? (m.hover == ((STATUS + k)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (STATUS + k) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (STATUS + k) }) : (m.hover == ((STATUS + k)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (STATUS + k) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (STATUS + k) })), [
-        /* examples/editor/editor.ui.xml:268 */ Label(text_statusText(textStyle(14.0f32, rgb(0x111827u32))), `${it}`)])], [
-        /* examples/editor/editor.ui.xml:269 */ Div(cls_statusGap(style()), [])]));
+        /* examples/editor/editor.ui.xml:271 */ Div({ ...{ ...style(), direction: Row }, align: Center, stretch: false }, concat([
+        /* examples/editor/editor.ui.xml:272 */ Div((m.pressed == ((STATUS + k)) ? (m.hover == ((STATUS + k)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (STATUS + k) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (STATUS + k) }) : (m.hover == ((STATUS + k)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (STATUS + k) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (STATUS + k) })), [
+        /* examples/editor/editor.ui.xml:272 */ Label(text_statusText(textStyle(14.0f32, rgb(0x111827u32))), `${it}`)])], [
+        /* examples/editor/editor.ui.xml:273 */ Div(cls_statusGap(style()), [])]));
     })), map(iota((when(langName(m) != "")).length), (index) => {
         const e = (when(langName(m) != ""))[index];
         return 
-        /* examples/editor/editor.ui.xml:273 */ Div({ ...{ ...style(), direction: Row }, align: Center, stretch: false }, concat([
-        /* examples/editor/editor.ui.xml:274 */ Div((m.pressed == ((LANGUAGE)) ? (m.hover == ((LANGUAGE)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (LANGUAGE) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (LANGUAGE) }) : (m.hover == ((LANGUAGE)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (LANGUAGE) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (LANGUAGE) })), concat([
-        /* examples/editor/editor.ui.xml:274 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_BRACES}`)], [
-        /* examples/editor/editor.ui.xml:274 */ Label(text_statusText(textStyle(14.0f32, rgb(0x111827u32))), `${langName(m)}`)]))], [
-        /* examples/editor/editor.ui.xml:275 */ Div(cls_statusGap(style()), [])]));
+        /* examples/editor/editor.ui.xml:277 */ Div({ ...{ ...style(), direction: Row }, align: Center, stretch: false }, concat([
+        /* examples/editor/editor.ui.xml:278 */ Div((m.pressed == ((LANGUAGE)) ? (m.hover == ((LANGUAGE)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (LANGUAGE) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (LANGUAGE) }) : (m.hover == ((LANGUAGE)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (LANGUAGE) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (LANGUAGE) })), concat([
+        /* examples/editor/editor.ui.xml:278 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_BRACES}`)], [
+        /* examples/editor/editor.ui.xml:278 */ Label(text_statusText(textStyle(14.0f32, rgb(0x111827u32))), `${langName(m)}`)]))], [
+        /* examples/editor/editor.ui.xml:279 */ Div(cls_statusGap(style()), [])]));
     })), [
-        /* examples/editor/editor.ui.xml:278 */ Div((m.pressed == ((STATUS_COPILOT)) ? (m.hover == ((STATUS_COPILOT)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (STATUS_COPILOT) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (STATUS_COPILOT) }) : (m.hover == ((STATUS_COPILOT)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (STATUS_COPILOT) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (STATUS_COPILOT) })), [
-        /* examples/editor/editor.ui.xml:278 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_COPILOT}`)])]), [
-        /* examples/editor/editor.ui.xml:279 */ Div(cls_statusGap(style()), [])]), [
-        /* examples/editor/editor.ui.xml:280 */ Div((m.pressed == ((BELL)) ? (m.hover == ((BELL)) ? { ...cls_statusFirst__hover(cls_statusFirst({ ...style(), direction: Row })), onClick: (BELL) } : { ...cls_statusFirst({ ...style(), direction: Row }), onClick: (BELL) }) : (m.hover == ((BELL)) ? { ...cls_statusFirst__hover(cls_statusFirst({ ...style(), direction: Row })), onClick: (BELL) } : { ...cls_statusFirst({ ...style(), direction: Row }), onClick: (BELL) })), [
-        /* examples/editor/editor.ui.xml:280 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_BELL}`)])]))]));
+        /* examples/editor/editor.ui.xml:282 */ Div((m.pressed == ((STATUS_COPILOT)) ? (m.hover == ((STATUS_COPILOT)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (STATUS_COPILOT) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (STATUS_COPILOT) }) : (m.hover == ((STATUS_COPILOT)) ? { ...cls_statusItem__hover(cls_statusItem({ ...style(), direction: Row })), onClick: (STATUS_COPILOT) } : { ...cls_statusItem({ ...style(), direction: Row }), onClick: (STATUS_COPILOT) })), [
+        /* examples/editor/editor.ui.xml:282 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_COPILOT}`)])]), [
+        /* examples/editor/editor.ui.xml:283 */ Div(cls_statusGap(style()), [])]), [
+        /* examples/editor/editor.ui.xml:284 */ Div((m.pressed == ((BELL)) ? (m.hover == ((BELL)) ? { ...cls_statusFirst__hover(cls_statusFirst({ ...style(), direction: Row })), onClick: (BELL) } : { ...cls_statusFirst({ ...style(), direction: Row }), onClick: (BELL) }) : (m.hover == ((BELL)) ? { ...cls_statusFirst__hover(cls_statusFirst({ ...style(), direction: Row })), onClick: (BELL) } : { ...cls_statusFirst({ ...style(), direction: Row }), onClick: (BELL) })), [
+        /* examples/editor/editor.ui.xml:284 */ Label({ ...text_statusIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_BELL}`)])]))]), map(iota((when(m.dialog.paths.length > 0)).length), (index) => {
+        const dlg = (when(m.dialog.paths.length > 0))[index];
+        return 
+        /* examples/editor/editor.ui.xml:290 */ Div({ ...cls_modal({ ...style(), direction: Column }), onClick: (NOTHING) }, [
+        /* examples/editor/editor.ui.xml:291 */ Div(cls_dialog({ ...style(), direction: Column }), concat(concat([
+        /* examples/editor/editor.ui.xml:292 */ Div(cls_dialogTools({ ...style(), direction: Row }), concat([
+        /* examples/editor/editor.ui.xml:293 */ Div({ ...style(), width: Fill(1.0f32) }, [])], [
+        /* examples/editor/editor.ui.xml:294 */ Div((m.pressed == ((DIALOG_CANCEL)) ? (m.hover == ((DIALOG_CANCEL)) ? { ...cls_dialogClose__hover(cls_dialogClose({ ...style(), direction: Row })), tip: "Close", onClick: (DIALOG_CANCEL) } : { ...cls_dialogClose({ ...style(), direction: Row }), tip: "Close", onClick: (DIALOG_CANCEL) }) : (m.hover == ((DIALOG_CANCEL)) ? { ...cls_dialogClose__hover(cls_dialogClose({ ...style(), direction: Row })), tip: "Close", onClick: (DIALOG_CANCEL) } : { ...cls_dialogClose({ ...style(), direction: Row }), tip: "Close", onClick: (DIALOG_CANCEL) })), [
+        /* examples/editor/editor.ui.xml:294 */ Label({ ...text_dialogCloseIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_CLOSE}`)])]))], [
+        /* examples/editor/editor.ui.xml:296 */ Div(cls_dialogBody({ ...style(), direction: Row }), concat([
+        /* examples/editor/editor.ui.xml:297 */ Label({ ...text_dialogIcon({ ...textStyle(14.0f32, rgb(0x111827u32)), face: (ICONS) }), face: (ICONS) }, `${I_WARNING}`)], [
+        /* examples/editor/editor.ui.xml:298 */ Div(cls_dialogTexts({ ...style(), direction: Column }), concat(concat([
+        /* examples/editor/editor.ui.xml:299 */ Label(text_dialogMessage(textStyle(14.0f32, rgb(0x111827u32))), `${dialogMessage(m)}`)], map(iota((dialogNames(m)).length), (index) => {
+        const nm = (dialogNames(m))[index];
+        return 
+        /* examples/editor/editor.ui.xml:301 */ Label(text_dialogDetail(textStyle(14.0f32, rgb(0x111827u32))), `${nm}`);
+    })), [
+        /* examples/editor/editor.ui.xml:303 */ Label(text_dialogDetail(textStyle(14.0f32, rgb(0x111827u32))), `Your changes will be lost if you don't save them.`)]))]))]), [
+        /* examples/editor/editor.ui.xml:306 */ Div(cls_dialogButtons({ ...style(), direction: Row }), concat(concat([
+        /* examples/editor/editor.ui.xml:307 */ Div((m.pressed == ((DIALOG_SAVE)) ? (m.hover == ((DIALOG_SAVE)) ? { ...cls_dialogPrimary__hover(cls_dialogPrimary({ ...style(), direction: Row })), onClick: (DIALOG_SAVE) } : { ...cls_dialogPrimary({ ...style(), direction: Row }), onClick: (DIALOG_SAVE) }) : (m.hover == ((DIALOG_SAVE)) ? { ...cls_dialogPrimary__hover(cls_dialogPrimary({ ...style(), direction: Row })), onClick: (DIALOG_SAVE) } : { ...cls_dialogPrimary({ ...style(), direction: Row }), onClick: (DIALOG_SAVE) })), [
+        /* examples/editor/editor.ui.xml:307 */ Label(text_dialogPrimaryText(textStyle(14.0f32, rgb(0x111827u32))), `${dialogSaveText(m)}`)])], [
+        /* examples/editor/editor.ui.xml:308 */ Div((m.pressed == ((DIALOG_DONT)) ? (m.hover == ((DIALOG_DONT)) ? { ...cls_dialogButton__hover(cls_dialogButton({ ...style(), direction: Row })), onClick: (DIALOG_DONT) } : { ...cls_dialogButton({ ...style(), direction: Row }), onClick: (DIALOG_DONT) }) : (m.hover == ((DIALOG_DONT)) ? { ...cls_dialogButton__hover(cls_dialogButton({ ...style(), direction: Row })), onClick: (DIALOG_DONT) } : { ...cls_dialogButton({ ...style(), direction: Row }), onClick: (DIALOG_DONT) })), [
+        /* examples/editor/editor.ui.xml:308 */ Label(text_dialogButtonText(textStyle(14.0f32, rgb(0x111827u32))), `Don't Save`)])]), [
+        /* examples/editor/editor.ui.xml:309 */ Div((m.pressed == ((DIALOG_CANCEL)) ? (m.hover == ((DIALOG_CANCEL)) ? { ...cls_dialogButton__hover(cls_dialogButton({ ...style(), direction: Row })), onClick: (DIALOG_CANCEL) } : { ...cls_dialogButton({ ...style(), direction: Row }), onClick: (DIALOG_CANCEL) }) : (m.hover == ((DIALOG_CANCEL)) ? { ...cls_dialogButton__hover(cls_dialogButton({ ...style(), direction: Row })), onClick: (DIALOG_CANCEL) } : { ...cls_dialogButton({ ...style(), direction: Row }), onClick: (DIALOG_CANCEL) })), [
+        /* examples/editor/editor.ui.xml:309 */ Label(text_dialogButtonText(textStyle(14.0f32, rgb(0x111827u32))), `Cancel`)])]))]))]);
+    })));
 }

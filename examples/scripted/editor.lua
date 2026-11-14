@@ -2,7 +2,10 @@
 -- editor.ui.xml: the files of a folder in a tree (read by the host:
 -- host.listFolder, host.readFile), opened in tabs, their code coloured
 -- line by line; a palette that finds a file (Ctrl+P), the side bar and the
--- panel shown or hidden (Ctrl+B, Ctrl+J), a tab closed (Ctrl+W).
+-- panel shown or hidden (Ctrl+B, Ctrl+J), a tab closed (Ctrl+W), a file
+-- made (Ctrl+N), saved (Ctrl+S), saved under another name (Ctrl+Shift+S);
+-- a file changed and not saved asked to be saved before its tab or the
+-- window closes (the dialog of Visual Studio Code).
 
 root = host.folder or "."   -- the folder of the view
 tree = {}            -- path -> { path, name, dir, depth, open, loaded, kids }
@@ -20,6 +23,10 @@ from = 0
 palette = false
 query = ""
 choice = 1
+saveAs = false       -- the palette asks the path a file is saved under
+dialog = nil         -- the dialog asking to save: { kind, k, paths }
+untitled = 0         -- the files made so far (Untitled-1, ...)
+afterSave = nil      -- what the dialog closes once the file is saved
 files = {}           -- the paths of the files known, in the order found
 log = { "Isocron : éditeur prêt." }
 
@@ -298,6 +305,187 @@ function selectTab(k)
   host.focusCode()
 end
 
+-- ----- the files made, saved, not saved ---------------------------------
+
+local function baseName(p)
+  return string.match(p, "([^/\\]+)$") or p
+end
+
+-- whether `p` is a file made and never saved (Untitled-1, ...)
+function isUntitled(p)
+  return string.match(p, "^Untitled%-%d+$") ~= nil
+end
+
+-- the paths of the tabs whose files changed and are not saved
+local function dirtyPaths()
+  local out = {}
+  for _, t in ipairs(tabs) do
+    local d = host.docs[t.path]
+    if d and d.dirty then
+      out[#out + 1] = t.path
+    end
+  end
+  return out
+end
+
+-- Ctrl+N: a file made, empty, in a tab of its own
+function newFile()
+  untitled = untitled + 1
+  local path = "Untitled-" .. untitled
+  host.openDoc(path, "")
+  tabs[#tabs + 1] = { path = path, name = path }
+  active = #tabs
+  current = path
+  host.focusCode()
+end
+
+-- Ctrl+S: the file of the tab written (a file made: its path asked)
+function saveActive()
+  local t = tabs[active]
+  if not t then
+    return
+  end
+  if isUntitled(t.path) then
+    openSaveAs()
+  else
+    host.save(t.path)
+  end
+end
+
+-- Ctrl+Shift+S: the palette asks the path the file is saved under (that
+-- of the file, else the folder and its name)
+function openSaveAs()
+  local t = tabs[active]
+  if not t then
+    return
+  end
+  palette = true
+  saveAs = true
+  query = isUntitled(t.path) and joined(root, t.name) or t.path
+  choice = 1
+end
+
+-- the file of the tab saved under `to`: the tab renamed, its folder read
+-- again (the explorer shows it)
+function savedAs(to)
+  local t = tabs[active]
+  palette = false
+  saveAs = false
+  if not t or to == "" then
+    return
+  end
+  host.saveAs(t.path, to)
+  t.path = to
+  t.name = baseName(to)
+  current = to
+  host.focusCode()
+  local dir = string.match(to, "^(.*)[/\\][^/\\]+$") or "."
+  local n = tree[dir] or (dir == root and rootNode) or nil
+  if n then
+    loadFolder(n, n.open, false)
+  end
+  say("Enregistré : " .. rel(to))
+  if afterSave then
+    local next = afterSave
+    afterSave = nil
+    closeAfter(next)
+  end
+end
+
+-- the tab `k` closed, its file asked to be saved first when it changed
+function requestCloseTab(k)
+  local t = tabs[k]
+  if not t then
+    return
+  end
+  local d = host.docs[t.path]
+  if d and d.dirty then
+    dialog = { kind = "tab", k = k, paths = { t.path } }
+    host.blurCode()
+    return
+  end
+  closeTab(k)
+end
+
+-- the window asks to close: its files changed asked to be saved first (a
+-- true value: kept open meanwhile)
+function beforeClose()
+  local paths = dirtyPaths()
+  if #paths == 0 then
+    return false
+  end
+  dialog = { kind = "window", paths = paths }
+  host.blurCode()
+  return true
+end
+
+-- what the dialog closes, its files saved or not
+function closeAfter(dl)
+  if dl.kind == "tab" then
+    closeTab(dl.k)
+  else
+    host.close()
+  end
+end
+
+-- the texts of the dialog
+function dialogMessage()
+  if #dialog.paths == 1 then
+    return "Do you want to save the changes you made to " .. baseName(dialog.paths[1]) .. "?"
+  end
+  return "Do you want to save the changes to the following " .. #dialog.paths .. " files?"
+end
+
+function dialogNames()
+  local out = {}
+  if #dialog.paths > 1 then
+    for _, p in ipairs(dialog.paths) do
+      out[#out + 1] = baseName(p)
+    end
+  end
+  return out
+end
+
+function dialogSaveText()
+  return #dialog.paths > 1 and "Save All" or "Save"
+end
+
+-- its buttons: the files saved (a file made: its path asked first), then
+-- the tab or the window closed; not saved; nothing done
+function dialogSave()
+  local dl = dialog
+  dialog = nil
+  for _, p in ipairs(dl.paths) do
+    if isUntitled(p) then
+      for k, t in ipairs(tabs) do
+        if t.path == p then
+          active = k
+          current = p
+        end
+      end
+      afterSave = dl
+      openSaveAs()
+      return
+    end
+  end
+  for _, p in ipairs(dl.paths) do
+    host.save(p)
+  end
+  closeAfter(dl)
+end
+
+function dialogDontSave()
+  local dl = dialog
+  dialog = nil
+  closeAfter(dl)
+  host.focusCode()
+end
+
+function dialogCancel()
+  dialog = nil
+  host.focusCode()
+end
+
 function closeTab(k)
   if k < 1 or k > #tabs then
     return
@@ -308,6 +496,10 @@ function closeTab(k)
     active = math.max(active - 1, #tabs > 0 and 1 or 0)
   end
   current = active > 0 and tabs[active].path or ""
+  -- (the keyboard back in the code of the tab shown)
+  if active > 0 then
+    host.focusCode()
+  end
 end
 
 function activeTab()
@@ -409,6 +601,10 @@ function matches()
 end
 
 function openChoice()
+  if saveAs then
+    savedAs(query)
+    return
+  end
   local m = matches()
   if m[choice] then
     openFile(m[choice])
@@ -416,15 +612,37 @@ function openChoice()
   palette = false
 end
 
+function matchesShown()
+  return saveAs and {} or matches()
+end
+
 function togglePalette()
   palette = not palette
+  saveAs = false
   query = ""
   choice = 1
 end
 
 -- ----- the keys and the bars -------------------------------------------
 
-function onKey(key, ctrl)
+function onKey(key, ctrl, shift, alt)
+  -- (the dialog: Enter saves, Escape cancels, the other keys nothing)
+  if dialog then
+    if key == "Enter" then
+      dialogSave()
+    elseif key == "Escape" then
+      dialogCancel()
+    end
+    return true
+  end
+  if ctrl and key == "n" then
+    newFile()
+    return true
+  end
+  if ctrl and shift and key == "s" then
+    openSaveAs()
+    return true
+  end
   if ctrl and key == "p" then
     togglePalette()
     return true
@@ -438,18 +656,21 @@ function onKey(key, ctrl)
     return true
   end
   if ctrl and key == "w" then
-    closeTab(active)
+    requestCloseTab(active)
     return true
   end
   if ctrl and key == "s" then
-    if tabs[active] then
-      host.save(tabs[active].path)
-    end
+    saveActive()
     return true
   end
   if palette then
     if key == "Escape" then
       palette = false
+      saveAs = false
+      afterSave = nil
+      if tabs[active] then
+        host.focusCode()
+      end
       return true
     end
     if key == "Down" then
@@ -517,7 +738,7 @@ function statusItems()
   if not d then
     return {}
   end
-  return { "Ln " .. d.line .. ", Col " .. d.col, "Spaces: " .. d.indent, "UTF-8", d.eol }
+  return { d.status, "Spaces: " .. d.indent, "UTF-8", d.eol }
 end
 
 -- the tabs as they are drawn: the one shown joined to its editor (the

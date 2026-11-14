@@ -22,7 +22,7 @@ import { rgb, rgba, render, renderAgain, blank, Canvas, Primitive, Box, quad, ro
 import { Font, parse } from "./font";
 import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU, FOCUS, WHEEL, MOVE, tipOf } from "./ui";
 import { POINTER as POINTER_SHAPE, TEXT as TEXT_SHAPE } from "./ui";
-import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Focus, Viewport, Tick, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, WriteText, ScrollTo, Reveal, Copy, AskPaste, Animate, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END, PAGE_UP, PAGE_DOWN } from "./input";
+import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Focus, Viewport, Tick, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, WriteText, ScrollTo, Reveal, Copy, AskPaste, Animate, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, CloseAsked, WheelX, BoxSized, KeepOpen, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END, PAGE_UP, PAGE_DOWN, F1, SLASH, BRACKET_LEFT, BRACKET_RIGHT } from "./input";
 import { DEAD, DEAD_ACCENTS, composed, spacingAccent } from "./input";
 import { Keymap, parseKeymap, charOf } from "./xkb";
 import * as cursors from "./cursors";
@@ -43,7 +43,8 @@ const NEAR: f32 = 4.0f32;
 // shortcut, the modifiers held, the size of the window, its closing, the
 // text of the clipboard
 // (`Elapsed`: time passed, a frame of an animation due)
-export type Ev = Moved(f32, f32) | Down(i64) | Up(i64) | Scroll(f32) | Typed(i64) | Pressed(i64) | Mods(i64) | Resized(i64, i64) | Scaled(f32) | Closed | Pasted(string) | Elapsed | Activated(boolean);
+// (`ScrollX(dx)`: the wheel across, units, right positive)
+export type Ev = Moved(f32, f32) | Down(i64) | Up(i64) | Scroll(f32) | ScrollX(f32) | Typed(i64) | Pressed(i64) | Mods(i64) | Resized(i64, i64) | Scaled(f32) | Closed | Pasted(string) | Elapsed | Activated(boolean);
 
 // what the library keeps of the interface: the size of the window, the
 // places of the frame shown and the offsets of its boxes that scroll, the
@@ -110,6 +111,12 @@ export type Ui = {
     toldH: i64,
     maximized: boolean,
     caption: i64[],
+    // the window kept open by the application after `CloseAsked`
+    keepOpen: boolean,
+    // the sizes of the boxes that scroll (by their numbers: a width and a
+    // height each, units) last told, and those of the last frame
+    boxes: f32[],
+    boxesSeen: f32[],
 };
 
 // the texts of the entries of the menu of a field, by default
@@ -128,6 +135,7 @@ export function interface(w: i64, h: i64, now: u64): Ui {
         clickTime: 0u64, clicks: 0, cx: 0.0f32, cy: 0.0f32, since: now, caret: false, caretOn: true,
         clipboard: "", asked: [], menu: false, menuX: 0.0f32, menuY: 0.0f32, menuHover: -1, menuCut: false, labels: englishMenu(), scale: 1.0f32, dead: -1, focus: -1, ring: false, atlas: emptyAtlas(), animating: false, tickAt: 0u64, hoverSince: now, tipDue: false, tipOff: false,
         redraw: true, closed: false, toldH: -1, maximized: false, caption: [],
+        keepOpen: false, boxes: fill(32, 0.0f32), boxesSeen: fill(32, 0.0f32),
     };
 }
 
@@ -145,8 +153,10 @@ function told<M>(ui: Ui, m: M, i: Input, update: (M, Input) => [M, Effect[]]): [
         _ => c,
     });
     const animates = count(fx, (e) => e == Animate) > 0;
-    // (the window closed by the application: its button drawn)
+    // (the window closed by the application: its button drawn; kept open
+    // after it asked to close)
     const closes = count(fx, (e) => e == CloseWindow) > 0;
+    const keeps = count(fx, (e) => e == KeepOpen) > 0;
     // (a box that scrolls moved by the application, its offset in pixels)
     // (a band revealed: the box scrolled as little as shows it, by the
     // height of the box drawn last)
@@ -167,8 +177,9 @@ function told<M>(ui: Ui, m: M, i: Input, update: (M, Input) => [M, Effect[]]): [
     return [{ ...ui, clipboard: copied, asked: concat(ui.asked, filter(fx, (e) => match (e) {
         ScrollTo(k, o) => false,
         Reveal(k, y, bh) => false,
+        KeepOpen => false,
         _ => true,
-    })), redraw: true, animating: ui.animating || animates, closed: ui.closed || closes, offsets: offsets }, nm] as const;
+    })), redraw: true, animating: ui.animating || animates, closed: ui.closed || closes, keepOpen: ui.keepOpen || keeps, offsets: offsets }, nm] as const;
 }
 
 // an effect that reads a file or a folder
@@ -532,7 +543,10 @@ function stepOnce<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M, E
             const [u1, m1] = told({ ...ui, pressed: -1, field: -1 }, m, Release(ui.pressed), update);
             return [{ ...u1, cursor: cursorAt(u1.hits, ui.x, ui.y) }, m1] as const;
         },
-        Scroll(dy) => [{ ...ui, offsets: scrolled(ui.offsets, ui.hits, ui.x, ui.y, dy * ui.scale), redraw: true }, m] as const,
+        // (with Shift held: across, to the place under the pointer)
+        Scroll(dy) => (ui.mods & WITH_SHIFT) != 0 ? told(ui, m, WheelX(hitTest(ui.hits, ui.x, ui.y), dy), update)
+            : [{ ...ui, offsets: scrolled(ui.offsets, ui.hits, ui.x, ui.y, dy * ui.scale), redraw: true }, m] as const,
+        ScrollX(dx) => told(ui, m, WheelX(hitTest(ui.hits, ui.x, ui.y), dx), update),
         Typed(c) => typed({ ...ui, since: now }, m, c, update),
         // (Escape closes the menu; another key closes it and is the model's)
         // (a key forgets an accent typed before it: Backspace and Escape do
@@ -545,7 +559,11 @@ function stepOnce<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M, E
         // the pixels of a unit (the density of the screen): the offsets of
         // the boxes that scroll kept in units
         Scaled(k) => [{ ...ui, scale: k, offsets: map(ui.offsets, (o) => o * k / ui.scale), redraw: true }, m] as const,
-        Closed => [{ ...ui, closed: true }, m] as const,
+        // (the application asked: it may keep the window open)
+        Closed => {
+            const [u1, m1] = told({ ...ui, keepOpen: false }, m, CloseAsked, update);
+            return [{ ...u1, closed: u1.closed || !u1.keepOpen }, m1] as const;
+        },
         Pasted(s) => told({ ...ui, since: now }, m, Paste(s), update),
         // the window active or not: the modifiers held forgotten (their
         // releases go to another window)
@@ -579,7 +597,28 @@ export function wakeIn(ui: Ui, now: u64): i64 {
     // pointer
     const frame = ui.animating ? (now >= ui.tickAt + FRAME ? 1 : max(1, i64((ui.tickAt + FRAME - now) / 1000000u64) + 1)) : -1;
     const tip = ui.tipDue ? (now >= ui.hoverSince + TIP_DELAY ? 1 : max(1, i64((ui.hoverSince + TIP_DELAY - now) / 1000000u64) + 1)) : -1;
-    return soonest(soonest(blink, frame), tip);
+    // (the sizes of boxes that scroll changed by the last frame: told at once)
+    const sizes = boxesDue(ui) ? 1 : -1;
+    return soonest(soonest(soonest(blink, frame), tip), sizes);
+}
+
+// whether a box that scrolls has a size the last frame gave it and the
+// model was not told
+function boxesDue(ui: Ui): boolean {
+    return count(iota(min(ui.boxes.length, ui.boxesSeen.length)), (i) => ui.boxes[i] != ui.boxesSeen[i]) > 0;
+}
+
+// the model told the sizes of the boxes that scroll changed, from the
+// `k`-th (those not shown, of no size, not told)
+function boxesTold<M>(ui: Ui, m: M, k: i64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    if (2 * k + 1 >= ui.boxesSeen.length) {
+        return [{ ...ui, boxes: ui.boxesSeen, redraw: true }, m] as const;
+    }
+    const w = ui.boxesSeen[2 * k];
+    const h = ui.boxesSeen[2 * k + 1];
+    const changed = (w != ui.boxes[2 * k] || h != ui.boxes[2 * k + 1]) && (w > 0.0f32 || h > 0.0f32);
+    const [u1, m1] = changed ? told(ui, m, BoxSized(k, w, h), update) : [ui, m] as const;
+    return boxesTold(u1, m1, k + 1, update);
 }
 
 // the sooner of two waits in milliseconds (-1: none)
@@ -596,7 +635,8 @@ const TIP_DELAY: u64 = 500000000u64;
 // time), and whether the window must be drawn again (the caret blinked, a
 // tooltip is due, a frame of an animation)
 export function timed<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M, boolean] {
-    const [u1, m1] = ui.animating && now >= ui.tickAt + FRAME ? step(ui, m, Elapsed, now, update) : [ui, m] as const;
+    const [u0, m0] = boxesDue(ui) ? boxesTold(ui, m, 0, update) : [ui, m] as const;
+    const [u1, m1] = u0.animating && now >= u0.tickAt + FRAME ? step(u0, m0, Elapsed, now, update) : [u0, m0] as const;
     const blink = u1.caret && caretShown(u1, now) != u1.caretOn;
     const tip = u1.tipDue && now >= u1.hoverSince + TIP_DELAY;
     return [u1, m1, blink || tip || u1.redraw] as const;
@@ -640,7 +680,12 @@ export function laidOutFonts<M>(ui: Ui, fs: Font[nf], m: M, view: (M) => Element
     const hits = concat(vhits, mhits);
     // the place under the pointer, its shape, as the new places have them
     const hover = ui.pressed >= 0 ? ui.cursor : cursorAt(hits, ui.x, ui.y);
-    return [ps, { ...ui, hits: hits, caret: caret, caretOn: shown, cursor: hover, redraw: false, atlas: atlas, tipDue: tip != "" && !due }] as const;
+    // (the sizes of the boxes that scroll, in units: told by `timed`)
+    const sizes = map(iota(32), (i) => {
+        const b = findIndex(vhits, (h) => h.kind == WHEEL && h.id == i / 2);
+        return b < 0 ? 0.0f32 : (i % 2 == 0 ? vhits[b].w : vhits[b].h) / ui.scale;
+    });
+    return [ps, { ...ui, hits: hits, caret: caret, caretOn: shown, cursor: hover, redraw: false, atlas: atlas, tipDue: tip != "" && !due, boxesSeen: sizes }] as const;
 }
 
 // the font of the file `paths[i]`, or of the first after it that is one;
@@ -905,6 +950,19 @@ function editKey(k: i64): i64 {
         : (k == 33 ? PAGE_UP : (k == 34 ? PAGE_DOWN : 0))))))))))));
 }
 
+// the keys taken by their place, as Visual Studio Code takes them (by the
+// code of the key, whatever the keyboard): F1 to F12; with Ctrl alone, the
+// keys of `/`, `[` and `]` of an American keyboard (Ctrl+/ toggles the
+// comments of the lines). `code`: the code of evdev, the scan code of
+// Windows (the same numbers for these keys); 0: none
+function placedKey(code: i64, ctrl: boolean): i64 {
+    const f = code >= 59 && code <= 68 ? F1 + code - 59 : (code == 87 ? F1 + 10 : (code == 88 ? F1 + 11 : 0));
+    if (f != 0 || !ctrl) {
+        return f;
+    }
+    return code == 53 ? SLASH : (code == 26 ? BRACKET_LEFT : (code == 27 ? BRACKET_RIGHT : 0));
+}
+
 // the bit of the modifier of the virtual key `k` (Shift 16, Ctrl 17, Alt
 // 18; 0: none)
 function modifierOf(k: i64): i64 {
@@ -946,6 +1004,7 @@ function readFrom(evs: win.Event[n], i: i64, out: Ev[], mods: i64, high: i64): [
         win.Button(b, down) => readFrom(evs, i + 1, concat(out, [down ? Down(b) : Up(b)]), mods, high),
         // a notch (120) of the wheel: 48 pixels
         win.Wheel(d) => readFrom(evs, i + 1, concat(out, [Scroll(-f32(d) * 0.4f32)]), mods, high),
+        win.HWheel(d) => readFrom(evs, i + 1, concat(out, [ScrollX(f32(d) * 0.4f32)]), mods, high),
         win.Key(k, down, s) => {
             const bit = modifierOf(k);
             if (bit != 0) {
@@ -954,7 +1013,13 @@ function readFrom(evs: win.Event[n], i: i64, out: Ev[], mods: i64, high: i64): [
             }
             const edit = editKey(k);
             const ctrlOnly = (mods & WITH_CTRL) != 0 && (mods & WITH_ALT) == 0;
-            const code = edit != 0 ? edit : (ctrlOnly && k >= 65 && k <= 90 ? k + 32 : 0);
+            const altOnly = (mods & WITH_ALT) != 0 && (mods & WITH_CTRL) == 0;
+            // (a letter with Ctrl or with Alt alone, not with AltGr: a key)
+            // (a key sent without its scan code, by a program: its virtual
+            // code, that of an American keyboard)
+            const placed = s != 0 ? placedKey(s, ctrlOnly) : (k >= 112 && k <= 123 ? F1 + k - 112
+                : (ctrlOnly ? (k == 191 ? SLASH : (k == 219 ? BRACKET_LEFT : (k == 221 ? BRACKET_RIGHT : 0))) : 0));
+            const code = edit != 0 ? edit : (placed != 0 ? placed : ((ctrlOnly || altOnly) && k >= 65 && k <= 90 ? k + 32 : 0));
             return readFrom(evs, i + 1, down && code != 0 ? concat(out, [Pressed(code)]) : out, mods, high);
         },
         win.Char(u) => {
@@ -1360,12 +1425,19 @@ function modsOf(mods: u32): i64 {
 // the event of the hand of a character `ch` of the keyboard: the keys that
 // edit and the letters held with Ctrl (not with AltGr) as keys, the
 // characters a space or above as characters (none: -1 as a character)
-function keyEvent(ch: i64, mods: u32): Ev {
+// (`code`: the code of evdev of the key, those taken by their place first;
+// a letter with Alt alone a key too)
+function keyEvent(ch: i64, mods: u32, code: i64): Ev {
     const ctrl = (mods & 4u32) != 0u32 && (mods & 128u32) == 0u32;
+    const alt = (mods & 8u32) != 0u32 && !ctrl && (mods & 128u32) == 0u32;
+    const placed = placedKey(code, ctrl && (mods & 8u32) == 0u32);
+    if (placed != 0) {
+        return Pressed(placed);
+    }
     if (ch == 8 || ch == 9 || ch == 13 || ch == 27 || ch >= 0x110000) {
         return Pressed(ch);
     }
-    if (ctrl && ((ch >= 97 && ch <= 122) || (ch >= 65 && ch <= 90))) {
+    if ((ctrl || alt) && ((ch >= 97 && ch <= 122) || (ch >= 65 && ch <= 90))) {
         return Pressed(ch | 32);
     }
     return Typed(ch >= 32 && ch != 127 ? ch : -1);
@@ -1536,10 +1608,12 @@ action handle<M>(c: net.Conn, fs: Font[nf], m: M, evs: wl.Event[n], i: i64, ui: 
             return [mm, u, { ...st, mods: mods }] as const;
         },
         // the vertical wheel: its distance, four times (a notch: 10)
-        wl.Axis(axis, value) => axis == 0u32 ? feedWayland(c, ui, m, now, st, update, Scroll(f32(value) * 4.0f32)) : [m, ui, st] as const,
+        // (the horizontal one, axis 1: across, right positive)
+        wl.Axis(axis, value) => axis == 0u32 ? feedWayland(c, ui, m, now, st, update, Scroll(f32(value) * 4.0f32))
+            : (axis == 1u32 ? feedWayland(c, ui, m, now, st, update, ScrollX(f32(value) * 4.0f32)) : [m, ui, st] as const),
         wl.Key(code, down) => {
             const ch = down ? charOf(st.keymap, code, st.mods) : 0;
-            return ch != 0 ? match (keyEvent(ch, st.mods)) {
+            return down && (ch != 0 || placedKey(i64(code), true) != 0) ? match (keyEvent(ch, st.mods, i64(code))) {
                 Typed(t) => t < 0 ? [m, ui, st] as const : feedWayland(c, ui, m, now, st, update, Typed(t)),
                 ev => feedWayland(c, ui, m, now, st, update, ev),
             } : [m, ui, st] as const;
@@ -1873,10 +1947,12 @@ action answerMessageX<M>(c: net.Conn, m: M, e: x11.Message, ui: Ui, st: XState, 
         const [u0, m0, s0] = modsStepped(ui, m, st, state, now, update);
         if (e.code == x11.KEY_PRESS) {
             const ch = charOf(s0.keymap, u32(b[1]), u32(state));
-            if (ch == 0) {
+            // (the code of evdev: that of X11 less 8)
+            const code = i64(b[1]) - 8;
+            if (ch == 0 && placedKey(code, true) == 0) {
                 return [m0, u0, s0] as const;
             }
-            return match (keyEvent(ch, u32(state))) {
+            return match (keyEvent(ch, u32(state), code)) {
                 Typed(t) => t < 0 ? [m0, u0, s0] as const : feedX11(c, u0, m0, now, s0, update, Typed(t)),
                 kev => feedX11(c, u0, m0, now, s0, update, kev),
             };
@@ -1887,6 +1963,10 @@ action answerMessageX<M>(c: net.Conn, m: M, e: x11.Message, ui: Ui, st: XState, 
         const down = e.code == x11.BUTTON_PRESS;
         if (button == 4 || button == 5) {
             return down ? feedX11(c, u0, m0, now, s0, update, Scroll(button == 5 ? 40.0f32 : -40.0f32)) : [m0, u0, s0] as const;
+        }
+        // (6 and 7: the wheel across, left and right)
+        if (button == 6 || button == 7) {
+            return down ? feedX11(c, u0, m0, now, s0, update, ScrollX(button == 7 ? 40.0f32 : -40.0f32)) : [m0, u0, s0] as const;
         }
         const which = button == 1 ? 0 : (button == 3 ? 1 : (button == 2 ? 2 : -1));
         return which < 0 ? [m0, u0, s0] as const : feedX11(c, u0, m0, now, s0, update, down ? Down(which) : Up(which));

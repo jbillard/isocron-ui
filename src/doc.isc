@@ -1,19 +1,43 @@
 // A document of the editor of code: the lines of a file, the cursor and
-// the other end of the selection (its anchor), what the hand does to them
-// as Visual Studio Code does it (the keys, the pointer, the clipboard, the
-// undo and the redo), and the colours of its lines kept up to date (each
-// line scanned again when it changes, src/code.isc). Positions are lines
-// and offsets of bytes of their UTF-8 at the starts of characters; a
-// column on the screen counts a character as one, a tab up to its next
-// stop (4).
-import { Input, Effect, Click, Drag, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, DELETE, TAB, ENTER, ESCAPE, LEFT, RIGHT, HOME, END, UP, DOWN, PAGE_UP, PAGE_DOWN } from "./input";
+// the other end of the selection (its anchor), the other selections of
+// several cursors, what the hand does to them as Visual Studio Code does it
+// (the keys, the pointer, the clipboard, the undo and the redo, the
+// commands of lines, the comments, the search and the replacement), and
+// the colours of its lines kept up to date (each line scanned again when
+// it changes, src/code.isc). Positions are lines and offsets of bytes of
+// their UTF-8 at the starts of characters; a column on the screen counts a
+// character as one, a tab up to its next stop (4).
+import { Input, Effect, Click, Drag, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, DELETE, TAB, ENTER, ESCAPE, LEFT, RIGHT, HOME, END, UP, DOWN, PAGE_UP, PAGE_DOWN, F3, SLASH, BRACKET_LEFT, BRACKET_RIGHT } from "./input";
 import { Lang, Scan, scanLine, depthAfter, langOf } from "./code";
-import { utf8 } from "./edit";
+import { utf8, Editing, editing } from "./edit";
+import { codePoints } from "./text";
+import * as ed from "./edit";
+import { compiled, matchesOf, substituted } from "./regex";
 
 export type Pos = { line: i64, col: i64 };
 
+// a selection: its cursor, its other end, the column it keeps going up and
+// down (-1: that of its cursor)
+export type Sel = { cursor: Pos, anchor: Pos, goal: i64 };
+
 // what an undo brings back
-export type Snap = { lines: string[], cursor: Pos, anchor: Pos };
+export type Snap = { lines: string[], cursor: Pos, anchor: Pos, others: Sel[] };
+
+// a text found by the search: its line, its first byte and the byte after
+// it
+export type Match = { line: i64, start: i64, end: i64 };
+
+// the widget of the search (Ctrl+F) and of the replacement (Ctrl+H): shown,
+// with its line of the replacement, its texts, its options (the case of
+// the letters, whole words, a regular expression); the field with the
+// keyboard (0 none: the code; 1 the search, 2 the replacement); the search
+// within a part of the text (its start and end), the case of the text
+// replaced kept by the replacement
+export type Find = {
+    shown: boolean, replacing: boolean, query: Editing, replaceText: Editing,
+    matchCase: boolean, wholeWord: boolean, regex: boolean, field: i64,
+    inSelection: boolean, scopeFrom: Pos, scopeTo: Pos, preserveCase: boolean,
+};
 
 export type Doc = {
     path: string, lang: Lang, indent: i64, crlf: boolean,
@@ -33,6 +57,21 @@ export type Doc = {
     unit: i64, from: Pos, to: Pos,
     // the offset of its box that scrolls and the height it shows, in units
     top: f32, height: f32,
+    // the selections of the other cursors (Ctrl+D, Alt+click), the one
+    // added last (-1: the first; else its index among them), whether Ctrl+D
+    // began at a cursor (the words found then whole, of the same case)
+    others: Sel[], latest: i64, wordFind: boolean,
+    // the last text copied from cursors alone: their whole lines (pasted at
+    // a cursor alone, it goes above its line)
+    lineCopied: string,
+    // the search: its widget, the texts it finds
+    find: Find, found: Match[],
+    // across: the offset of the code shown (units), the width it has, the
+    // width of a column of its font; the width of its map (the minimap);
+    // where the pointer took the thumb of a scrollbar or of the map
+    left: f32, width: f32, advance: f32, mapWidth: f32, grab: f32,
+    // the lines wrapped at the width of the editor (Alt+Z)
+    wrap: boolean,
 };
 
 export const TAB_SIZE: i64 = 4;
@@ -85,7 +124,15 @@ export function docOf(path: string, text: string): Doc {
         cursor: pos(0, 0), anchor: pos(0, 0), goal: -1,
         undo: [], redo: [], last: 0, version: 0, saved: 0,
         unit: 0, from: pos(0, 0), to: pos(0, 0), top: 0.0f32, height: 600.0f32,
+        others: [], latest: -1, wordFind: false, lineCopied: "", find: noFind(), found: [],
+        left: 0.0f32, width: 0.0f32, advance: 7.7f32, mapWidth: 0.0f32, grab: 0.0f32, wrap: false,
     };
+}
+
+// the widget of the search closed, empty
+export function noFind(): Find {
+    return { shown: false, replacing: false, query: editing(""), replaceText: editing(""), matchCase: false, wholeWord: false, regex: false, field: 0,
+        inSelection: false, scopeFrom: pos(0, 0), scopeTo: pos(0, 0), preserveCase: false };
 }
 
 // the lines from `k` scanned (`open` and `depth` at the start of the line
@@ -244,10 +291,24 @@ function replace(d: Doc, a: Pos, b: Pos, text: string, kind: i64): Doc {
     const end = pos(a.line + n - 1, n == 1 ? a.col + parts[0].length : parts[n - 1].length);
     // (the undo: a change of another kind, or after a move, begins one)
     const joins = kind != 0 && kind == d.last;
-    const snap = { lines: d.lines, cursor: d.cursor, anchor: d.anchor };
-    const undo = joins ? d.undo : concat(d.undo, [snap]);
-    const d1 = { ...d, lines: lines, cursor: end, anchor: end, goal: -1, undo: undo.length > 1000 ? map(iota(1000), (k) => undo[undo.length - 1000 + k]) : undo, redo: [], last: kind, version: d.version + 1 };
+    const undo = joins ? d.undo : concat(d.undo, [snapOf(d)]);
+    // (the other cursors after the change moved with the text after it)
+    const shifted = (p: Pos) => before(p, a) || (p.line == a.line && p.col == a.col && (a.line != b.line || a.col != b.col)) ? p
+        : (p.line > b.line ? pos(p.line + n - 1 - (b.line - a.line), p.col)
+        : (p.line == b.line && p.col >= b.col ? pos(end.line, end.col + p.col - b.col) : end));
+    const others = map(d.others, (o) => ({ cursor: shifted(o.cursor), anchor: shifted(o.anchor), goal: o.goal }));
+    const d1 = { ...d, lines: lines, cursor: end, anchor: end, goal: -1, undo: capped(undo), redo: [], last: kind, version: d.version + 1, others: others };
     return rescanned(d1, d.scans, a.line, a.line + n, n - (b.line - a.line + 1));
+}
+
+// what an undo of the next change brings back
+function snapOf(d: Doc): Snap {
+    return { lines: d.lines, cursor: d.cursor, anchor: d.anchor, others: d.others };
+}
+
+// the last 1000 undos
+function capped(u: Snap[n]): Snap[] {
+    return n > 1000 ? map(iota(1000), (k) => u[n - 1000 + k]) : u;
 }
 
 // the lines from `from` scanned again: those of the change (to `changed`,
@@ -384,8 +445,8 @@ function tabbed(d: Doc, outdent: boolean): Doc {
         const delta = lines[p.line].length - d.lines[p.line].length;
         return pos(p.line, max(0, p.col + delta));
     };
-    const snap = { lines: d.lines, cursor: d.cursor, anchor: d.anchor };
-    const d1 = { ...d, lines: lines, cursor: shift(d.cursor), anchor: shift(d.anchor), undo: concat(d.undo, [snap]), redo: [], last: 0, version: d.version + 1, goal: -1 };
+    const d1 = { ...d, lines: lines, cursor: shift(d.cursor), anchor: shift(d.anchor), undo: capped(concat(d.undo, [snapOf(d)])), redo: [], last: 0, version: d.version + 1, goal: -1,
+        others: map(d.others, (o) => ({ cursor: shift(o.cursor), anchor: shift(o.anchor), goal: -1 })) };
     return rescanned(d1, d.scans, a.line, last + 1, 0);
 }
 
@@ -440,6 +501,9 @@ function moved(d: Doc, p: Pos, extend: boolean, keepGoal: boolean): Doc {
 
 // the cursor `lines` lines up (negative) or down, at the column it keeps
 function vertical(d: Doc, lines: i64, extend: boolean): Doc {
+    if (wrapped(d)) {
+        return verticalRows(d, lines, extend);
+    }
     const goal = d.goal >= 0 ? d.goal : columnOf(d.lines[d.cursor.line], d.cursor.col);
     const target = d.cursor.line + lines;
     if (target < 0) {
@@ -452,14 +516,30 @@ function vertical(d: Doc, lines: i64, extend: boolean): Doc {
     return { ...moved(d, pos(target, offsetOf(d.lines[target], goal)), extend, false), goal: goal };
 }
 
+// `vertical` of the lines wrapped: by rows, at the column of the row the
+// cursor keeps
+function verticalRows(d: Doc, rows: i64, extend: boolean): Doc {
+    const goal = d.goal >= 0 ? d.goal : rowColumn(d, d.cursor);
+    const target = rowOfPos(d, d.cursor) + rows;
+    const total = totalRows(d);
+    if (target < 0) {
+        return { ...moved(d, pos(0, 0), extend, false), goal: goal };
+    }
+    if (target >= total) {
+        const last = d.lines.length - 1;
+        return { ...moved(d, pos(last, d.lines[last].length), extend, false), goal: goal };
+    }
+    return { ...moved(d, positionAtRow(d, target, goal), extend, false), goal: goal };
+}
+
 // the lines a page holds
 function page(d: Doc): i64 {
     return max(1, i64(d.height / LINE_HEIGHT) - 1);
 }
 
-// a key held with Ctrl, or one that edits or moves: the document after it,
-// and what it asks (a text copied, the clipboard read)
-export function keyed(d: Doc, k: i64, mods: i64): [Doc, Effect[]] {
+// a key that edits or moves, for one selection (the primary one; each of
+// several by `each`)
+function keyedOne(d: Doc, k: i64, mods: i64): [Doc, Effect[]] {
     const shift = (mods & WITH_SHIFT) != 0;
     const ctrl = (mods & WITH_CTRL) != 0;
     const p = d.cursor;
@@ -557,6 +637,1183 @@ export function keyed(d: Doc, k: i64, mods: i64): [Doc, Effect[]] {
     return [d, []] as const;
 }
 
+// a key held with Ctrl, Alt or Shift, or one that edits or moves: the
+// document after it, and what it asks (a text copied, the clipboard read);
+// in the widget of the search when it has the keyboard; at each selection
+export function keyed(d: Doc, k: i64, mods: i64): [Doc, Effect[]] {
+    const [d1, fx] = keyedAll(d, k, mods);
+    return [acrossShown(d1), fx] as const;
+}
+
+function keyedAll(d: Doc, k: i64, mods: i64): [Doc, Effect[]] {
+    const shift = (mods & WITH_SHIFT) != 0;
+    const ctrl = (mods & WITH_CTRL) != 0;
+    const alt = (mods & WITH_ALT) != 0;
+    // (the widget of the search: its keys, and those it takes from the code)
+    if (d.find.shown && d.find.field > 0) {
+        return findKeyed(d, k, mods);
+    }
+    if (ctrl && !alt && (k == 102 || k == 104)) {
+        return [findOpened(d, k == 104), []] as const;
+    }
+    if (k == F3) {
+        return [findStepped(d, shift), []] as const;
+    }
+    if (alt && !ctrl && d.find.shown && (k == 99 || k == 119 || k == 114)) {
+        return [toggled(d, k == 99 ? FIND_CASE : (k == 119 ? FIND_WORD : FIND_REGEX)), []] as const;
+    }
+    if (k == ESCAPE && d.find.shown) {
+        return [findClosed(d), []] as const;
+    }
+    if (ctrl && !shift && k == 97) {
+        const last = d.lines.length - 1;
+        return [{ ...d, anchor: pos(0, 0), cursor: pos(last, d.lines[last].length), others: [], latest: -1, last: 0 }, []] as const;
+    }
+    if (ctrl && !alt && (k == 99 || k == 120) && !shift) {
+        return copiedOrCut(d, k == 120);
+    }
+    if (ctrl && !shift && k == 118) {
+        return [d, [AskPaste]] as const;
+    }
+    if (ctrl && k == 122 && !shift) {
+        return [undone(d), []] as const;
+    }
+    if (ctrl && (k == 121 || (k == 122 && shift))) {
+        return [redone(d), []] as const;
+    }
+    // (several cursors: Escape keeps the first; Ctrl+D the next of the
+    // selection, Ctrl+Shift+L all; Ctrl+Alt+Up and Down one above, below)
+    if (k == ESCAPE && d.others.length > 0) {
+        return [{ ...d, others: [], latest: -1, wordFind: false }, []] as const;
+    }
+    if (ctrl && !shift && !alt && k == 100) {
+        return [nextOccurrence(d), []] as const;
+    }
+    if (ctrl && shift && k == 108) {
+        return [allOccurrences(d), []] as const;
+    }
+    if (ctrl && alt && (k == UP || k == DOWN)) {
+        return [cursorAdded(d, k == DOWN), []] as const;
+    }
+    // (Alt+Z: the lines wrapped or not)
+    if (alt && !ctrl && !shift && k == 122) {
+        return [{ ...d, wrap: !d.wrap, left: 0.0f32, goal: -1 }, []] as const;
+    }
+    // (the commands of lines)
+    if (ctrl && !alt && k == SLASH) {
+        return [commented(d), []] as const;
+    }
+    if (alt && !ctrl && (k == UP || k == DOWN)) {
+        return [shift ? linesCopied(d, k == DOWN) : linesMoved(d, k == DOWN), []] as const;
+    }
+    if (ctrl && shift && k == 107) {
+        return [linesDeleted(d), []] as const;
+    }
+    if (ctrl && !shift && (k == BRACKET_RIGHT || k == BRACKET_LEFT)) {
+        return [shiftedLines(d, k == BRACKET_LEFT), []] as const;
+    }
+    if (ctrl && !shift && k == 108) {
+        return [lineSelected(d), []] as const;
+    }
+    if (ctrl && shift && k == ENTER) {
+        return [each(d, (x, i) => lineAbove(x)), []] as const;
+    }
+    if (ctrl || alt) {
+        // (a letter or a sign held with Ctrl or Alt that does nothing here:
+        // the moves and the keys that edit keep their Ctrl)
+        if (k < 0x110000 && k != ENTER && k != BACKSPACE && k != DELETE && k != TAB) {
+            return [d, []] as const;
+        }
+    }
+    const fx0: Effect[] = [];
+    return [each(d, (x, i) => {
+        const [x1, fx] = keyedOne(x, k, mods);
+        return x1;
+    }), fx0] as const;
+}
+
+// ----- several selections ----------------------------------------------------
+
+// the primary selection
+function selOf(d: Doc): Sel {
+    return { cursor: d.cursor, anchor: d.anchor, goal: d.goal };
+}
+
+// every selection, the primary one first
+export function allSelections(d: Doc): Sel[] {
+    return concat([selOf(d)], d.others);
+}
+
+// the start and the end of a selection
+export function rangeOf(s: Sel): [Pos, Pos] {
+    return before(s.anchor, s.cursor) ? [s.anchor, s.cursor] as const : [s.cursor, s.anchor] as const;
+}
+
+function same(a: Pos, b: Pos): boolean {
+    return a.line == b.line && a.col == b.col;
+}
+
+function emptySel(s: Sel): boolean {
+    return same(s.cursor, s.anchor);
+}
+
+// the selections without the `i`-th, with `x` put at `i`
+function without(xs: Sel[n], i: i64): Sel[] {
+    return map(filter(iota(n), (j) => j != i), (j) => xs[j]);
+}
+
+function insertedAt(xs: Sel[n], i: i64, x: Sel): Sel[] {
+    return map(iota(n + 1), (j) => j < i ? xs[j] : (j == i ? x : xs[j - 1]));
+}
+
+// the selection added last (Ctrl+D searches after it)
+function latestOf(d: Doc): Sel {
+    return d.latest >= 0 && d.latest < d.others.length ? d.others[d.latest] : selOf(d);
+}
+
+// `f` done at each selection (its index among them given), one after the
+// other: a change at one moves the others with the text after it
+// (`replace`); the selections that meet then joined, the changes undone
+// at once
+function each(d: Doc, f: (Doc, i64) => Doc): Doc {
+    if (d.others.length == 0) {
+        return f(d, 0);
+    }
+    const all = allSelections(d);
+    const d0 = { ...d, others: all };
+    const d1 = fold(iota(all.length), d0, (acc, i) => {
+        const s = acc.others[i];
+        const r = f({ ...acc, cursor: s.cursor, anchor: s.anchor, goal: s.goal, others: without(acc.others, i) }, i);
+        return { ...r, others: insertedAt(r.others, i, selOf(r)) };
+    });
+    const p = d1.others[0];
+    const d2 = { ...d1, cursor: p.cursor, anchor: p.anchor, goal: p.goal, others: without(d1.others, 0) };
+    const changed = d2.version != d.version;
+    const joins = changed && d2.last != 0 && d2.last == d.last;
+    return merged({ ...d2, undo: changed ? (joins ? d.undo : capped(concat(d.undo, [snapOf(d)]))) : d.undo,
+        redo: changed ? [] : d.redo, version: changed ? d.version + 1 : d.version });
+}
+
+// whether two selections meet: two cursors at one place, a cursor within a
+// selection, two selections across each other
+function meet(t: Sel, s: Sel): boolean {
+    const [ta, tb] = rangeOf(t);
+    const [sa, sb] = rangeOf(s);
+    return emptySel(t) && emptySel(s) ? same(ta, sa) : before(sa, tb) && before(ta, sb);
+}
+
+// two selections that meet as one: from the first start to the last end,
+// the cursor at the end where that of `t` is
+function joined(t: Sel, s: Sel): Sel {
+    const [ta, tb] = rangeOf(t);
+    const [sa, sb] = rangeOf(s);
+    const a = before(sa, ta) ? sa : ta;
+    const b = before(tb, sb) ? sb : tb;
+    return !emptySel(t) && same(t.cursor, ta) ? { cursor: a, anchor: b, goal: -1 } : { cursor: b, anchor: a, goal: t.goal };
+}
+
+// the selections that meet joined, the first kept the primary one
+function merged(d: Doc): Doc {
+    if (d.others.length == 0) {
+        return d;
+    }
+    const kept = keptFrom(allSelections(d), 0, []);
+    const p = kept[0];
+    return { ...d, cursor: p.cursor, anchor: p.anchor, goal: p.goal, others: without(kept, 0), latest: min(d.latest, kept.length - 2) };
+}
+
+// the selections from the `i`-th each joined to the one kept it meets, or
+// kept
+function keptFrom(all: Sel[n], i: i64, acc: Sel[]): Sel[] {
+    if (i >= n) {
+        return acc;
+    }
+    const s = all[i];
+    const k = findIndex(acc, (t) => meet(t, s));
+    return keptFrom(all, i + 1, k < 0 ? concat(acc, [s]) : map(iota(acc.length), (j) => j == k ? joined(acc[j], s) : acc[j]));
+}
+
+// the starts and ends of the texts found in a line
+type Places = { starts: i64[], ends: i64[] };
+
+// the matches of the lines `ks` (their places in `per`)
+function matchesFrom(ks: i64[n], per: Places[], i: i64, out: Match[]): Match[] {
+    if (i >= n) {
+        return out;
+    }
+    const k = ks[i];
+    const p = per[k];
+    return matchesFrom(ks, per, i + 1, concat(out, map(iota(p.starts.length), (j) => ({ line: k, start: p.starts[j], end: p.ends[j] }))));
+}
+
+// the selections in the order of the document
+export function ordered(d: Doc): Sel[] {
+    return sortBy(allSelections(d), (s) => {
+        const [a, b] = rangeOf(s);
+        return a.line * 4294967296 + a.col;
+    });
+}
+
+// Ctrl+C, Ctrl+X: the texts of the selections in the order of the
+// document, one a line; a cursor alone its whole line (its end of line
+// with it: pasted at a cursor alone, it goes above its line); cut, each
+// selection removed (a cursor alone, its line)
+function copiedOrCut(d: Doc, cutting: boolean): [Doc, Effect[]] {
+    const ss = ordered(d);
+    const some = count(ss, (s) => !emptySel(s)) > 0;
+    const texts = map(ss, (s) => {
+        const [a, b] = rangeOf(s);
+        return emptySel(s) ? d.lines[a.line] : textBetween(d, a, b);
+    });
+    const text = some ? join(texts, "\n") : join(map(texts, (x) => x + "\n"), "");
+    const d1 = { ...d, lineCopied: some ? "" : text };
+    if (!cutting) {
+        return [d1, [Copy(text)]] as const;
+    }
+    const d2 = each(d1, (x, i) => hasSelection(x) ? cut(x, 0)
+        : (x.lines.length > 1 ? removedLine(x, x.cursor.line) : replace(x, pos(0, 0), pos(0, x.lines[0].length), "", 0)));
+    return [d2, [Copy(text)]] as const;
+}
+
+// the text of the clipboard pasted over each selection: as many lines as
+// selections, one at each in the order of the document; whole lines copied
+// from cursors alone, above the line of each cursor alone
+export function pasted(d: Doc, s: string): Doc {
+    if (d.find.shown && d.find.field > 0) {
+        return findFieldChanged(d, Paste(s));
+    }
+    const ss = ordered(d);
+    const parts = split(join(split(s, "\r\n"), "\n"), "\n");
+    const spread = d.others.length > 0 && parts.length == ss.length;
+    const rank = (x: Doc) => findIndex(ss, (t) => same(t.cursor, x.cursor) && same(t.anchor, x.anchor));
+    const whole = s != "" && s == d.lineCopied;
+    return acrossShown(each(d, (x, i) => {
+        if (whole && !hasSelection(x)) {
+            const p = x.cursor;
+            const r = replace(x, pos(p.line, 0), pos(p.line, 0), s, 0);
+            const at = pos(p.line + split(s, "\n").length - 1, p.col);
+            return { ...r, cursor: at, anchor: at };
+        }
+        const [a, b] = selection(x);
+        const k = rank(x);
+        return replace(x, a, b, spread && k >= 0 ? parts[k] : s, 0);
+    }));
+}
+
+// the word holding the cursor (the one before it at its end) selected
+function wordSelected(d: Doc): Doc {
+    const p = d.cursor;
+    const line = d.lines[p.line];
+    const b = bytes(line);
+    const at = p.col < b.length && classOf(b[p.col]) == 1 ? p.col : (p.col > 0 && classOf(b[p.col - 1]) == 1 ? p.col - 1 : -1);
+    if (at < 0) {
+        return d;
+    }
+    const [l, r] = wordAround(line, at);
+    return { ...d, anchor: pos(p.line, l), cursor: pos(p.line, r), goal: -1, last: 0 };
+}
+
+// the bytes of `b`, the letters of ASCII in lower case
+function folded(b: u8[n]): u8[] {
+    return map(b, (c) => c >= 65u8 && c <= 90u8 ? c + 32u8 : c);
+}
+
+// whether [s, e) of `b` is a whole word: no character of a word joins it
+// on either side
+function wordEnds(b: u8[n], s: i64, e: i64): boolean {
+    const left = s == 0 || classOf(b[s - 1]) != 1 || classOf(b[s]) != 1;
+    const right = e >= n || classOf(b[e]) != 1 || classOf(b[e - 1]) != 1;
+    return left && right;
+}
+
+// the starts of `q` in the line `text` (bytes folded when `matchCase` is
+// false; whole words), one after the other, none within another
+function placesIn(text: string, q: u8[m], matchCase: boolean, whole: boolean): i64[] {
+    const b0 = bytes(text);
+    const n = b0.length;
+    if (m == 0 || m > n) {
+        return [];
+    }
+    const b = matchCase ? b0 : folded(b0);
+    const starts = filter(iota(n - m + 1), (i) => b[i] == q[0] && count(iota(m), (j) => b[i + j] == q[j]) == m && (!whole || wordEnds(b0, i, i + m)));
+    return apart(starts, m, 0, -1, []);
+}
+
+function apart(xs: i64[n], m: i64, i: i64, next: i64, out: i64[]): i64[] {
+    if (i >= n) {
+        return out;
+    }
+    return xs[i] >= next ? apart(xs, m, i + 1, xs[i] + m, concat(out, [xs[i]])) : apart(xs, m, i + 1, next, out);
+}
+
+// the places of the text `text` (of one line) in the document
+function occurrences(lines: string[n], text: string, matchCase: boolean, whole: boolean): Match[] {
+    const q0 = bytes(text);
+    const q = matchCase ? q0 : folded(q0);
+    const per = map(iota(n), (k) => {
+        const xs = placesIn(lines[k], q, matchCase, whole);
+        return { starts: xs, ends: map(xs, (x) => x + q.length) };
+    });
+    return matchesFrom(filter(iota(n), (k) => per[k].starts.length > 0), per, 0, []);
+}
+
+// whether the selection `s` is the text found `m`
+function isMatch(s: Sel, m: Match): boolean {
+    const [a, b] = rangeOf(s);
+    return a.line == m.line && b.line == m.line && a.col == m.start && b.col == m.end;
+}
+
+// Ctrl+D: cursors alone, the word of each selected (the next ones then
+// whole words of the same case); else the next place of the text of the
+// selection added last, after it (from the start past the end), selected
+// too
+function nextOccurrence(d: Doc): Doc {
+    const all = allSelections(d);
+    if (count(all, (s) => !emptySel(s)) == 0) {
+        return { ...each(d, (x, i) => wordSelected(x)), wordFind: true };
+    }
+    const last = latestOf(d);
+    const [a, b] = rangeOf(last);
+    if (a.line != b.line || same(a, b)) {
+        return d;
+    }
+    const ms = occurrences(d.lines, d.lines[a.line].slice(a.col, b.col), d.wordFind || d.find.matchCase, d.wordFind || d.find.wholeWord);
+    const free = filter(ms, (m) => count(all, (s) => isMatch(s, m)) == 0);
+    if (free.length == 0) {
+        return d;
+    }
+    const k = findIndex(free, (m) => m.line > b.line || (m.line == b.line && m.start >= b.col));
+    const m = free[k < 0 ? 0 : k];
+    return { ...d, others: concat(d.others, [{ cursor: pos(m.line, m.end), anchor: pos(m.line, m.start), goal: -1 }]), latest: d.others.length, last: 0 };
+}
+
+// Ctrl+Shift+L: every place of the text of the selection (a cursor alone:
+// of its word, whole) selected
+function allOccurrences(d: Doc): Doc {
+    const d0 = hasSelection(d) ? d : { ...wordSelected(d), wordFind: true };
+    const [a, b] = selection(d0);
+    if (a.line != b.line || same(a, b)) {
+        return d0;
+    }
+    const ms = occurrences(d0.lines, d0.lines[a.line].slice(a.col, b.col), d0.wordFind || d0.find.matchCase, d0.wordFind || d0.find.wholeWord);
+    const sels = map(ms, (m) => ({ cursor: pos(m.line, m.end), anchor: pos(m.line, m.start), goal: -1 }));
+    return { ...d0, others: filter(sels, (s) => !same(s.anchor, a)), latest: -1, last: 0 };
+}
+
+// Ctrl+Alt+Up, Down: a cursor added above or below the one added last, at
+// the column it keeps
+function cursorAdded(d: Doc, down: boolean): Doc {
+    const s = latestOf(d);
+    const goal = s.goal >= 0 ? s.goal : columnOf(d.lines[s.cursor.line], s.cursor.col);
+    const line = s.cursor.line + (down ? 1 : -1);
+    if (line < 0 || line >= d.lines.length) {
+        return d;
+    }
+    const p = pos(line, offsetOf(d.lines[line], goal));
+    if (count(allSelections(d), (x) => emptySel(x) && same(x.cursor, p)) > 0) {
+        return d;
+    }
+    return { ...d, others: concat(d.others, [{ cursor: p, anchor: p, goal: goal }]), latest: d.others.length, last: 0 };
+}
+
+// a click with Alt: a cursor added there (one there already: removed,
+// unless it is the only one)
+function cursorToggled(d: Doc, p: Pos): Doc {
+    const all = allSelections(d);
+    const k = findIndex(all, (s) => emptySel(s) && same(s.cursor, p));
+    if (k < 0) {
+        return { ...d, others: concat(d.others, [{ cursor: p, anchor: p, goal: -1 }]), latest: d.others.length, last: 0 };
+    }
+    if (all.length == 1) {
+        return d;
+    }
+    const rest = without(all, k);
+    return { ...d, cursor: rest[0].cursor, anchor: rest[0].anchor, goal: rest[0].goal, others: without(rest, 0), latest: -1, last: 0 };
+}
+
+// ----- the commands of lines -------------------------------------------------
+
+// the lines a selection covers: its first, its last (not that of its end
+// when it ends at the start of a line after its first)
+function spanOf(s: Sel): [i64, i64] {
+    const [a, b] = rangeOf(s);
+    return [a.line, b.line > a.line && b.col == 0 ? b.line - 1 : b.line] as const;
+}
+
+function firstOf(b: [i64, i64]): i64 {
+    const [f, l] = b;
+    return f;
+}
+
+function lastOf(b: [i64, i64]): i64 {
+    const [f, l] = b;
+    return l;
+}
+
+// the blocks of lines of the selections, in their order, those that meet
+// or touch joined
+function blocksOf(d: Doc): [i64, i64][] {
+    return blocksFrom(sortBy(map(allSelections(d), spanOf), firstOf), 0, []);
+}
+
+function blocksFrom(spans: [i64, i64][n], i: i64, acc: [i64, i64][]): [i64, i64][] {
+    if (i >= n) {
+        return acc;
+    }
+    const sp = spans[i];
+    const m = acc.length;
+    return blocksFrom(spans, i + 1, m > 0 && firstOf(sp) <= lastOf(acc[m - 1]) + 1
+        ? map(iota(m), (j) => j == m - 1 ? [firstOf(acc[j]), max(lastOf(acc[j]), lastOf(sp))] as const : acc[j])
+        : concat(acc, [sp]));
+}
+
+// the block holding the line `k` (-1: none)
+function blockAt(bs: [i64, i64][n], k: i64): i64 {
+    return findIndex(bs, (b) => firstOf(b) <= k && k <= lastOf(b));
+}
+
+// the lines made `lines`, the ends of each selection moved by `moved`;
+// undone at once
+function relined(d: Doc, lines: string[], moved: (Pos) => Pos): Doc {
+    const d1 = { ...d, lines: lines, cursor: moved(d.cursor), anchor: moved(d.anchor), goal: -1,
+        others: map(d.others, (s) => ({ cursor: moved(s.cursor), anchor: moved(s.anchor), goal: -1 })),
+        undo: capped(concat(d.undo, [snapOf(d)])), redo: [], last: 0, version: d.version + 1 };
+    return merged(rescannedAll(d1));
+}
+
+// a position of a line where `delta` bytes are put (positive) or taken
+// (negative) at `at` (-1: the line unchanged)
+function shiftedAt(p: Pos, at: i64, delta: i64): Pos {
+    if (at < 0 || delta == 0) {
+        return p;
+    }
+    if (delta > 0) {
+        return p.col >= at ? pos(p.line, p.col + delta) : p;
+    }
+    return p.col > at ? pos(p.line, max(at, p.col + delta)) : p;
+}
+
+// Ctrl+/: the lines of the selections commented with the comment of a line
+// of their language (`--`, `//`, `#`) and a space, at the smallest
+// indentation of each block; uncommented when all those not blank are; a
+// language without one: its comment of a block around each block
+function commented(d: Doc): Doc {
+    const [tok, open, close] = commentOf(d.lang);
+    const bs = blocksOf(d);
+    if (tok == "") {
+        return open == "" ? d : blockCommented(d, bs, open, close);
+    }
+    const n = d.lines.length;
+    const ks = filter(iota(n), (k) => blockAt(bs, k) >= 0 && d.lines[k].trim() != "");
+    if (ks.length == 0) {
+        return d;
+    }
+    const undo = count(ks, (k) => {
+        const l = d.lines[k];
+        return l.slice(leadOf(l).length, l.length).startsWith(tok);
+    }) == ks.length;
+    const leads = map(bs, (b) => fold(filter(ks, (k) => k >= firstOf(b) && k <= lastOf(b)), 1000000, (acc, k) => min(acc, leadOf(d.lines[k]).length)));
+    const at = map(iota(n), (k) => blockAt(bs, k) < 0 || d.lines[k].trim() == "" ? -1 : (undo ? leadOf(d.lines[k]).length : leads[blockAt(bs, k)]));
+    const delta = map(iota(n), (k) => {
+        if (at[k] < 0) {
+            return 0;
+        }
+        const l = d.lines[k];
+        return undo ? -(tok.length + (l.slice(at[k] + tok.length, l.length).startsWith(" ") ? 1 : 0)) : tok.length + 1;
+    });
+    const lines = map(iota(n), (k) => {
+        const l = d.lines[k];
+        return at[k] < 0 ? l : (undo ? l.slice(0, at[k]) + l.slice(at[k] - delta[k], l.length) : l.slice(0, at[k]) + tok + " " + l.slice(at[k], l.length));
+    });
+    return relined(d, lines, (p) => shiftedAt(p, at[p.line], delta[p.line]));
+}
+
+// the comments of a language as Visual Studio Code toggles them: that of a
+// line, those of a block (XML, HTML and Markdown `<!--` and `-->`; JSON
+// `//`, as its files with comments)
+function commentOf(l: Lang): [string, string, string] {
+    if (l.xml || l.name == "Markdown") {
+        return ["", "<!--", "-->"] as const;
+    }
+    if (l.json) {
+        return ["//", "", ""] as const;
+    }
+    return [l.line, l.open, l.close] as const;
+}
+
+// the comment of a block of the language (`<!--`, `-->`) put around each
+// block of lines, or taken when each is within one
+function blockCommented(d: Doc, bs: [i64, i64][m], open: string, close: string): Doc {
+    const n = d.lines.length;
+    const undo = count(bs, (b) => {
+        const a = d.lines[firstOf(b)];
+        const z = d.lines[lastOf(b)];
+        return a.slice(leadOf(a).length, a.length).startsWith(open) && z.endsWith(close);
+    }) == m;
+    const heads = map(iota(n), (k) => findIndex(bs, (b) => firstOf(b) == k) >= 0);
+    const tails = map(iota(n), (k) => findIndex(bs, (b) => lastOf(b) == k) >= 0);
+    // (the head first: its place and the bytes put or taken)
+    const at = map(iota(n), (k) => heads[k] ? leadOf(d.lines[k]).length : -1);
+    const delta = map(iota(n), (k) => {
+        if (!heads[k]) {
+            return 0;
+        }
+        const l = d.lines[k];
+        return undo ? -(open.length + (l.slice(at[k] + open.length, l.length).startsWith(" ") ? 1 : 0)) : open.length + 1;
+    });
+    const headed = map(iota(n), (k) => {
+        const l = d.lines[k];
+        return !heads[k] ? l : (undo ? l.slice(0, at[k]) + l.slice(at[k] - delta[k], l.length) : l.slice(0, at[k]) + open + " " + l.slice(at[k], l.length));
+    });
+    const lines = map(iota(n), (k) => {
+        const l = headed[k];
+        if (!tails[k]) {
+            return l;
+        }
+        if (!undo) {
+            return l + " " + close;
+        }
+        const cut = l.slice(0, l.length - close.length);
+        return cut.endsWith(" ") ? cut.slice(0, cut.length - 1) : cut;
+    });
+    return relined(d, lines, (p) => {
+        const q = shiftedAt(p, at[p.line], delta[p.line]);
+        return pos(q.line, min(q.col, lines[q.line].length));
+    });
+}
+
+// Ctrl+] and Ctrl+[: the lines of the selections indented by a step (those
+// not empty), or out by one (a step of spaces at most, or a tab)
+function shiftedLines(d: Doc, out: boolean): Doc {
+    const bs = blocksOf(d);
+    const n = d.lines.length;
+    const step = join(map(iota(d.indent), (k) => " "), "");
+    const delta = map(iota(n), (k) => {
+        if (blockAt(bs, k) < 0) {
+            return 0;
+        }
+        const l = d.lines[k];
+        if (!out) {
+            return l == "" ? 0 : d.indent;
+        }
+        return -min(leadOf(l).length, l.startsWith("\t") ? 1 : d.indent);
+    });
+    if (count(iota(n), (k) => delta[k] != 0) == 0) {
+        return d;
+    }
+    const lines = map(iota(n), (k) => delta[k] > 0 ? step + d.lines[k] : d.lines[k].slice(-delta[k], d.lines[k].length));
+    return relined(d, lines, (p) => delta[p.line] > 0 ? pos(p.line, p.col + delta[p.line]) : pos(p.line, max(0, p.col + delta[p.line])));
+}
+
+// Alt+Up, Alt+Down: the lines of the selections moved past the line above
+// or below them
+function linesMoved(d: Doc, down: boolean): Doc {
+    const n = d.lines.length;
+    const bs = filter(blocksOf(d), (b) => down ? lastOf(b) + 1 < n : firstOf(b) > 0);
+    if (bs.length == 0) {
+        return d;
+    }
+    // (the block holding a line among those that change places)
+    const holder = (j: i64) => findIndex(bs, (b) => down ? j >= firstOf(b) && j <= lastOf(b) + 1 : j >= firstOf(b) - 1 && j <= lastOf(b));
+    const src = map(iota(n), (j) => {
+        const k = holder(j);
+        return k < 0 ? j : (down ? (j == firstOf(bs[k]) ? lastOf(bs[k]) + 1 : j - 1) : (j == lastOf(bs[k]) ? firstOf(bs[k]) - 1 : j + 1));
+    });
+    const dst = map(iota(n), (i) => {
+        const k = holder(i);
+        return k < 0 ? i : (down ? (i == lastOf(bs[k]) + 1 ? firstOf(bs[k]) : i + 1) : (i == firstOf(bs[k]) - 1 ? lastOf(bs[k]) : i - 1));
+    });
+    return relined(d, map(iota(n), (j) => d.lines[src[j]]), (p) => pos(dst[p.line], p.col));
+}
+
+// Shift+Alt+Down, Up: the lines of the selections copied after them, the
+// selections on the copy (down) or on the lines copied (up)
+function linesCopied(d: Doc, down: boolean): Doc {
+    const bs = blocksOf(d);
+    const n = d.lines.length;
+    const len = (b: [i64, i64]) => lastOf(b) - firstOf(b) + 1;
+    // (the lines put before the old line `i`: the copies of the blocks
+    // ending before it)
+    const added = (i: i64) => fold(bs, 0, (acc, b) => lastOf(b) < i ? acc + len(b) : acc);
+    const total = n + fold(bs, 0, (acc, b) => acc + len(b));
+    const src = map(iota(total), (j) => {
+        // (a line of a copy, after the line ending its block)
+        const k = findIndex(bs, (b) => {
+            const start = lastOf(b) + added(lastOf(b)) + 1;
+            return j >= start && j < start + len(b);
+        });
+        if (k >= 0) {
+            return firstOf(bs[k]) + j - (lastOf(bs[k]) + added(lastOf(bs[k])) + 1);
+        }
+        const before = fold(bs, 0, (acc, b) => lastOf(b) + added(lastOf(b)) + len(b) < j ? acc + len(b) : acc);
+        return j - before;
+    });
+    return relined(d, map(iota(total), (j) => d.lines[src[j]]), (p) => {
+        const k = blockAt(bs, p.line);
+        return pos(p.line + added(p.line) + (down && k >= 0 ? len(bs[k]) : 0), p.col);
+    });
+}
+
+// Ctrl+Shift+K: the lines of the selections removed, each cursor on the
+// line after them at its column
+function linesDeleted(d: Doc): Doc {
+    const bs = blocksOf(d);
+    const n = d.lines.length;
+    const kept = filter(iota(n), (k) => blockAt(bs, k) < 0);
+    const lines0 = map(kept, (k) => d.lines[k]);
+    const lines = lines0.length == 0 ? [""] : lines0;
+    return relined(d, lines, (p) => {
+        const at = count(kept, (j) => j < p.line);
+        if (blockAt(bs, p.line) < 0) {
+            return pos(at, p.col);
+        }
+        const line = min(at, lines.length - 1);
+        return pos(line, offsetOf(lines[line], columnOf(d.lines[p.line], p.col)));
+    });
+}
+
+// Ctrl+L: the lines of each selection selected whole, the next one too
+// when they are
+function lineSelected(d: Doc): Doc {
+    return each(d, (x, i) => {
+        const [a, b] = selection(x);
+        const last = x.lines.length - 1;
+        const end = b.line + 1 > last ? pos(last, x.lines[last].length) : pos(b.line + 1, 0);
+        return { ...x, anchor: pos(a.line, 0), cursor: end, goal: -1, last: 0 };
+    });
+}
+
+// Ctrl+Shift+Enter: a line put above that of the cursor, indented as it,
+// the cursor on it
+function lineAbove(d: Doc): Doc {
+    const p = d.cursor;
+    const lead = leadOf(d.lines[p.line]);
+    const r = replace(d, pos(p.line, 0), pos(p.line, 0), lead + "\n", 0);
+    const at = pos(p.line, lead.length);
+    return { ...r, cursor: at, anchor: at };
+}
+
+// ----- the search --------------------------------------------------------------
+
+// the parts of the widget of the search a click reaches (their messages:
+// that of the first part of the editor and these after it)
+export const FIND_QUERY: i64 = 0;
+export const FIND_WITH: i64 = 1;
+export const FIND_CASE: i64 = 2;
+export const FIND_WORD: i64 = 3;
+export const FIND_REGEX: i64 = 4;
+export const FIND_PREV: i64 = 5;
+export const FIND_NEXT: i64 = 6;
+export const FIND_CLOSE: i64 = 7;
+export const FIND_TOGGLE: i64 = 8;
+export const FIND_ONE: i64 = 9;
+export const FIND_ALL: i64 = 10;
+export const FIND_SELECTION: i64 = 11;
+export const FIND_PRESERVE: i64 = 12;
+
+// the texts the widget finds in the lines (none when it is closed or
+// empty)
+export function refound(d: Doc): Doc {
+    return { ...d, found: d.find.shown && d.find.query.text != "" ? searched(d.lines, d.find) : [] };
+}
+
+function searched(lines: string[n], f: Find): Match[] {
+    const all = f.regex ? regexFound(lines, f.query.text, f.matchCase, f.wholeWord) : occurrences(lines, f.query.text, f.matchCase, f.wholeWord);
+    // (within the part searched: those wholly in it)
+    return f.inSelection ? filter(all, (m) => !before(pos(m.line, m.start), f.scopeFrom) && !before(f.scopeTo, pos(m.line, m.end))) : all;
+}
+
+// the index of the text found that the selection is (-1: none)
+export function currentFound(d: Doc): i64 {
+    const s = selOf(d);
+    return findIndex(d.found, (m) => isMatch(s, m));
+}
+
+// the text found `m` selected, the other cursors left
+function onMatch(d: Doc, m: Match): Doc {
+    return { ...d, anchor: pos(m.line, m.start), cursor: pos(m.line, m.end), others: [], latest: -1, goal: -1, last: 0 };
+}
+
+// the first text found at or after `p` (from the start past the end)
+function foundFrom(d: Doc, p: Pos): Doc {
+    if (d.found.length == 0) {
+        return d;
+    }
+    const k = findIndex(d.found, (m) => m.line > p.line || (m.line == p.line && m.start >= p.col));
+    return onMatch(d, d.found[k < 0 ? 0 : k]);
+}
+
+// Enter, F3: the next text found after the selection; Shift: the one
+// before it
+function findStepped(d: Doc, back: boolean): Doc {
+    const d0 = d.find.shown ? d : refound({ ...d, find: { ...d.find, shown: true } });
+    if (d0.found.length == 0) {
+        return d0;
+    }
+    const [a, b] = selection(d0);
+    if (!back) {
+        // (past a text found selected: the one after it)
+        const k = findIndex(d0.found, (m) => m.line > b.line || (m.line == b.line && m.start >= b.col));
+        return onMatch(d0, d0.found[k < 0 ? 0 : k]);
+    }
+    const k = fold(iota(d0.found.length), -1, (acc, i) => {
+        const m = d0.found[i];
+        return m.line < a.line || (m.line == a.line && m.end <= a.col) ? i : acc;
+    });
+    return onMatch(d0, d0.found[k < 0 ? d0.found.length - 1 : k]);
+}
+
+// Ctrl+F, Ctrl+H: the widget shown (with the line of the replacement), its
+// text the selection of one line, else the word of the cursor (Ctrl+F),
+// all selected, the keyboard in it (Ctrl+H with a selection: in the
+// replacement); the first text found from the selection selected
+function findOpened(d: Doc, replacing: boolean): Doc {
+    const [a, b] = selection(d);
+    const one = a.line == b.line && hasSelection(d);
+    const w = wordSelected(d);
+    const [wa, wb] = selection(w);
+    const seed = one ? d.lines[a.line].slice(a.col, b.col) : (!replacing && hasSelection(w) ? w.lines[wa.line].slice(wa.col, wb.col) : "");
+    const text = seed != "" ? seed : d.find.query.text;
+    const q = { ...editing(text), anchor: 0 };
+    const f = { ...d.find, shown: true, replacing: replacing || (d.find.shown && d.find.replacing), query: q, field: replacing && one ? 2 : 1 };
+    // (from the word of the cursor when it gave the text: it is the first)
+    return foundFrom(refound({ ...d, find: f }), !one && seed != "" ? wa : a);
+}
+
+// Escape: the widget closed, the keyboard back in the code
+function findClosed(d: Doc): Doc {
+    return { ...d, find: { ...d.find, shown: false, field: 0 }, found: [] };
+}
+
+// an option of the widget (the case of the letters, whole words, a regular
+// expression) turned on or off, the texts found again
+function toggled(d: Doc, part: i64): Doc {
+    const f = d.find;
+    // (the search within the selection: its lines, that of the cursor
+    // without one)
+    const [sa, sb] = selection(d);
+    const scoped = hasSelection(d) ? { ...f, inSelection: !f.inSelection, scopeFrom: sa, scopeTo: sb }
+        : { ...f, inSelection: !f.inSelection, scopeFrom: pos(sa.line, 0), scopeTo: pos(sa.line, d.lines[sa.line].length) };
+    const f1 = part == FIND_CASE ? { ...f, matchCase: !f.matchCase } : (part == FIND_WORD ? { ...f, wholeWord: !f.wholeWord }
+        : (part == FIND_SELECTION ? scoped : (part == FIND_PRESERVE ? { ...f, preserveCase: !f.preserveCase } : { ...f, regex: !f.regex })));
+    const [a, b] = selection(d);
+    return foundFrom(refound({ ...d, find: f1 }), a);
+}
+
+// the text found selected replaced (Enter in the replacement), the next
+// one selected; none selected: the next one selected
+function replacedOne(d: Doc): Doc {
+    const k = currentFound(d);
+    if (k < 0) {
+        return findStepped(d, false);
+    }
+    const m = d.found[k];
+    const d1 = refound(replace({ ...d, others: [] }, pos(m.line, m.start), pos(m.line, m.end), replacement(d, m), 0));
+    return foundFrom(d1, d1.cursor);
+}
+
+// every text found replaced, undone at once
+function replacedAll(d: Doc): Doc {
+    const ms = d.found;
+    if (ms.length == 0) {
+        return d;
+    }
+    const d1 = fold(iota(ms.length), { ...d, others: [] }, (acc, i) => {
+        const m = ms[ms.length - 1 - i];
+        return replace(acc, pos(m.line, m.start), pos(m.line, m.end), replacement(d, m), 0);
+    });
+    return refound({ ...d1, undo: capped(concat(d.undo, [snapOf(d)])), redo: [], version: d.version + 1, last: 0 });
+}
+
+// the text that replaces the text found `m`: that of the field, its `$&`
+// and `$1` to `$9` the text found and its groups for a regular expression
+function replacement(d: Doc, m: Match): string {
+    const to = d.find.regex ? regexReplacement(d.lines[m.line], m, d.find.query.text, d.find.matchCase, d.find.replaceText.text) : d.find.replaceText.text;
+    return d.find.preserveCase ? caseKept(d.lines[m.line].slice(m.start, m.end), to) : to;
+}
+
+// the replacement `to` in the case of the text replaced `was`: in capitals
+// when it is, its first letter a capital when its is
+function caseKept(was: string, to: string): string {
+    const b = bytes(was);
+    const letters = filter(b, (c) => (c >= 65u8 && c <= 90u8) || (c >= 97u8 && c <= 122u8));
+    if (letters.length == 0) {
+        return to;
+    }
+    const upper = count(letters, (c) => c >= 65u8 && c <= 90u8);
+    if (upper == letters.length && letters.length > 1) {
+        return to.toUpperCase();
+    }
+    if (letters[0] >= 65u8 && letters[0] <= 90u8 && to.length > 0) {
+        return to.slice(0, 1).toUpperCase() + to.slice(1, to.length);
+    }
+    return to;
+}
+
+// the field of the widget with the keyboard changed by the input `i`; the
+// texts found again when the search changed, the first from the selection
+// selected
+function findFieldChanged(d: Doc, i: Input): Doc {
+    const f = d.find;
+    if (f.field == 2) {
+        const [w, fx, own] = ed.edited(f.replaceText, i, -1);
+        return { ...d, find: { ...f, replaceText: w } };
+    }
+    const [q, fx, own] = ed.edited(f.query, i, -1);
+    if (q.text == f.query.text) {
+        return { ...d, find: { ...f, query: q } };
+    }
+    const [a, b] = selection(d);
+    return foundFrom(refound({ ...d, find: { ...f, query: q } }), a);
+}
+
+// a key in the widget: Enter the next text found (Shift: the one before),
+// in the replacement replaced (Ctrl+Alt+Enter: all); Escape closes it;
+// Tab and Shift+Tab from a field to the other; Alt+C, Alt+W, Alt+R its
+// options; Ctrl+F, Ctrl+H, F3; the others to the field
+function findKeyed(d: Doc, k: i64, mods: i64): [Doc, Effect[]] {
+    const shift = (mods & WITH_SHIFT) != 0;
+    const ctrl = (mods & WITH_CTRL) != 0;
+    const alt = (mods & WITH_ALT) != 0;
+    const f = d.find;
+    if (k == ESCAPE) {
+        return [findClosed(d), []] as const;
+    }
+    if (k == ENTER && f.field == 2) {
+        return [ctrl && alt ? replacedAll(d) : replacedOne(d), []] as const;
+    }
+    if (k == ENTER || k == F3) {
+        return [findStepped(d, shift), []] as const;
+    }
+    if (k == TAB) {
+        return [{ ...d, find: { ...f, field: f.replacing ? (f.field == 1 ? 2 : 1) : 1 } }, []] as const;
+    }
+    if (alt && !ctrl && (k == 99 || k == 119 || k == 114)) {
+        return [toggled(d, k == 99 ? FIND_CASE : (k == 119 ? FIND_WORD : FIND_REGEX)), []] as const;
+    }
+    if (ctrl && !alt && k == 102) {
+        return [{ ...d, find: { ...f, field: 1, query: { ...f.query, anchor: 0, caret: f.query.text.length } } }, []] as const;
+    }
+    if (ctrl && !alt && k == 104) {
+        return [{ ...d, find: { ...f, replacing: true, field: 2 } }, []] as const;
+    }
+    if (ctrl && alt && k == ENTER) {
+        return [replacedAll(d), []] as const;
+    }
+    const field = f.field == 2 ? f.replaceText : f.query;
+    const [e1, fx] = ed.keyed(field, k, mods);
+    if (f.field == 2) {
+        return [{ ...d, find: { ...f, replaceText: e1 } }, fx] as const;
+    }
+    // (the search changed by the key: found again)
+    const [a, b] = selection(d);
+    const d2 = e1.text == f.query.text ? { ...d, find: { ...f, query: e1 } } : foundFrom(refound({ ...d, find: { ...f, query: e1 } }), a);
+    return [d2, fx] as const;
+}
+
+// a click on a part of the widget (`part`), the input it is (a field
+// placed and selected by it)
+export function findClicked(d: Doc, part: i64, i: Input): [Doc, Effect[]] {
+    const f = d.find;
+    if (part == FIND_QUERY || part == FIND_WITH) {
+        const field = part == FIND_QUERY ? f.query : f.replaceText;
+        const [e1, fx, own] = ed.edited(field, retargeted(i), 0);
+        return [{ ...d, find: part == FIND_QUERY ? { ...f, query: e1, field: 1 } : { ...f, replaceText: e1, field: 2 } }, fx] as const;
+    }
+    if (part == FIND_CASE || part == FIND_WORD || part == FIND_REGEX || part == FIND_SELECTION || part == FIND_PRESERVE) {
+        return [toggled(d, part), []] as const;
+    }
+    if (part == FIND_PREV || part == FIND_NEXT) {
+        return [acrossShown(findStepped(d, part == FIND_PREV)), []] as const;
+    }
+    if (part == FIND_CLOSE) {
+        return [findClosed(d), []] as const;
+    }
+    if (part == FIND_TOGGLE) {
+        return [{ ...d, find: { ...f, replacing: !f.replacing } }, []] as const;
+    }
+    if (part == FIND_ONE) {
+        return [acrossShown(replacedOne(d)), []] as const;
+    }
+    if (part == FIND_ALL) {
+        return [replacedAll(d), []] as const;
+    }
+    return [d, []] as const;
+}
+
+// a click or a drag given to a field of the widget as on its place 0
+function retargeted(i: Input): Input {
+    return match (i) {
+        Click(p, x, y, at, clicks, mods) => Click(0, x, y, at, clicks, mods),
+        Drag(p, x, y, at) => Drag(0, x, y, at),
+        _ => i,
+    };
+}
+
+// the places of the regular expression `source` in the lines (none when it
+// is not one), those of nothing left out; whole words
+function regexFound(lines: string[n], source: string, matchCase: boolean, whole: boolean): Match[] {
+    const p = compiled(source, !matchCase);
+    if (!p.ok) {
+        return [];
+    }
+    const per = map(iota(n), (k) => {
+        const ms = filter(matchesOf(p, lines[k], !matchCase), (t) => {
+            const [s, e, c] = t;
+            return e > s && (!whole || wordEnds(bytes(lines[k]), s, e));
+        });
+        return { starts: map(ms, (t) => {
+            const [s, e, c] = t;
+            return s;
+        }), ends: map(ms, (t) => {
+            const [s, e, c] = t;
+            return e;
+        }) };
+    });
+    return matchesFrom(filter(iota(n), (k) => per[k].starts.length > 0), per, 0, []);
+}
+
+// the text that replaces the match `m` of the regular expression `source`
+// in `line`: `to` with its groups
+function regexReplacement(line: string, m: Match, source: string, matchCase: boolean, to: string): string {
+    const p = compiled(source, !matchCase);
+    const ms = filter(matchesOf(p, line, !matchCase), (t) => {
+        const [s, e, c] = t;
+        return s == m.start && e == m.end;
+    });
+    if (ms.length == 0) {
+        return to;
+    }
+    const [s, e, caps] = ms[0];
+    return substituted(to, line, caps);
+}
+
+// ----- across ------------------------------------------------------------------
+
+// the room of the code across, the box that scrolls it high, the width of a
+// column of its font, in units
+export function sized(d: Doc, width: f32, height: f32, advance: f32): Doc {
+    return { ...d, width: width, height: height, advance: advance };
+}
+
+// the width of the numbers of the lines and of the gap after them, of the
+// scrollbar of the box, in units
+export const GUTTER: f32 = 68.0f32;
+export const VBAR: f32 = 14.0f32;
+
+// the box that scrolls the code laid out at `w` by `h` units: the width of
+// its map as Visual Studio Code gives it (a column of a unit for each
+// column of the code it leaves, 120 at most, and 8 units of margin), the
+// room of the code left
+export function boxSized(d: Doc, w: f32, h: f32, advance: f32): Doc {
+    const map = min(120.0f32, floor(max(0.0f32, w - VBAR - 2.0f32 - GUTTER) / (advance + 1.0f32))) + 8.0f32;
+    return { ...d, width: max(0.0f32, w - GUTTER - map - VBAR), height: h, advance: advance, mapWidth: map };
+}
+
+// the width of the lines in sight, in units (the widest)
+export function widestShown(d: Doc): f32 {
+    const first = max(0, i64(d.top / LINE_HEIGHT));
+    const last = min(d.lines.length, i64((d.top + d.height) / LINE_HEIGHT) + 1);
+    const cols = fold(iota(max(0, last - first)), 0, (acc, i) => max(acc, columnOf(d.lines[first + i], d.lines[first + i].length)));
+    return f32(cols) * d.advance;
+}
+
+// the document saved under another path (Save As): its language that of
+// the new name, its lines coloured again
+export function renamed(d: Doc, path: string): Doc {
+    return rescannedAll({ ...d, path: path, lang: langOf(path) });
+}
+
+// the widget of the search of `other` given to `d` (another tab shown:
+// the widget stays, as in Visual Studio Code), its texts found again; the
+// wrap of its lines too (a choice of the editor, not of a file)
+export function findFrom(d: Doc, other: Doc): Doc {
+    return refound({ ...d, find: other.find, wrap: other.wrap });
+}
+
+// ----- the lines wrapped (Alt+Z) --------------------------------------------
+
+// whether the lines are wrapped (the width of the editor known)
+export function wrapped(d: Doc): boolean {
+    return d.wrap && d.width > 0.0f32;
+}
+
+// the columns a row holds
+export function wrapColumns(d: Doc): i64 {
+    return max(8, i64(d.width / d.advance));
+}
+
+// the columns the rows after the first of the line `text` are indented
+// by: its indentation (none when it takes half a row or more)
+export function wrapIndent(text: string, cols: i64): i64 {
+    const lead = leadColumnsOf(text);
+    return lead * 2 < cols ? lead : 0;
+}
+
+// the first byte of the character at `i` (`i` past a character: the next)
+// that fits `limit` columns from `col`: the end of what fits
+function fitFrom(b: u8[n], i: i64, col: i64, limit: i64): [i64, i64] {
+    if (i >= n) {
+        return [n, col] as const;
+    }
+    const w = b[i] == 9u8 ? (col / TAB_SIZE + 1) * TAB_SIZE - col : 1;
+    if (col + w > limit) {
+        return [i, col] as const;
+    }
+    return fitFrom(b, nextChar(b, i), col + w, limit);
+}
+
+// the starts of the rows of the line `text` wrapped at `cols` columns, as
+// Visual Studio Code breaks them: a row ends after the last space that
+// lets it hold (the spaces at its end kept on it), else where it is full;
+// the rows after the first indented as the line
+export function rowStarts(text: string, cols: i64): i64[] {
+    const b = bytes(text);
+    if (b.length <= cols && findIndex(b, (c) => c == 9u8) < 0) {
+        return [0];
+    }
+    return startsFrom(b, 0, 0, cols, wrapIndent(text, cols), [0]);
+}
+
+function startsFrom(b: u8[n], s: i64, col: i64, cols: i64, indent: i64, out: i64[]): i64[] {
+    const room = s == 0 ? cols : cols - indent;
+    const [e0, ce] = fitFrom(b, s, col, col + room);
+    if (e0 >= n) {
+        return out;
+    }
+    // (at least a character a row)
+    const e = e0 > s ? e0 : nextChar(b, s);
+    // (spaces at the break: kept on the row; else the last space before it)
+    const sp = findIndex(iota(n - e), (j) => b[e + j] != 32u8);
+    const back = findIndex(iota(max(0, e - s - 1)), (j) => b[e - 1 - j] == 32u8);
+    const next = b[e] == 32u8 ? (sp < 0 ? n : e + sp) : (back >= 0 ? e - back : e);
+    if (next >= n) {
+        return out;
+    }
+    const colNext = columnsTo(b, s, next, col);
+    return startsFrom(b, next, colNext, cols, indent, concat(out, [next]));
+}
+
+// the column at the byte `end` from the byte `i` at the column `col`
+function columnsTo(b: u8[n], i: i64, end: i64, col: i64): i64 {
+    if (i >= end || i >= n) {
+        return col;
+    }
+    return columnsTo(b, nextChar(b, i), end, b[i] == 9u8 ? (col / TAB_SIZE + 1) * TAB_SIZE : col + 1);
+}
+
+// the starts of the rows of the line `k` (one row: not wrapped)
+export function rowsOfLine(d: Doc, k: i64): i64[] {
+    return wrapped(d) ? rowStarts(d.lines[k], wrapColumns(d)) : [0];
+}
+
+// the first row of the line `k`
+export function rowOfLine(d: Doc, k: i64): i64 {
+    return wrapped(d) ? fold(iota(k), 0, (acc, j) => acc + rowsOfLine(d, j).length) : k;
+}
+
+// every row of the document
+export function totalRows(d: Doc): i64 {
+    return rowOfLine(d, d.lines.length);
+}
+
+// the line of the row `r` and the index of the row among its own
+export function lineOfRow(d: Doc, r: i64): [i64, i64] {
+    if (!wrapped(d)) {
+        return [min(r, d.lines.length - 1), 0] as const;
+    }
+    return lineFrom(d, 0, r);
+}
+
+function lineFrom(d: Doc, k: i64, r: i64): [i64, i64] {
+    if (k >= d.lines.length - 1) {
+        return [d.lines.length - 1, min(r, rowsOfLine(d, d.lines.length - 1).length - 1)] as const;
+    }
+    const c = rowsOfLine(d, k).length;
+    return r < c ? [k, r] as const : lineFrom(d, k + 1, r - c);
+}
+
+// the index of the row of the line holding the byte `col` (its starts `st`)
+function segmentOf(st: i64[n], col: i64): i64 {
+    return fold(iota(n), 0, (acc, i) => st[i] <= col ? i : acc);
+}
+
+// the row of the position `p`
+export function rowOfPos(d: Doc, p: Pos): i64 {
+    return wrapped(d) ? rowOfLine(d, p.line) + segmentOf(rowsOfLine(d, p.line), p.col) : p.line;
+}
+
+// the column of the position `p` in its row (the indentation of a row
+// after the first counted)
+export function rowColumn(d: Doc, p: Pos): i64 {
+    const text = d.lines[p.line];
+    const st = rowsOfLine(d, p.line);
+    const g = segmentOf(st, p.col);
+    return columnOf(text, p.col) - columnOf(text, st[g]) + (g > 0 ? wrapIndent(text, wrapColumns(d)) : 0);
+}
+
+// the position at the column `x` of the row `r` (within the row: before its
+// last character when a row follows it)
+export function positionAtRow(d: Doc, r: i64, x: i64): Pos {
+    const [k, g] = lineOfRow(d, max(0, r));
+    const text = d.lines[k];
+    const b = bytes(text);
+    const st = rowsOfLine(d, k);
+    const s = st[g];
+    const target = columnOf(text, s) + max(0, x - (g > 0 ? wrapIndent(text, wrapColumns(d)) : 0));
+    const off = max(s, offsetOf(text, target));
+    const end = g + 1 < st.length ? prevChar(b, st[g + 1]) : b.length;
+    return pos(k, min(off, end));
+}
+
+// the item of the bar of the state: `Ln 5, Col 10`, `(12 selected)` after
+// it with a selection; with several, `3 selections` and the characters
+// selected
+export function statusOf(d: Doc): string {
+    const sels = allSelections(d);
+    const chars = fold(sels, 0, (acc, s) => {
+        const [a, b] = rangeOf(s);
+        return acc + codePoints(textBetween(d, a, b)).length;
+    });
+    if (sels.length > 1) {
+        return chars > 0 ? `${sels.length} selections (${chars} characters selected)` : `${sels.length} selections`;
+    }
+    const col = columnOf(d.lines[d.cursor.line], d.cursor.col) + 1;
+    return chars > 0 ? `Ln ${d.cursor.line + 1}, Col ${col} (${chars} selected)` : `Ln ${d.cursor.line + 1}, Col ${col}`;
+}
+
+// the room kept right of the cursor shown across, past the end of the
+// widest line
+const ROOM_RIGHT: f32 = 30.0f32;
+
+// the offset across as far as it goes: the widest line in sight shown to
+// its end and the room after it (none when the lines are wrapped)
+export function leftShown(d: Doc): f32 {
+    return d.width <= 0.0f32 || d.wrap ? 0.0f32 : max(0.0f32, min(d.left, widestShown(d) + ROOM_RIGHT - d.width));
+}
+
+// the offset across that shows the cursor: as little moved as can, 30
+// units kept right of it
+function acrossShown(d: Doc): Doc {
+    if (d.width <= 0.0f32 || d.wrap) {
+        return d;
+    }
+    const x = f32(columnOf(d.lines[d.cursor.line], d.cursor.col)) * d.advance;
+    const l = d.left;
+    const left = x < l ? max(0.0f32, x - ROOM_RIGHT) : (x + ROOM_RIGHT > l + d.width ? x + ROOM_RIGHT - d.width : l);
+    return { ...d, left: max(0.0f32, left) };
+}
+
+// the wheel turned across by `dx` units
+export function wheeledAcross(d: Doc, dx: f32): Doc {
+    return { ...d, left: max(0.0f32, min(leftShown(d) + dx, max(0.0f32, widestShown(d) + ROOM_RIGHT - d.width))) };
+}
+
+// the offset across set (the scrollbar dragged)
+export function scrolledAcross(d: Doc, left: f32): Doc {
+    return { ...d, left: max(0.0f32, min(left, max(0.0f32, widestShown(d) + ROOM_RIGHT - d.width))) };
+}
+
 
 // the line `k` removed (Ctrl+X without a selection), the cursor at the
 // start of the line after it
@@ -572,8 +1829,7 @@ function undone(d: Doc): Doc {
         return d;
     }
     const s = d.undo[d.undo.length - 1];
-    const now = { lines: d.lines, cursor: d.cursor, anchor: d.anchor };
-    const d1 = { ...d, lines: s.lines, cursor: s.cursor, anchor: s.anchor, undo: map(iota(d.undo.length - 1), (k) => d.undo[k]), redo: concat(d.redo, [now]), last: 0, version: d.version + 1, goal: -1 };
+    const d1 = { ...d, lines: s.lines, cursor: s.cursor, anchor: s.anchor, others: s.others, undo: map(iota(d.undo.length - 1), (k) => d.undo[k]), redo: concat(d.redo, [snapOf(d)]), last: 0, version: d.version + 1, goal: -1 };
     return rescannedAll(d1);
 }
 
@@ -583,20 +1839,17 @@ function redone(d: Doc): Doc {
         return d;
     }
     const s = d.redo[d.redo.length - 1];
-    const now = { lines: d.lines, cursor: d.cursor, anchor: d.anchor };
-    const d1 = { ...d, lines: s.lines, cursor: s.cursor, anchor: s.anchor, redo: map(iota(d.redo.length - 1), (k) => d.redo[k]), undo: concat(d.undo, [now]), last: 0, version: d.version + 1, goal: -1 };
+    const d1 = { ...d, lines: s.lines, cursor: s.cursor, anchor: s.anchor, others: s.others, redo: map(iota(d.redo.length - 1), (k) => d.redo[k]), undo: concat(d.undo, [snapOf(d)]), last: 0, version: d.version + 1, goal: -1 };
     return rescannedAll(d1);
 }
 
-// the text of the clipboard pasted over the selection
-export function pasted(d: Doc, s: string): Doc {
-    const [a, b] = selection(d);
-    return replace(d, a, b, s, 0);
-}
-
-// a character typed (a code point, a space or above)
+// a character typed (a code point, a space or above): at each selection;
+// in the field of the widget of the search that has the keyboard
 export function typedCode(d: Doc, c: i64): Doc {
-    return typedChar(d, c);
+    if (d.find.shown && d.find.field > 0) {
+        return findFieldChanged(d, Text(c));
+    }
+    return acrossShown(each(d, (x, i) => typedChar(x, c)));
 }
 
 // ----- the pointer ----------------------------------------------------------------
@@ -616,7 +1869,8 @@ export function positionAt(d: Doc, line: i64, column: i64): Pos {
 // a click at the line `line` and the column `column`, `clicks` its count:
 // the cursor there (Shift: the selection to it), a word taken by a double
 // click, the line by a triple one
-export function clickedAt(d: Doc, line: i64, column: i64, clicks: i64, shift: boolean): Doc {
+export function clickedAt(d0: Doc, line: i64, column: i64, clicks: i64, shift: boolean): Doc {
+    const d = { ...d0, others: [], latest: -1, wordFind: false, find: { ...d0.find, field: 0 } };
     const p = positionAt(d, line, column);
     if (clicks >= 3) {
         const end = p.line + 1 < d.lines.length ? pos(p.line + 1, 0) : pos(p.line, d.lines[p.line].length);
@@ -627,6 +1881,15 @@ export function clickedAt(d: Doc, line: i64, column: i64, clicks: i64, shift: bo
         return { ...d, anchor: pos(p.line, l), cursor: pos(p.line, r), unit: 1, from: pos(p.line, l), to: pos(p.line, r), goal: -1, last: 0 };
     }
     return { ...moved(d, p, shift, false), unit: 0, from: p, to: p };
+}
+
+// a click with the modifiers `mods`: with Alt, a cursor added (or removed);
+// else as `clickedAt`
+export function clickedWith(d: Doc, line: i64, column: i64, clicks: i64, mods: i64): Doc {
+    if ((mods & WITH_ALT) != 0 && clicks == 1) {
+        return cursorToggled({ ...d, find: { ...d.find, field: 0 } }, positionAt(d, line, column));
+    }
+    return clickedAt(d, line, column, clicks, (mods & WITH_SHIFT) != 0);
 }
 
 // a drag to the line `line` and the column `column` after a click: the
@@ -653,7 +1916,8 @@ export function viewed(d: Doc, top: f32, height: f32): Doc {
 // the band of the line of the cursor in the content of its box: its top and
 // its height (`Reveal` shows it)
 export function cursorBand(d: Doc): [f32, f32] {
-    return [f32(d.cursor.line) * LINE_HEIGHT, LINE_HEIGHT] as const;
+    const p = latestOf(d).cursor;
+    return [f32(wrapped(d) ? rowOfPos(d, p) : p.line) * LINE_HEIGHT, LINE_HEIGHT] as const;
 }
 
 // the offset the box should scroll to so that the cursor is in sight (its

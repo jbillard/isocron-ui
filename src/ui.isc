@@ -153,6 +153,9 @@ export type Style = {
     // the box and all it draws faded to this opacity (1: as they are): the
     // bar of the title of Visual Studio Code while its window is inactive
     opacity: f32,
+    // its children moved left by `shiftX` units (a box that clips them: the
+    // code of an editor scrolled across, its numbers left where they are)
+    shiftX: f32,
 };
 
 // how a text looks: its size (`em`, pixels a em), its colour, how its lines are
@@ -250,6 +253,7 @@ export function scaledElement(e: Element, k: f32): Element {
             shadowBlur: st.shadowBlur * k,
             shadowY: st.shadowY * k,
             outline: st.outline * k,
+            shiftX: st.shiftX * k,
         }, map(cs, (c) => scaledElement(c, k))),
     };
 }
@@ -322,6 +326,7 @@ export function style(): Style {
         barRadius: -1.0f32,
         barInset: -1.0f32,
         opacity: 1.0f32,
+        shiftX: 0.0f32,
     };
 }
 
@@ -427,7 +432,17 @@ function measure(fs: Font[k], e: Element, room: f32): [f32, f32] {
             // its children are shown)
             const n = cs.length;
             const out = (i: i64) => floats(cs[i]) || (st.folds && row && i == n - 1);
-            const sizes = map(iota(n), (i) => out(i) ? [0.0f32, 0.0f32] as const : measure(fs, cs[i], inner));
+            // (in a row, a child that takes a share of the width measured at
+            // that share of what the others leave: a text in it wraps there)
+            const wide = (i: i64) => row && !out(i) && share(lengthOf(cs[i], true)) > 0.0f32;
+            const own = map(iota(n), (i) => out(i) || wide(i) ? [0.0f32, 0.0f32] as const : measure(fs, cs[i], inner));
+            const flowing = count(iota(n), (i) => !out(i));
+            const left = max(0.0f32, inner - fold(own, 0.0f32, (a, s) => {
+                const [w, h] = s;
+                return a + w;
+            }) - (flowing > 1 ? f32(flowing - 1) * st.gap : 0.0f32));
+            const shares = fold(iota(n), 0.0f32, (a, i) => wide(i) ? a + share(lengthOf(cs[i], true)) : a);
+            const sizes = map(iota(n), (i) => wide(i) ? measure(fs, cs[i], left * share(lengthOf(cs[i], true)) / shares) : own[i]);
             const inFlow = count(iota(n), (i) => !out(i));
             const gaps = inFlow > 1 ? f32(inFlow - 1) * st.gap : 0.0f32;
             const along = fold(sizes, gaps, (a, s) => {
@@ -575,12 +590,15 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
             const cw = tall ? max(0.0f32, iw - 14.0f32 * fr.scale) : iw;
             const mainRoom = row ? cw : ih;
             const crossRoom = row ? ih : cw;
-            const sizes = map(cs, (c) => measure(fs, c, cw));
+            // (in a row, a child that takes a share of the width measured once
+            // its width is known, below)
+            const sharing = map(cs, (c) => row && share(lengthOf(c, true)) > 0.0f32);
+            const sizes0 = map(iota(n), (i) => sharing[i] ? [0.0f32, 0.0f32] as const : measure(fs, cs[i], cw));
             // along the main axis: a share of the room left, or the size
             // the child has
             const grows = map(cs, (c) => share(lengthOf(c, row)));
             const base = map(iota(n), (i) => {
-                const [cw, ch] = sizes[i];
+                const [cw, ch] = sizes0[i];
                 return aside[i] || grows[i] > 0.0f32 ? 0.0f32 : (row ? cw : ch);
             });
             const gaps = gapsAll;
@@ -608,6 +626,7 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
                 Between => [0.0f32, inFlow > 1 ? left / f32(inFlow - 1) : 0.0f32] as const,
             };
             const ends = scan(map(iota(n), (i) => aside[i] ? 0.0f32 : mains[i] + st.gap + extra), (a, b) => a + b, 0.0f32);
+            const sizes = map(iota(n), (i) => sharing[i] && !aside[i] ? measure(fs, cs[i], mains[i]) : (sharing[i] ? measure(fs, cs[i], cw) : sizes0[i]));
             // a column that scrolls: its children moved up by its offset,
             // within the height they have past its own
             const range = scrolls ? max(0.0f32, used - mainRoom) : 0.0f32;
@@ -619,10 +638,16 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
                 const [cw, ch] = sizes[i];
                 // (a box over its siblings at the top of the inside: its own
                 // width, `Fill` that of the inside, its own height)
-                const [ow, oh] = over[i] ? measure(fs, c, iw) : [0.0f32, 0.0f32] as const;
+                // (as tall as the inside when its height is `Fill`: a bar at
+                // the bottom of a box that scrolls, a map along its side)
+                const [ow, oh0] = over[i] ? measure(fs, c, iw) : [0.0f32, 0.0f32] as const;
                 const wide = match (lengthOf(c, true)) {
                     Fill(k) => true,
                     _ => false,
+                };
+                const oh = match (lengthOf(c, false)) {
+                    Fill(k) => ih,
+                    _ => oh0,
                 };
                 const fixed = match (lengthOf(c, !row)) {
                     Px(v) => true,
@@ -639,8 +664,8 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
                 const along = first + ends[i] - (mains[i] + st.gap + extra) - off;
                 return over[i] ? [ix - spreadOf(c), iy, (wide ? iw : ow) + 2.0f32 * spreadOf(c), oh] as const
                     : (row
-                    ? [ix + along, iy + at, mains[i], cross] as const
-                    : [ix + at, iy + along, cross, mains[i]] as const);
+                    ? [ix + along - st.shiftX, iy + at, mains[i], cross] as const
+                    : [ix + at - st.shiftX, iy + along, cross, mains[i]] as const);
             });
             // a row that folds: its children shown while they fit, its last
             // (its button « … ») after them when some do not

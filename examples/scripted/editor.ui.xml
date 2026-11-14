@@ -10,7 +10,8 @@
      panel, Ctrl+W closes the tab; the side bar and the panel are resized
      by their edges; a click on a line of code makes it the current one. -->
 <view title="Isocron : éditeur" width="1100" height="720" titlebar="custom"
-      styles="editor.style" script="seti.lua editor.lua" onkey="return onKey(key, ctrl)">
+      styles="editor.style" script="seti.lua editor.lua" onkey="return onKey(key, ctrl, shift, alt)"
+      onbeforeclose="return beforeClose()">
   <column class="window" background="{host.active and '#191A1B' or '#121314'}">
     <!-- the bar of the title: at its left the mark and the menus (those
          that do not fit under « … »), in its middle the arrows and the box
@@ -52,7 +53,7 @@
         </row>
         <row class="winButton" onclick="host.minimize()"><text class="winIcon" font="{captionFont()}" size="{captionSize()}">{winGlyph('min')}</text></row>
         <row class="winButton" onclick="host.toggleMaximized()"><text class="winIcon" font="{captionFont()}" size="{captionSize()}">{winGlyph('max')}</text></row>
-        <row class="winClose" onclick="host.close()"><text class="winIcon" font="{captionFont()}" size="{captionSize()}">{winGlyph('close')}</text></row>
+        <row class="winClose" onclick="if not beforeClose() then host.close() end"><text class="winIcon" font="{captionFont()}" size="{captionSize()}">{winGlyph('close')}</text></row>
       </row>
     </row>
     <row class="body">
@@ -154,8 +155,12 @@
         <each items="{palette and {1} or {}}" as="p">
           <row class="paletteRow">
             <column class="palette">
+              <!-- (Save As: its title, the path in the field) -->
+              <each items="{saveAs and {1} or {}}" as="sa">
+                <row class="paletteTitle"><text class="paletteTitleText">Save As</text></row>
+              </each>
               <field class="qinput" bind="query" hint="Search files by name" autofocus="true" onenter="openChoice()" onchange="choice = 1"/>
-              <each items="{matches()}" as="m" index="k">
+              <each items="{matchesShown()}" as="m" index="k">
                 <row class="match" onclick="choice = k; openChoice()" background="{k == choice and '#297AA0' or 'transparent'}">
                   <box class="fileIcon"><text size="{fileIconSize(m)}" font="{fileIconFont(m)}" color="{fileIconColor(m)}">{fileIcon(m)}</text></box>
                   <text class="matchText" color="{k == choice and '#FFFFFF' or '#BFBFBF'}">{string.match(m, '([^/\\]+)$') or m}</text>
@@ -204,7 +209,7 @@
                         <text size="13" color="#EDEDED">{t.name}</text>
                         <row class="tabEnd">
                           <box width="4" height="1"/>
-                          <row class="close" onclick="closeTab(t.k)"><text class="closeIcon" font="icons">{t.dirty and I.dirty or I.close}</text></row>
+                          <row class="close" onclick="requestCloseTab(t.k)"><text class="closeIcon" font="icons">{t.dirty and I.dirty or I.close}</text></row>
                         </row>
                       </row>
                       <box width="1" height="1"/>
@@ -302,5 +307,33 @@
       <box class="statusGap"/>
       <row class="statusFirst" onclick=""><text class="statusIcon" font="icons">{I.bell}</text></row>
     </row>
+    <!-- the dialog asking to save a file changed before its tab or the
+         window closes, over the window dimmed (that of Visual Studio Code:
+         its warning, its message, its buttons) -->
+    <each items="{dialog and {1} or {}}" as="dlg">
+      <column class="modal" onclick="">
+        <column class="dialog">
+          <row class="dialogTools">
+            <box width="fill"/>
+            <row class="dialogClose" onclick="dialogCancel()" tip="Close"><text class="dialogCloseIcon" font="icons">{I.close}</text></row>
+          </row>
+          <row class="dialogBody">
+            <text class="dialogIcon" font="icons">{I.warning}</text>
+            <column class="dialogTexts">
+              <text class="dialogMessage">{dialogMessage()}</text>
+              <each items="{dialogNames()}" as="nm">
+                <text class="dialogDetail">{nm}</text>
+              </each>
+              <text class="dialogDetail">Your changes will be lost if you don't save them.</text>
+            </column>
+          </row>
+          <row class="dialogButtons">
+            <row class="dialogPrimary" onclick="dialogSave()"><text class="dialogPrimaryText">{dialogSaveText()}</text></row>
+            <row class="dialogButton" onclick="dialogDontSave()"><text class="dialogButtonText">Don't Save</text></row>
+            <row class="dialogButton" onclick="dialogCancel()"><text class="dialogButtonText">Cancel</text></row>
+          </row>
+        </column>
+      </column>
+    </each>
   </column>
 </view>

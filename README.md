@@ -240,12 +240,30 @@ interface. Besides the vocabulary of `uigen`:
   that is not a space; the moves by words with Ctrl, Page Up and Page
   Down; Ctrl+A, Ctrl+C, Ctrl+X and Ctrl+V, the whole line without a
   selection; Ctrl+Z and Ctrl+Y, the typing of a word one undo), its lines
-  coloured again as they change. In Lua, `host.openDoc(path, text)` makes
+  coloured again as they change. Several cursors: Ctrl+D (the next place
+  of the selection), Ctrl+Shift+L (all), Alt+click, Ctrl+Alt+Up and Down,
+  Escape; a paste of as many lines as cursors spread over them. The
+  commands of lines: Ctrl+/ (comments of the language), Alt+Up and Down
+  (moved), Shift+Alt+Up and Down (copied), Ctrl+Shift+K (removed), Ctrl+]
+  and Ctrl+[, Ctrl+L, Ctrl+Shift+Enter. The search (Ctrl+F) and the
+  replacement (Ctrl+H) in its widget: the case of the letters, whole
+  words, a regular expression (`src/regex.isc`: its groups `$1` in the
+  replacement; a pattern that is none finds nothing), the search within
+  the selection, the case kept; Enter, Shift+Enter, F3, Alt+C, Alt+W,
+  Alt+R, Ctrl+Alt+Enter; the texts found lit, `3 of 14`. The long lines
+  scrolled across (the wheel across, Shift and the wheel, the bar under
+  the code) or wrapped at the width of the editor (Alt+Z); the map of the
+  document at its right (the minimap: a click or its thumb dragged
+  scrolls). In Lua, `host.openDoc(path, text)` makes
   the document of a file read, `host.closeDoc(path)` drops it,
   `host.save(path)` writes it, `host.focusCode()` gives it the keyboard;
   `host.docs[path]` tells its `line`, its `col`, whether it is `dirty`, its
-  `lang`, its `indent`, its `eol` and the `symbols` around its cursor (a
-  JSON). An application compiled shows the same with `codeRows` and
+  `lang`, its `indent`, its `eol`, its `status` (`Ln 3, Col 6 (5
+  selected)`, `3 selections`) and the `symbols` around its cursor (a
+  JSON); `host.saveAs(path, to)` writes it under another path,
+  `host.blurCode()` takes the keyboard from it. `<view onbeforeclose="...">`:
+  Lua run when the window asks to close, a true value keeps it open (an
+  editor asks to save its files, then calls `host.close()`). An application compiled shows the same with `codeRows` and
   `stickyOf` (`<slot>` of uigen) and changes its document with `keyed`,
   `typedCode`, `pasted`, `clickedAt`, `draggedTo` (examples/editor).
 - In Lua, `host.width` and `host.height`: the size of the inside of the
@@ -281,18 +299,20 @@ interface. Besides the vocabulary of `uigen`:
 - `src/input.isc`: the inputs (`Click`, `Drag`, `Release`, `Hover`, `Text`,
   `Key` with its modifiers, `Paste`, `Focus`, `Viewport`, `Tick`,
   `TextRead`, `FolderListed`, `TextWritten`, `WindowState`, `WindowSize`,
-  `WindowActive`) and the effects (`Copy`, `AskPaste`, `Animate`,
-  `ReadText`, `ListFolder`, `WriteText`, `ScrollTo`, `Minimize`,
-  `ToggleMaximized`, `CloseWindow`).
+  `WindowActive`, `CloseAsked`, `WheelX`, `BoxSized`) and the effects
+  (`Copy`, `AskPaste`, `Animate`, `ReadText`, `ListFolder`, `WriteText`,
+  `ScrollTo`, `Reveal`, `Minimize`, `ToggleMaximized`, `CloseWindow`,
+  `KeepOpen`).
 - `src/edit.isc`: the text of a field (`Editing`: its caret and selection)
   and how the keys, the pointer and the clipboard change it (`edited`).
 - `src/doc.isc`: a document of the editor of code (`Doc`: its lines, its
   cursor and selection, its undo, the scans of its lines) and what the
   hand does to it, as Visual Studio Code; `src/code.isc`: its lines cut in
   coloured tokens (the languages it knows, the theme 2026 Dark);
-  `src/code_view.isc`: its lines in sight as elements (`codeRows`,
-  `stickyOf`), the caret an element of its own (`Caret`, blinking as that
-  of a field).
+  `src/code_view.isc`: its lines in sight as elements (`codeElements`: the
+  rows, the lines kept at the top, the widget of the search, the map, the
+  bar across), the caret an element of its own (`Caret`, blinking as that
+  of a field); `src/regex.isc`: the regular expressions of the search.
 - `src/widgets.isc`: the components, those of the plate: `button`
   (primary, secondary), `iconButton`, `textField` (its hint, its ring of
   focus), `checkbox`, `radio`, `toggle` and `toggleAt` (its knob sliding),
