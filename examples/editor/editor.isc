@@ -809,6 +809,15 @@ function typed(m: Editor, i: Input): [Editor, Effect[]] {
 
 // the model after the input `i` of the hand, and what it asks
 export function update(m: Editor, i: Input): [Editor, Effect[]] {
+    const [m1, fx] = updateOnce(m, i);
+    // (another document shown: the box of the code at its own offset, as
+    // each tab of Visual Studio Code keeps its own)
+    const shown = m1.active >= 0 && m1.active < m1.tabs.length ? m1.tabs[m1.active].path : "";
+    const before = m.active >= 0 && m.active < m.tabs.length ? m.tabs[m.active].path : "";
+    return shown != before && shown != "" ? [m1, concat(fx, [ScrollTo(1, m1.tabs[m1.active].doc.top)])] as const : [m1, fx] as const;
+}
+
+function updateOnce(m: Editor, i: Input): [Editor, Effect[]] {
     return match (i) {
         Hover(p) => [{ ...m, hover: p }, []] as const,
         Click(p, x, y, at, clicks, mods) => {

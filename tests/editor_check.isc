@@ -16,9 +16,10 @@ import { parse, Font } from "../src/font";
 import { Primitive, Pending, Clip, Unclip, Raster } from "../src/paint";
 import { interface, laidOutFonts, step, timed, Ui, Ev, Moved, Down, Up, Resized, Scroll, Scaled, Pressed } from "../src/app";
 import { Hit, CLICK, placeFrame, scaledElement } from "../src/ui";
-import { Input, Effect, Key, Text, TextRead, FolderListed, ReadText, ListFolder, ENTER, DOWN, WITH_CTRL } from "../src/input";
+import { Input, Effect, Key, Text, TextRead, FolderListed, ReadText, ListFolder, Hover, ScrollTo, ENTER, DOWN, WITH_CTRL } from "../src/input";
 import { lineWidth } from "../src/text";
 import * as sc from "../src/scripted";
+import * as lua from "../src/lua_vm";
 import * as sys from "sys";
 
 action answer(e: Effect): Input {
@@ -42,6 +43,31 @@ action fed(a: sc.App, i: Input): sc.App {
 
 action answered(a: sc.App, fx: Effect[n], k: i64): sc.App {
     return k >= n ? a : answered(fed(a, answer(fx[k])), fx, k + 1);
+}
+
+// `fed`, the boxes moved by the application (`ScrollTo`, as the library
+// moves them) given to the interface `ui`; the reads answered
+action fedUi(a: sc.App, ui: Ui, i: Input): [sc.App, Ui] {
+    const [a1, fx] = sc.update(a, i);
+    return answeredUi(a1, ui, fx, 0);
+}
+
+action answeredUi(a: sc.App, ui: Ui, fx: Effect[n], k: i64): [sc.App, Ui] {
+    if (k >= n) {
+        return [a, ui] as const;
+    }
+    return match (fx[k]) {
+        ScrollTo(box, o) => answeredUi(a, { ...ui, offsets: ui.offsets.with(box, o * ui.scale) }, fx, k + 1),
+        ReadText(p) => {
+            const [a1, u1] = fedUi(a, ui, answer(fx[k]));
+            return answeredUi(a1, u1, fx, k + 1);
+        },
+        ListFolder(p) => {
+            const [a1, u1] = fedUi(a, ui, answer(fx[k]));
+            return answeredUi(a1, u1, fx, k + 1);
+        },
+        _ => answeredUi(a, ui, fx, k + 1),
+    };
 }
 
 action typedFrom(a: sc.App, b: u8[n], i: i64): sc.App {
@@ -201,6 +227,20 @@ action main(args: string[k]): i32 {
             const [b1, v1, qs1] = played(fs, b0, v0, concat([Moved(mx, my), Down(0)], steps), 0, []);
             const [b2, v2, qs2] = played(fs, b1, v1, [Up(0)], 0, []);
             print(`top before the drag of the map: ${b0.docs[0].top}; after: ${b2.docs[0].top}; cursor ${b0.docs[0].cursor.line}:${b0.docs[0].cursor.col} -> ${b2.docs[0].cursor.line}:${b2.docs[0].cursor.col}, anchor ${b2.docs[0].anchor.line}:${b2.docs[0].anchor.col}`);
+            // another file opened from there: shown from its top, the box at
+            // its offset (each tab its own); the first one shown again: at its
+            // offset
+            const [w1, name] = lua.stringV(b2.vm, "examples/scripted/todo.lua");
+            const [w2, rs] = lua.call(w1, lua.global(w1, "openFile"), [name]);
+            const [o0, y0] = fedUi({ ...b2, vm: w2, luaRan: true }, v2, Hover(-1));
+            const [c0, x0, rs0] = played(fs, o0, y0, [Moved(1.0f32, 1.0f32)], 0, []);
+            const t1 = findIndex(c0.docs, (d) => d.path == c0.shownPath);
+            print(`another file: ${c0.shownPath}, its top ${t1 >= 0 ? c0.docs[t1].top : -1.0f32}, the box at ${x0.offsets[1] / k}`);
+            const [w3, rs3] = lua.call(c0.vm, lua.global(c0.vm, "selectTab"), [lua.integerValue(1)]);
+            const [o1, y1] = fedUi({ ...c0, vm: w3, luaRan: true }, x0, Hover(-1));
+            const [c1, x1, rs1] = played(fs, o1, y1, [Moved(2.0f32, 2.0f32)], 0, []);
+            const t2 = findIndex(c1.docs, (d) => d.path == c1.shownPath);
+            print(`the first again: ${c1.shownPath}, its top ${t2 >= 0 ? c1.docs[t2].top : -1.0f32}, the box at ${x1.offsets[1] / k}`);
             return 0;
         },
     };

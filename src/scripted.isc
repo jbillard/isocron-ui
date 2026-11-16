@@ -1650,7 +1650,12 @@ export function update(a0: App, i: HandInput): [App, Effect[]] {
         WindowSize(w, h) => true,
         _ => false,
     };
-    return [rebuiltUnless(a2, waits), concat(fx, files)] as const;
+    const a3 = rebuiltUnless(a2, waits);
+    // (another document shown: the box of the code at its own offset, as
+    // each tab of Visual Studio Code keeps its own)
+    const di = findIndex(a3.docs, (d) => d.path == a3.shownPath);
+    const back: Effect[] = a3.shownPath != a.shownPath && a3.shownPath != "" && a3.shownScroll >= 0 && di >= 0 ? [ScrollTo(a3.shownScroll, a3.docs[di].top)] : [];
+    return [a3, concat(concat(fx, files), back)] as const;
 }
 
 function answered(a: App, i: HandInput): [App, Effect[]] {
