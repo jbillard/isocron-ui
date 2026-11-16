@@ -299,10 +299,12 @@ interface. Besides the vocabulary of `uigen`:
 - `src/input.isc`: the inputs (`Click`, `Drag`, `Release`, `Hover`, `Text`,
   `Key` with its modifiers, `Paste`, `Focus`, `Viewport`, `Tick`,
   `TextRead`, `FolderListed`, `TextWritten`, `WindowState`, `WindowSize`,
-  `WindowActive`, `CloseAsked`, `WheelX`, `BoxSized`) and the effects
-  (`Copy`, `AskPaste`, `Animate`, `ReadText`, `ListFolder`, `WriteText`,
-  `ScrollTo`, `Reveal`, `Minimize`, `ToggleMaximized`, `CloseWindow`,
-  `KeepOpen`).
+  `WindowActive`, `CloseAsked`, `WheelX`, `BoxSized`, `Density`: the
+  pixels of a unit of the screen, `ContextMenu`: the right button over a
+  place, `MenuChosen`) and the effects (`Copy`, `AskPaste`, `Animate`,
+  `ReadText`, `ListFolder`, `WriteText`, `ScrollTo`, `Reveal`, `Minimize`,
+  `ToggleMaximized`, `CloseWindow`, `KeepOpen`, `ShowMenu`: a menu at the
+  pointer, its entries and its look, made of `MenuItem`s by `shownMenu`).
 - `src/edit.isc`: the text of a field (`Editing`: its caret and selection)
   and how the keys, the pointer and the clipboard change it (`edited`).
 - `src/doc.isc`: a document of the editor of code (`Doc`: its lines, its
@@ -311,8 +313,11 @@ interface. Besides the vocabulary of `uigen`:
   coloured tokens (the languages it knows, the theme 2026 Dark);
   `src/code_view.isc`: its lines in sight as elements (`codeElements`: the
   rows, the lines kept at the top, the widget of the search, the map, the
-  bar across), the caret an element of its own (`Caret`, blinking as that
-  of a field); `src/regex.isc`: the regular expressions of the search.
+  bar across), each row a line of runs (`Spans`: never broken into lines,
+  cut before the map), the caret an element of its own (`Caret`, blinking
+  as that of a field), the menu of its right button (`codeMenu`, as
+  Visual Studio Code's), the map in the pixels of the screen;
+  `src/regex.isc`: the regular expressions of the search.
 - `src/widgets.isc`: the components, those of the plate: `button`
   (primary, secondary), `iconButton`, `textField` (its hint, its ring of
   focus), `checkbox`, `radio`, `toggle` and `toggleAt` (its knob sliding),
@@ -324,7 +329,11 @@ interface. Besides the vocabulary of `uigen`:
   registers, the machine and its library, its texts and patterns).
 - `src/ui.isc`: the elements and their layout (`placeFrame`: what draws
   them and the places the pointer and the keyboard reach). A box that clips
-  or scrolls places only the children it shows.
+  or scrolls places only the children it shows. Each element is measured
+  once (its children's measures kept and taken again when they are given
+  the same room) and the primitives of the boxes joined without being
+  copied, made into one array at the end: a frame laid out in a time that
+  grows with its elements, not with their depth.
 - `src/atlas.isc`: the images of the glyphs kept.
 - `src/paint.isc`: the primitives of a scene drawn on the processor by
   tiles: rectangles with rounded corners and borders, their shadows, glyphs,
@@ -369,6 +378,10 @@ folder (`tests/fonts/`).
   (`iscc run tools/uigen/uigen.isc examples/editor/editor.ui.xml
   examples/editor/editor_view.isc`), what it does written in Isocron; the
   folder given (the current one by default) read at the start.
+- Their icon under Windows: `iscc run tools/make_icon.isc app.ico` draws
+  the mark of the editor at each size Windows shows an icon (a file
+  `.ico` of PNG images), given to a program by `iscc build ... --icon
+  app.ico` (D677 of Isocron): the explorer and the windows show it.
 - `long_list_app.isc` (`long_list.isc`): 100 000 tasks (or the number
   given) in a long list; prints those ticked.
 - `gallery_app.isc` (`gallery_live.isc`, `gallery_plate.isc`): the plate of

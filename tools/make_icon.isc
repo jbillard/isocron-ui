@@ -1,0 +1,71 @@
+// The icon of the programs of the library (`iscc build --icon`, D677 of
+// Isocron): the mark of the bar of the title of the editor (a square of
+// #297AA0 with rounded corners, a white `I`) drawn by the library at each
+// size Windows shows an icon, each a PNG, in a file `.ico`.
+// usage: iscc run tools/make_icon.isc OUT.ico [BOLD.ttf]
+import { parse, Font } from "../src/font";
+import { Div, Label, style, textStyle, Px, Row, Packed, placeFonts } from "../src/ui";
+import { Center } from "../src/text";
+import { render, rgb, rgba } from "../src/paint";
+import { encode } from "../src/png";
+
+// the mark at `s` pixels, as a PNG
+function markPng(f: Font, s: i64): u8[] {
+    const k = f32(s);
+    const mark = Div({ ...style(), width: Px(k), height: Px(k), radius: k * 3.0f32 / 16.0f32, background: rgb(0x297AA0u32), direction: Row, justify: Packed(Center), align: Center, stretch: false }, [
+        Label({ ...textStyle(k * 0.72f32, rgb(0xFFFFFFu32)), lineHeight: k * 0.72f32 }, "I"),
+    ]);
+    const [ps, hits] = placeFonts([f], mark, 0.0f32, 0.0f32, k, k);
+    return encode(s, s, render(s, s, rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32), ps));
+}
+
+function le16(v: i64): u8[] {
+    return [u8(v & 255), u8((v >> 8) & 255)];
+}
+
+function le32(v: i64): u8[] {
+    return [u8(v & 255), u8((v >> 8) & 255), u8((v >> 16) & 255), u8((v >> 24) & 255)];
+}
+
+// the file `.ico` of the mark at the sizes `sizes`: its header, an entry
+// for each (256 written 0), the images after them
+function icoOf(f: Font, sizes: i64[n]): u8[] {
+    const lens = map(sizes, (s) => markPng(f, s).length);
+    const starts = scan(lens, (a, b) => a + b, 0);
+    const first = 6 + 16 * n;
+    const head = concat(concat(le16(0), le16(1)), le16(n));
+    const entries = withEntries(sizes, lens, starts, first, 0, head);
+    return withImages(f, sizes, 0, entries);
+}
+
+function withEntries(sizes: i64[n], lens: i64[n], starts: i64[n], first: i64, i: i64, out: u8[]): u8[] {
+    if (i >= n) {
+        return out;
+    }
+    const e = concat(concat(concat([u8(sizes[i] & 255), u8(sizes[i] & 255), 0u8, 0u8], le16(1)), concat(le16(32), le32(lens[i]))), le32(first + starts[i] - lens[i]));
+    return withEntries(sizes, lens, starts, first, i + 1, concat(out, e));
+}
+
+function withImages(f: Font, sizes: i64[n], i: i64, out: u8[]): u8[] {
+    return i >= n ? out : withImages(f, sizes, i + 1, concat(out, markPng(f, sizes[i])));
+}
+
+action main(args: string[k]): i32 {
+    if (args.length < 1) {
+        print("usage: make_icon OUT.ico [BOLD.ttf]");
+        return 2;
+    }
+    return match (parse(readBytes(args.length > 1 ? args[1] : "tests/fonts/DejaVuSans-Bold.ttf"))) {
+        Ok(f) => {
+            const sizes = [16, 20, 24, 32, 40, 48, 64, 256];
+            const ico = icoOf(f, sizes);
+            writeBytes(args[0], ico);
+            print(`${args[0]}: ${sizes.length} images, ${ico.length} bytes`);
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

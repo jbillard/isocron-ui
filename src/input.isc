@@ -5,6 +5,8 @@
 // keys that edit and the shortcuts, the text of the clipboard; the text
 // copied to the clipboard, the clipboard asked for.
 
+import { Color } from "./paint";
+
 // the modifiers held with a key, as bits
 export const WITH_SHIFT: i64 = 1;
 export const WITH_CTRL: i64 = 2;
@@ -27,6 +29,7 @@ export const PAGE_UP: i64 = 0x110008;
 export const PAGE_DOWN: i64 = 0x110009;
 // the keys of functions: F1 is 0x110010, F12 0x11001B
 export const F1: i64 = 0x110010;
+export const F2: i64 = 0x110011;
 export const F3: i64 = 0x110012;
 export const F12: i64 = 0x11001B;
 // the signs of the shortcuts of lines, held with Ctrl: as Visual Studio
@@ -130,7 +133,17 @@ export function spacingAccent(k: i64): i64 {
 //   the `scroll`-th laid out at `width` by `height` units (its inside, the
 //   room of its scrollbar with it), told when it changes (an editor of code
 //   lays its long lines out across it)
-export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i64) | Release(i64) | Hover(i64) | Text(i64) | Key(i64, i64) | Paste(string) | Focus(i64) | Viewport(i64, f32, f32) | Tick(i64) | TextRead(string, string, boolean) | FolderListed(string, string[], boolean) | WindowState(boolean) | WindowSize(f32, f32) | WindowActive(boolean) | TextWritten(string, boolean, string) | CloseAsked | WheelX(i64, f32) | BoxSized(i64, f32, f32);
+// - `Density(ratio)`: the pixels of a unit of the screen of the window
+//   (1.25 at a scale of 125 %), told when it changes (1 until then), before
+//   the size of the window: an image made in the pixels of the screen (the
+//   map of an editor of code, as Visual Studio Code draws its minimap)
+// - `ContextMenu(place, x, y)`: the right button pressed over the place
+//   whose message is `place` (-1: none; not a field, which has the menu of
+//   the library), at (x, y) units from its corner: the application may
+//   answer `ShowMenu` (Visual Studio Code: the menu of the editor of code)
+// - `MenuChosen(k)`: the `k`-th entry of the menu it showed chosen (a
+//   click, Enter); the menu closed
+export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i64) | Release(i64) | Hover(i64) | Text(i64) | Key(i64, i64) | Paste(string) | Focus(i64) | Viewport(i64, f32, f32) | Tick(i64) | TextRead(string, string, boolean) | FolderListed(string, string[], boolean) | WindowState(boolean) | WindowSize(f32, f32) | WindowActive(boolean) | TextWritten(string, boolean, string) | CloseAsked | WheelX(i64, f32) | BoxSized(i64, f32, f32) | Density(f32) | ContextMenu(i64, f32, f32) | MenuChosen(i64);
 
 // what an application asks after an input: a text copied to the clipboard,
 // the text of the clipboard (it comes as `Paste`), the next frame of an
@@ -146,4 +159,42 @@ export type Input = Click(i64, f32, f32, i64, i64, i64) | Drag(i64, f32, f32, i6
 // shows the band of `height` units at `y` from the top of its content,
 // whole (the line of the cursor of an editor in sight); `KeepOpen`: the
 // window kept open after `CloseAsked`)
-export type Effect = Copy(string) | AskPaste | Animate | ReadText(string) | ListFolder(string) | Minimize | ToggleMaximized | CloseWindow | WriteText(string, string) | ScrollTo(i64, f32) | Reveal(i64, f32, f32) | KeepOpen;
+// (`ShowMenu(look, labels, keys, flags)`: a menu opened at the pointer,
+// after `ContextMenu`, looking as `look` says: the texts of its entries,
+// the keys of their shortcuts, their flags (`MENU_ENABLED`,
+// `MENU_SEPARATOR`), as `shownMenu` makes them of `MenuItem`s; the entry
+// chosen comes as `MenuChosen`)
+export type Effect = Copy(string) | AskPaste | Animate | ReadText(string) | ListFolder(string) | Minimize | ToggleMaximized | CloseWindow | WriteText(string, string) | ScrollTo(i64, f32) | Reveal(i64, f32, f32) | KeepOpen | ShowMenu(MenuLook, string[], string[], i64[]);
+
+// the flags of an entry of a menu: it can be chosen; it is a line between
+// two groups
+export const MENU_ENABLED: i64 = 1;
+export const MENU_SEPARATOR: i64 = 2;
+
+// the menu of the entries `items` shown, looking as `look` says
+export function shownMenu(look: MenuLook, items: MenuItem[n]): Effect {
+    return ShowMenu(look, map(items, (e) => e.label), map(items, (e) => e.keys), map(items, (e) => (e.enabled ? MENU_ENABLED : 0) | (e.separator ? MENU_SEPARATOR : 0)));
+}
+
+// an entry of a menu an application shows: its text, the keys of its
+// shortcut shown at its right ("": none), whether it can be chosen; a line
+// between two groups of entries when `separator` (its text then none)
+export type MenuItem = { label: string, keys: string, enabled: boolean, separator: boolean };
+
+// an entry of a menu
+export function menuItem(label: string, keys: string): MenuItem {
+    return { label: label, keys: keys, enabled: true, separator: false };
+}
+
+// a line between two groups of entries of a menu
+export function menuSeparator(): MenuItem {
+    return { label: "", keys: "", enabled: false, separator: true };
+}
+
+// how a menu looks: its background, its texts (those of the entries that
+// cannot be chosen), the entry under the pointer (its background, its
+// border), the lines between groups, its border, its shadow, the radius of
+// its corners and of its entries lit, the size of its texts, the height of
+// an entry, the room left and right of its texts, its width at least (in
+// units)
+export type MenuLook = { background: Color, foreground: Color, disabled: Color, selection: Color, selectionBorder: Color, separator: Color, border: Color, shadow: Color, radius: f32, itemRadius: f32, em: f32, item: f32, pad: f32, least: f32 };

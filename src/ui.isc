@@ -173,7 +173,22 @@ export type TextStyle = { em: f32, color: Color, align: Align, lineHeight: f32, 
 // GPUI's `canvas`)
 // (`Caret(w, h, c)`: the caret of an editor, `w` by `h` of the colour `c`,
 // drawn while the carets blink on; it takes no width among its siblings)
-export type Element = Div(Style, Element[k]) | Label(TextStyle, string) | Input(TextStyle, Editing, boolean, string) | Image(Picture, f32, f32) | Canvas(f32, f32, Primitive[]) | Caret(f32, f32, Color);
+// (`Spans(ts, ss)`: a line of text in runs, each its colour and its
+// background, never cut in lines: its width that of its runs, its height
+// a line; drawn from the left of its box, past it when it is narrower (a
+// box that clips cuts it): a line of an editor of code)
+export type Element = Div(Style, Element[k]) | Label(TextStyle, string) | Input(TextStyle, Editing, boolean, string) | Image(Picture, f32, f32) | Canvas(f32, f32, Primitive[]) | Caret(f32, f32, Color) | Spans(TextStyle, Span[]);
+
+// a run of `Spans`: its text, its colour, its background (transparent:
+// none), a line of a unit along its left in the colour `edge` (transparent:
+// none: a guide of the indentation), a caret before it (`caret`: 2 units of
+// its colour, drawn while the carets blink on, as `Caret`)
+export type Span = { text: string, color: Color, back: Color, edge: Color, caret: boolean };
+
+// a run of text in the colour `c`
+export function span(text: string, c: Color): Span {
+    return { text: text, color: c, back: transparent(), edge: transparent(), caret: false };
+}
 
 // a place the pointer reaches, by its `kind`: CLICK (a box and its message
 // `id`), WHEEL (a box that scrolls: the number of its offset as `id`, as
@@ -226,6 +241,7 @@ export function scaledElement(e: Element, k: f32): Element {
         Image(p, w, h) => Image(p, (w > 0.0f32 ? w : f32(p.width)) * k, (h > 0.0f32 ? h : f32(p.height)) * k),
         Canvas(w, h, ps) => Canvas(w, h, ps),
         Caret(w, h, c) => Caret(devicePixels(w, k), h * k, c),
+        Spans(ts, ss) => Spans(scaledText(ts, k), ss),
         Div(st, cs) => Div({
             ...st,
             width: scaledLength(st.width, k),
@@ -411,18 +427,64 @@ function boundedWidth(e: Element, w: f32): f32 {
     };
 }
 
+// the measure of an element with a room: its width, its height, the room
+// it was measured with, and the measures of its children with the rooms it
+// gave them (a box; none for the others): its layout takes them again when
+// it gives its children the same rooms (each text measured once, not once
+// at each box around it)
+type Sized = SizeOf(f32, f32, f32, Sized[]);
+
+function sizeW(m: Sized): f32 {
+    return match (m) {
+        SizeOf(w, h, r, ks) => w,
+    };
+}
+
+function sizeH(m: Sized): f32 {
+    return match (m) {
+        SizeOf(w, h, r, ks) => h,
+    };
+}
+
+function sizeRoom(m: Sized): f32 {
+    return match (m) {
+        SizeOf(w, h, r, ks) => r,
+    };
+}
+
+function sizeKids(m: Sized): Sized[] {
+    return match (m) {
+        SizeOf(w, h, r, ks) => ks,
+    };
+}
+
+// a measure of nothing (a child not measured: 0 by 0)
+function noSize(): Sized {
+    return SizeOf(0.0f32, 0.0f32, -1.0f32, []);
+}
+
 // the size of the element `e` (its width, its height) when it has `room`
 // pixels of width: a text cut in lines of that width, a box around its
 // children (their sizes along its main axis added with the gaps, the
 // largest across) and its padding, or the sizes its style fixes
 function measure(fs: Font[k], e: Element, room: f32): [f32, f32] {
+    const m = measureT(fs, e, room);
+    return [sizeW(m), sizeH(m)] as const;
+}
+
+// `measure`, with the measures of the children (`Sized`)
+function measureT(fs: Font[k], e: Element, room: f32): Sized {
     return match (e) {
-        Label(ts, s) => measureParagraph(fs[faceOf(ts, k)], ts.em, s, room, ts.lineHeight),
+        Label(ts, s) => {
+            const [w, h] = measureParagraph(fs[faceOf(ts, k)], ts.em, s, room, ts.lineHeight);
+            return SizeOf(w, h, room, []);
+        },
         // a line and room for the caret after it
-        Input(ts, ed, focused, hint) => [lineWidth(fs[faceOf(ts, k)], ts.em, ed.text == "" ? hint : ed.text) + 2.0f32, ts.lineHeight] as const,
-        Image(p, w, h) => [w > 0.0f32 ? w : f32(p.width), h > 0.0f32 ? h : f32(p.height)] as const,
-        Canvas(w, h, ps) => [w, h] as const,
-        Caret(w, h, c) => [0.0f32, h] as const,
+        Input(ts, ed, focused, hint) => SizeOf(lineWidth(fs[faceOf(ts, k)], ts.em, ed.text == "" ? hint : ed.text) + 2.0f32, ts.lineHeight, room, []),
+        Image(p, w, h) => SizeOf(w > 0.0f32 ? w : f32(p.width), h > 0.0f32 ? h : f32(p.height), room, []),
+        Canvas(w, h, ps) => SizeOf(w, h, room, []),
+        Caret(w, h, c) => SizeOf(0.0f32, h, room, []),
+        Spans(ts, ss) => SizeOf(fold(ss, 0.0f32, (a, x) => a + lineWidth(fs[faceOf(ts, k)], ts.em, x.text)), ts.lineHeight, room, []),
         Div(st, cs) => {
             const row = isRow(st.direction);
             const [px, py] = padsOf(st);
@@ -435,29 +497,42 @@ function measure(fs: Font[k], e: Element, room: f32): [f32, f32] {
             // (in a row, a child that takes a share of the width measured at
             // that share of what the others leave: a text in it wraps there)
             const wide = (i: i64) => row && !out(i) && share(lengthOf(cs[i], true)) > 0.0f32;
-            const own = map(iota(n), (i) => out(i) || wide(i) ? [0.0f32, 0.0f32] as const : measure(fs, cs[i], inner));
+            const own = measuredAll(fs, cs, map(iota(n), (i) => out(i) || wide(i) ? -1.0f32 : inner), 0, []);
             const flowing = count(iota(n), (i) => !out(i));
-            const left = max(0.0f32, inner - fold(own, 0.0f32, (a, s) => {
-                const [w, h] = s;
-                return a + w;
-            }) - (flowing > 1 ? f32(flowing - 1) * st.gap : 0.0f32));
+            const left = max(0.0f32, inner - fold(own, 0.0f32, (a, s) => a + sizeW(s)) - (flowing > 1 ? f32(flowing - 1) * st.gap : 0.0f32));
             const shares = fold(iota(n), 0.0f32, (a, i) => wide(i) ? a + share(lengthOf(cs[i], true)) : a);
-            const sizes = map(iota(n), (i) => wide(i) ? measure(fs, cs[i], left * share(lengthOf(cs[i], true)) / shares) : own[i]);
+            const wideSizes = measuredAll(fs, cs, map(iota(n), (i) => wide(i) ? left * share(lengthOf(cs[i], true)) / shares : -1.0f32), 0, []);
+            const kids = map(iota(n), (i) => wide(i) ? wideSizes[i] : own[i]);
             const inFlow = count(iota(n), (i) => !out(i));
             const gaps = inFlow > 1 ? f32(inFlow - 1) * st.gap : 0.0f32;
-            const along = fold(sizes, gaps, (a, s) => {
-                const [w, h] = s;
-                return a + (row ? w : h);
-            });
-            const across = fold(sizes, 0.0f32, (a, s) => {
-                const [w, h] = s;
-                return max(a, row ? h : w);
-            });
+            const along = fold(kids, gaps, (a, s) => a + (row ? sizeW(s) : sizeH(s)));
+            const across = fold(kids, 0.0f32, (a, s) => max(a, row ? sizeH(s) : sizeW(s)));
             const w = (row ? along : across) + 2.0f32 * px;
             const h = (row ? across : along) + 2.0f32 * py;
-            return [bounded(st, sized(st.width, w)), sized(st.height, h)] as const;
+            return SizeOf(bounded(st, sized(st.width, w)), sized(st.height, h), room, kids);
         },
     };
+}
+
+// the sizes of the elements `cs` from the `i`-th, each measured with the
+// room `rooms[i]` (below 0: not measured, 0 by 0), one after the other (a
+// loop: not given to the threads, whose tasks cost more than these
+// measures of a few children)
+function measuredAll(fs: Font[k], cs: Element[n], rooms: f32[n], i: i64, out: Sized[]): Sized[] {
+    if (i >= n) {
+        return out;
+    }
+    return measuredAll(fs, cs, rooms, i + 1, concat(out, [rooms[i] < 0.0f32 ? noSize() : measureT(fs, cs[i], rooms[i])]));
+}
+
+// `measuredAll`, the measures `known` taken again where they were made with
+// the same room
+function kidsAll(fs: Font[k], cs: Element[n], known: Sized[m], rooms: f32[n], i: i64, out: Sized[]): Sized[] {
+    if (i >= n) {
+        return out;
+    }
+    const kid = rooms[i] < 0.0f32 ? noSize() : (m == n && sizeRoom(known[i]) == rooms[i] ? known[i] : measureT(fs, cs[i], rooms[i]));
+    return kidsAll(fs, cs, known, rooms, i + 1, concat(out, [kid]));
 }
 
 // the font of the style `ts` among `k` (the first for one beyond them)
@@ -542,20 +617,113 @@ function placeInput(f: Font, face: i64, ts: TextStyle, ed: Editing, focused: boo
     return [drawn, [place]] as const;
 }
 
+// the runs `ss` of a line of text from (x, y) (its top): their backgrounds,
+// the lines along their left, their glyphs, then the carets before them
+// (shown while the frame shows its carets; a place of no size, a field with
+// the focus: the carets blink)
+function placeSpans(f: Font, face: i64, ts: TextStyle, ss: Span[n], x: f32, y: f32, fr: Frame): [Primitive[], Hit[]] {
+    const ws = map(ss, (r) => lineWidth(f, ts.em, r.text));
+    const ends = scan(ws, (a, b) => a + b, 0.0f32);
+    const at = (i: i64) => x + ends[i] - ws[i];
+    const base = baseline(f, ts, y);
+    const backs = map(filter(iota(n), (i) => ss[i].back.a > 0.0f32 && ws[i] > 0.0f32), (i) => Box(quad(at(i), y, ws[i], ts.lineHeight, ss[i].back)));
+    const edge = devicePixels(1.0f32, fr.scale);
+    const edges = map(filter(iota(n), (i) => ss[i].edge.a > 0.0f32), (i) => Box(quad(floor(at(i)), y, edge, ts.lineHeight, ss[i].edge)));
+    const glyphs = spanGlyphs(f, face, ts, ss, map(iota(n), (i) => at(i)), base, fr.deferred, 0, []);
+    const carets = filter(iota(n), (i) => ss[i].caret);
+    const cw = devicePixels(2.0f32, fr.scale);
+    const drawn = fr.caretOn ? map(carets, (i) => Box(quad(floor(at(i)), y, cw, ts.lineHeight, ss[i].color))) : [];
+    const blink: Hit[] = carets.length > 0 ? [placeOf(at(carets[0]), y, 0.0f32, 0.0f32, 1, FIELD, 0.0f32, -1)] : [];
+    return [concat(concat(concat(backs, edges), glyphs), drawn), blink] as const;
+}
+
+// the glyphs of the runs `ss` from the `i`-th, each from its left `xs`
+function spanGlyphs(f: Font, face: i64, ts: TextStyle, ss: Span[n], xs: f32[n], base: f32, deferred: boolean, i: i64, out: Primitive[]): Primitive[] {
+    if (i >= n) {
+        return out;
+    }
+    return spanGlyphs(f, face, ts, ss, xs, base, deferred, i + 1, ss[i].text == "" ? out : concat(out, lineAs(f, ts.em, ss[i].text, xs[i], base, ss[i].color, deferred, face)));
+}
+
+// the primitives of an element laid out, joined without being copied: an
+// array of them (a leaf), or the joins of the parts of a box in their order
+// (`ends`: the count of the primitives up to the end of each; `alpha`: their
+// opacity, 1 as they are). Arrays of primitives joined level after level
+// copied each primitive at each level (each of its colours, its masks: a
+// primitive holds the fields of all its kinds), and the children of a box
+// one after the other copied those before at each (quadratic in their
+// count); the array is made once, by `flatPrims`.
+type Prims = PrimsOf(Primitive[]) | PrimsJoined(f32, i64[], Prims[]);
+
+function primsCount(p: Prims): i64 {
+    return match (p) {
+        PrimsOf(ps) => ps.length,
+        PrimsJoined(a, ends, parts) => ends.length == 0 ? 0 : ends[ends.length - 1],
+    };
+}
+
+// the parts `parts` joined, at the opacity `alpha`
+function joined(alpha: f32, parts: Prims[n]): Prims {
+    return PrimsJoined(alpha, scan(map(parts, (p) => primsCount(p)), (a, b) => a + b, 0), parts);
+}
+
+// the `i`-th primitive of `p`, at the opacity `a` of the boxes holding it
+function primAt(p: Prims, i: i64, a: f32): Primitive {
+    return match (p) {
+        PrimsOf(ps) => a >= 1.0f32 ? ps[i] : faded(ps[i], a),
+        PrimsJoined(alpha, ends, parts) => {
+            const k = partOf(ends, i, 0, ends.length);
+            return primAt(parts[k], i - (k == 0 ? 0 : ends[k - 1]), a * alpha);
+        },
+    };
+}
+
+// the first part whose end is past `i`, between `lo` and `hi` (by halves)
+function partOf(ends: i64[n], i: i64, lo: i64, hi: i64): i64 {
+    if (lo >= hi) {
+        return lo;
+    }
+    const mid = (lo + hi) / 2;
+    return ends[mid] > i ? partOf(ends, i, lo, mid) : partOf(ends, i, mid + 1, hi);
+}
+
+// the primitives of `p` in one array, in their order
+function flatPrims(p: Prims): Primitive[] {
+    return map(iota(primsCount(p)), (i) => primAt(p, i, 1.0f32));
+}
+
+// what draws a leaf and its places, its primitives as a leaf
+function leaf(r: [Primitive[], Hit[]]): [Prims, Hit[]] {
+    const [ps, hs] = r;
+    return [PrimsOf(ps), hs] as const;
+}
+
 // `placeScrolled`, what the frame `fr` shows besides the view: the caret
 // shown or hidden, the scrollbar under the pointer
 export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f32, fr: Frame): [Primitive[], Hit[]] {
+    const [p, hs] = placeTree(fs, e, x, y, w, h, fr, measureT(fs, e, w));
+    return [flatPrims(p), hs] as const;
+}
+
+// `placeFrame`, its primitives joined (`Prims`), `m` the measure of `e`
+// (its children's taken again)
+function placeTree(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f32, fr: Frame, m: Sized): [Prims, Hit[]] {
     const offsets = fr.offsets;
     return match (e) {
-        Label(ts, s) => [paragraphAs(fs[faceOf(ts, k)], ts.em, s, x, baseline(fs[faceOf(ts, k)], ts, y), w, ts.lineHeight, ts.align, ts.color, fr.deferred, faceOf(ts, k)), []] as const,
-        Input(ts, ed, focused, hint) => placeInput(fs[faceOf(ts, k)], faceOf(ts, k), ts, ed, focused, hint, x, y, w, h, fr.caretOn, fr.deferred),
-        // (its pixels in its box: its size the box's, given by its parent)
-        Image(p, iw, ih) => [[Raster({ x: x, y: y, w: w, h: h, iw: p.width, ih: p.height, pixels: p.pixels })], []] as const,
+        Label(ts, s) => [PrimsOf(paragraphAs(fs[faceOf(ts, k)], ts.em, s, x, baseline(fs[faceOf(ts, k)], ts, y), w, ts.lineHeight, ts.align, ts.color, fr.deferred, faceOf(ts, k))), []] as const,
+        Input(ts, ed, focused, hint) => leaf(placeInput(fs[faceOf(ts, k)], faceOf(ts, k), ts, ed, focused, hint, x, y, w, h, fr.caretOn, fr.deferred)),
+        // (its pixels in its box: its size the box's, given by its parent;
+        // a box of its size within a pixel: on whole pixels, each pixel of
+        // the image one of the screen, crisp)
+        Image(p, iw, ih) => abs(w - f32(p.width)) < 1.0f32 && abs(h - f32(p.height)) < 1.0f32
+            ? [PrimsOf([Raster({ x: floor(x + 0.5f32), y: floor(y + 0.5f32), w: f32(p.width), h: f32(p.height), iw: p.width, ih: p.height, pixels: p.pixels })]), []] as const
+            : [PrimsOf([Raster({ x: x, y: y, w: w, h: h, iw: p.width, ih: p.height, pixels: p.pixels })]), []] as const,
         // (its primitives within its box)
-        Canvas(cw, ch, ps) => [concat(concat([Clip(x, y, x + w, y + h)], map(ps, (p) => movedBy(p, x, y))), [Unclip]), []] as const,
+        Canvas(cw, ch, ps) => [PrimsOf(concat(concat([Clip(x, y, x + w, y + h)], map(ps, (p) => movedBy(p, x, y))), [Unclip])), []] as const,
         // (a place of no size, a field with the focus: the carets blink while
         // it is shown)
-        Caret(cw, ch, c) => [fr.caretOn ? [Box(quad(floor(x), y, cw, ch, c))] : [], [placeOf(x, y, 0.0f32, 0.0f32, 1, FIELD, 0.0f32, -1)]] as const,
+        Caret(cw, ch, c) => [PrimsOf(fr.caretOn ? [Box(quad(floor(x), y, cw, ch, c))] : []), [placeOf(x, y, 0.0f32, 0.0f32, 1, FIELD, 0.0f32, -1)]] as const,
+        Spans(ts, ss) => leaf(placeSpans(fs[faceOf(ts, k)], faceOf(ts, k), ts, ss, x, y, fr)),
         Div(st, cs) => {
             const deco = decoration(st, x, y, w, h);
             const shape = st.cursor >= 0 ? st.cursor : (st.onClick >= 0 ? POINTER : -1);
@@ -583,17 +751,19 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
             const aside = map(iota(n), (i) => over[i] || (folding && i == n - 1));
             const inFlow = count(aside, (o) => !o);
             const gapsAll = inFlow > 1 ? f32(inFlow - 1) * st.gap : 0.0f32;
-            const tall = scrolls && fold(cs, gapsAll, (a, c) => {
-                const [mw, mh] = floats(c) ? [0.0f32, 0.0f32] as const : measure(fs, c, iw);
-                return a + mh;
-            }) > ih;
+            const known = sizeKids(m);
+            // (the children measured with the whole inside: whether a column
+            // that scrolls passes its height)
+            const atInside = scrolls ? kidsAll(fs, cs, known, map(cs, (c) => floats(c) ? -1.0f32 : iw), 0, []) : [];
+            const tall = scrolls && fold(atInside, gapsAll, (a, s) => a + sizeH(s)) > ih;
             const cw = tall ? max(0.0f32, iw - 14.0f32 * fr.scale) : iw;
             const mainRoom = row ? cw : ih;
             const crossRoom = row ? ih : cw;
             // (in a row, a child that takes a share of the width measured once
             // its width is known, below)
             const sharing = map(cs, (c) => row && share(lengthOf(c, true)) > 0.0f32);
-            const sizes0 = map(iota(n), (i) => sharing[i] ? [0.0f32, 0.0f32] as const : measure(fs, cs[i], cw));
+            const kids0 = kidsAll(fs, cs, scrolls && !tall ? atInside : known, map(iota(n), (i) => sharing[i] ? -1.0f32 : cw), 0, []);
+            const sizes0 = map(kids0, (s) => [sizeW(s), sizeH(s)] as const);
             // along the main axis: a share of the room left, or the size
             // the child has
             const grows = map(cs, (c) => share(lengthOf(c, row)));
@@ -626,7 +796,12 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
                 Between => [0.0f32, inFlow > 1 ? left / f32(inFlow - 1) : 0.0f32] as const,
             };
             const ends = scan(map(iota(n), (i) => aside[i] ? 0.0f32 : mains[i] + st.gap + extra), (a, b) => a + b, 0.0f32);
-            const sizes = map(iota(n), (i) => sharing[i] && !aside[i] ? measure(fs, cs[i], mains[i]) : (sharing[i] ? measure(fs, cs[i], cw) : sizes0[i]));
+            const shared = kidsAll(fs, cs, known, map(iota(n), (i) => sharing[i] && !aside[i] ? mains[i] : (sharing[i] ? cw : -1.0f32)), 0, []);
+            const sizes = map(iota(n), (i) => sharing[i] ? [sizeW(shared[i]), sizeH(shared[i])] as const : sizes0[i]);
+            // (the boxes over their siblings measured with the inside)
+            const overKids = kidsAll(fs, cs, known, map(iota(n), (i) => over[i] ? iw : -1.0f32), 0, []);
+            // (the measure each child is laid out with)
+            const kidSized = map(iota(n), (i) => over[i] ? overKids[i] : (sharing[i] ? shared[i] : kids0[i]));
             // a column that scrolls: its children moved up by its offset,
             // within the height they have past its own
             const range = scrolls ? max(0.0f32, used - mainRoom) : 0.0f32;
@@ -640,7 +815,7 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
                 // width, `Fill` that of the inside, its own height)
                 // (as tall as the inside when its height is `Fill`: a bar at
                 // the bottom of a box that scrolls, a map along its side)
-                const [ow, oh0] = over[i] ? measure(fs, c, iw) : [0.0f32, 0.0f32] as const;
+                const [ow, oh0] = over[i] ? [sizeW(overKids[i]), sizeH(overKids[i])] as const : [0.0f32, 0.0f32] as const;
                 const wide = match (lengthOf(c, true)) {
                     Fill(k) => true,
                     _ => false,
@@ -697,9 +872,9 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
             // (the boxes over their siblings drawn and reached after them,
             // those `under` them before them)
             const ordered = concat(concat(filter(seenKids, (i) => over[i] && beneath(cs[i])), filter(seenKids, (i) => !over[i])), filter(seenKids, (i) => over[i] && !beneath(cs[i])));
-            const [cps, chs] = placeFrom(fs, map(ordered, (i) => cs[i]), map(ordered, (i) => placed[i]), 0, [], [], fr);
+            const [cparts, chs] = placeFrom(fs, map(ordered, (i) => cs[i]), map(ordered, (i) => placed[i]), map(ordered, (i) => kidSized[i]), 0, [], [], fr);
             if (!st.clip && !scrolls) {
-                return [fadedAll(concat(deco, cps), st.opacity), concat(hits, chs)] as const;
+                return [joined(st.opacity, concat([PrimsOf(deco)], cparts)), concat(hits, chs)] as const;
             }
             // clipped: the children drawn within the padding box, their
             // places cut to it (none left where they are hidden)
@@ -726,8 +901,8 @@ export function placeFrame(fs: Font[k], e: Element, x: f32, y: f32, w: f32, h: f
             const corner = st.barRadius >= 0.0f32 ? st.barRadius : bw * 0.5f32;
             const bar: Primitive[] = range > 0.0f32 ? [Box(rounded(quad(x1 - inset - bw, ty, bw, th, shade), corner))] : [];
             const barPlace: Hit[] = range > 0.0f32 ? [placeOf(x1 - 12.0f32 * fr.scale, iy, 12.0f32 * fr.scale, ih, st.scroll, BAR, range, ARROW)] : [];
-            const drawn = concat(concat(concat(concat(deco, [Clip(ix, iy, x1, y1)]), cps), bar), [Unclip]);
-            return [fadedAll(drawn, st.opacity), concat(concat(concat(hits, wheel), cut), barPlace)] as const;
+            const drawn = joined(st.opacity, concat(concat([PrimsOf(concat(deco, [Clip(ix, iy, x1, y1)]))], cparts), [PrimsOf(concat(bar, [Unclip]))]));
+            return [drawn, concat(concat(concat(hits, wheel), cut), barPlace)] as const;
         },
     };
 }
@@ -764,13 +939,13 @@ export function thumb(y: f32, h: f32, range: f32, off: f32, k: f32): [f32, f32] 
 
 // the children `cs` from the `i`-th, each laid out in its frame, after
 // what draws those before (`ps`) and their places (`hs`)
-function placeFrom(fs: Font[k], cs: Element[n], frames: [f32, f32, f32, f32][n], i: i64, ps: Primitive[], hs: Hit[], fr: Frame): [Primitive[], Hit[]] {
+function placeFrom(fs: Font[k], cs: Element[n], frames: [f32, f32, f32, f32][n], ms: Sized[n], i: i64, ps: Prims[], hs: Hit[], fr: Frame): [Prims[], Hit[]] {
     if (i >= n) {
         return [ps, hs] as const;
     }
     const [x, y, w, h] = frames[i];
-    const [cp, ch] = placeFrame(fs, cs[i], x, y, w, h, fr);
-    return placeFrom(fs, cs, frames, i + 1, concat(ps, cp), concat(hs, ch), fr);
+    const [cp, ch] = placeTree(fs, cs[i], x, y, w, h, fr, ms[i]);
+    return placeFrom(fs, cs, frames, ms, i + 1, concat(ps, [cp]), concat(hs, ch), fr);
 }
 
 // the place `h` holds the point (px, py)

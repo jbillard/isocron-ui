@@ -20,14 +20,14 @@ import * as x11 from "./x11";
 import { IoError, ioError } from "sys";
 import { rgb, rgba, render, renderAgain, blank, Canvas, Primitive, Box, quad, rounded, bordered, transparent } from "./paint";
 import { Font, parse } from "./font";
-import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU, FOCUS, WHEEL, MOVE, tipOf } from "./ui";
+import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU, FOCUS, WHEEL, MOVE, tipOf, Row, Packed } from "./ui";
 import { POINTER as POINTER_SHAPE, TEXT as TEXT_SHAPE } from "./ui";
-import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Focus, Viewport, Tick, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, WriteText, ScrollTo, Reveal, Copy, AskPaste, Animate, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, CloseAsked, WheelX, BoxSized, KeepOpen, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END, PAGE_UP, PAGE_DOWN, F1, SLASH, BRACKET_LEFT, BRACKET_RIGHT } from "./input";
+import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Focus, Viewport, Tick, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, WriteText, ScrollTo, Reveal, Copy, AskPaste, Animate, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, CloseAsked, WheelX, BoxSized, Density, KeepOpen, ContextMenu, MenuChosen, ShowMenu, MenuLook, MENU_ENABLED, MENU_SEPARATOR, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, TAB, ENTER, ESCAPE, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END, PAGE_UP, PAGE_DOWN, F1, SLASH, BRACKET_LEFT, BRACKET_RIGHT } from "./input";
 import { DEAD, DEAD_ACCENTS, composed, spacingAccent } from "./input";
 import { Keymap, parseKeymap, charOf } from "./xkb";
 import * as cursors from "./cursors";
 import { Atlas, emptyAtlas, resolved } from "./atlas";
-import { lineWidth } from "./text";
+import { lineWidth, Center } from "./text";
 
 // the half period of the caret's blinking, in nanoseconds
 const BLINK: u64 = 530000000u64;
@@ -117,6 +117,14 @@ export type Ui = {
     // height each, units) last told, and those of the last frame
     boxes: f32[],
     boxesSeen: f32[],
+    // the menu open the application asked (`ShowMenu`; else the menu of a
+    // field): how it looks, its entries (their texts, the keys of their
+    // shortcuts, their flags)
+    menuOwn: boolean,
+    menuLook: MenuLook,
+    menuLabels: string[],
+    menuKeys: string[],
+    menuFlags: i64[],
 };
 
 // the texts of the entries of the menu of a field, by default
@@ -136,6 +144,16 @@ export function interface(w: i64, h: i64, now: u64): Ui {
         clipboard: "", asked: [], menu: false, menuX: 0.0f32, menuY: 0.0f32, menuHover: -1, menuCut: false, labels: englishMenu(), scale: 1.0f32, dead: -1, focus: -1, ring: false, atlas: emptyAtlas(), animating: false, tickAt: 0u64, hoverSince: now, tipDue: false, tipOff: false,
         redraw: true, closed: false, toldH: -1, maximized: false, caption: [],
         keepOpen: false, boxes: fill(32, 0.0f32), boxesSeen: fill(32, 0.0f32),
+        menuOwn: false, menuLook: plainMenuLook(), menuLabels: [], menuKeys: [], menuFlags: [],
+    };
+}
+
+// a menu as the library draws that of a field: white, its entries lit in a
+// light blue
+export function plainMenuLook(): MenuLook {
+    return {
+        background: rgb(0xFFFFFFu32), foreground: rgb(0x111827u32), disabled: rgb(0x9CA3AFu32), selection: rgb(0xE5EDFFu32), selectionBorder: rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32),
+        separator: rgb(0xE5E7EBu32), border: rgb(0xD1D5DBu32), shadow: rgba(0.0f32, 0.0f32, 0.0f32, 0.18f32), radius: 8.0f32, itemRadius: 4.0f32, em: 13.0f32, item: 24.0f32, pad: 8.0f32, least: 180.0f32,
     };
 }
 
@@ -174,12 +192,18 @@ function told<M>(ui: Ui, m: M, i: Input, update: (M, Input) => [M, Effect[]]): [
         },
         _ => o0,
     }));
-    return [{ ...ui, clipboard: copied, asked: concat(ui.asked, filter(fx, (e) => match (e) {
+    const u1 = { ...ui, clipboard: copied, asked: concat(ui.asked, filter(fx, (e) => match (e) {
         ScrollTo(k, o) => false,
         Reveal(k, y, bh) => false,
         KeepOpen => false,
+        ShowMenu(look, labels, keys, flags) => false,
         _ => true,
-    })), redraw: true, animating: ui.animating || animates, closed: ui.closed || closes, keepOpen: ui.keepOpen || keeps, offsets: offsets }, nm] as const;
+    })), redraw: true, animating: ui.animating || animates, closed: ui.closed || closes, keepOpen: ui.keepOpen || keeps, offsets: offsets };
+    // (a menu asked: opened at the pointer)
+    return [fold(fx, u1, (u, e) => match (e) {
+        ShowMenu(look, labels, keys, flags) => ({ ...u, menu: true, menuOwn: true, menuLook: look, menuLabels: labels, menuKeys: keys, menuFlags: flags, menuX: u.x, menuY: u.y, menuHover: -1, cursor: ARROW }),
+        _ => u,
+    }), nm] as const;
 }
 
 // an effect that reads a file or a folder
@@ -407,14 +431,18 @@ function menuAt(hits: Hit[n], x: f32, y: f32): i64 {
 function menuOpened<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
     const c = clickAt(ui.hits, ui.x, ui.y);
     const fi = fieldAt(ui.hits, c, ui.x, ui.y);
-    if (fi < 0) {
-        return [ui, m] as const;
+    // (not over a field, the line of an `Input` (a caret of an editor is a
+    // place of no size): the model told, which may show its menu)
+    if (fi < 0 || ui.hits[fi].w <= 0.0f32) {
+        const place = c >= 0 ? ui.hits[c].id : -1;
+        const [x, y] = c >= 0 ? [(ui.x - ui.hits[c].x) / ui.scale, (ui.y - ui.hits[c].y) / ui.scale] as const : [ui.x / ui.scale, ui.y / ui.scale] as const;
+        return told({ ...ui, since: now, tipOff: true }, m, ContextMenu(place, x, y), update);
     }
     const h = ui.hits[fi];
     const [u1, m1] = h.id == 0 && c >= 0
         ? told({ ...ui, since: now }, m, Click(ui.hits[c].id, (ui.x - ui.hits[c].x) / ui.scale, (ui.y - ui.hits[c].y) / ui.scale, offsetAt(h, ui.x), 1, ui.mods), update)
         : [ui, m] as const;
-    return [{ ...u1, menu: true, menuX: ui.x, menuY: ui.y, menuHover: -1, menuCut: h.range > 0.0f32, cursor: ARROW, redraw: true }, m1] as const;
+    return [{ ...u1, menu: true, menuOwn: false, menuX: ui.x, menuY: ui.y, menuHover: -1, menuCut: h.range > 0.0f32, cursor: ARROW, redraw: true }, m1] as const;
 }
 
 // a button pressed with the menu open: an entry chosen (its shortcut given
@@ -422,7 +450,35 @@ function menuOpened<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect[
 function menuPressed<M>(ui: Ui, m: M, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
     const e = menuAt(ui.hits, ui.x, ui.y);
     const closed = { ...ui, menu: false, menuHover: -1, redraw: true };
+    if (ui.menuOwn) {
+        return e >= 0 ? told({ ...closed, since: now }, m, MenuChosen(e), update) : [closed, m] as const;
+    }
     return e >= 0 && e < 4 ? told({ ...closed, since: now }, m, Key(MENU_KEYS[e], WITH_CTRL), update) : [closed, m] as const;
+}
+
+// the entry lit after `from` going `by` (1 down, -1 up), the next that can
+// be chosen, round the menu (-1: none)
+function menuStep(flags: i64[n], from: i64, by: i64): i64 {
+    const order = map(iota(n), (k) => ((from < 0 ? (by > 0 ? -1 : n) : from) + by * (k + 1) + 2 * n) % n);
+    const k = findIndex(order, (i) => (flags[i] & MENU_ENABLED) != 0 && (flags[i] & MENU_SEPARATOR) == 0);
+    return k < 0 ? -1 : order[k];
+}
+
+// the keys of a menu the application asked: Up and Down light the entries,
+// Enter chooses the one lit, Escape closes it; another key closes it and
+// is the model's
+function menuKeyed<M>(ui: Ui, m: M, k: i64, now: u64, update: (M, Input) => [M, Effect[]]): [Ui, M] {
+    if (k == UP || k == DOWN) {
+        return [{ ...ui, menuHover: menuStep(ui.menuFlags, ui.menuHover, k == DOWN ? 1 : -1), redraw: true }, m] as const;
+    }
+    const closed = { ...ui, menu: false, menuHover: -1, dead: -1, redraw: true };
+    if (k == ENTER) {
+        return ui.menuHover >= 0 ? told({ ...closed, since: now }, m, MenuChosen(ui.menuHover), update) : [closed, m] as const;
+    }
+    if (k == ESCAPE) {
+        return [closed, m] as const;
+    }
+    return keyPressed({ ...closed, since: now }, m, k, update);
 }
 
 // the menu of a field drawn at its corner, within the window: what draws
@@ -443,6 +499,9 @@ function tipLaidOut(ui: Ui, fs: Font[nf], text: string): Primitive[] {
 }
 
 function menuLaidOut(ui: Ui, fs: Font[nf]): [Primitive[], Hit[]] {
+    if (ui.menuOwn) {
+        return askedMenuLaidOut(ui, fs);
+    }
     const n = min(4, ui.labels.length);
     const enabled = (k: i64) => k >= 2 || ui.menuCut;
     const entries = map(iota(n), (k) => Div({
@@ -479,6 +538,67 @@ function menuLaidOut(ui: Ui, fs: Font[nf]): [Primitive[], Hit[]] {
     return [ps, concat([placeOf(x, y, w, h, -1, MENU, 0.0f32, ARROW)], own)] as const;
 }
 
+// the menu the application asked drawn at its corner, within the window,
+// as Visual Studio Code draws its menus: each entry its text at its left,
+// the keys of its shortcut at its right, lit under the pointer (its
+// background, a border round it); the lines between groups; its places
+// (its entries, those that can be chosen with a `range` of 1)
+function askedMenuLaidOut(ui: Ui, fs: Font[nf]): [Primitive[], Hit[]] {
+    const lk = ui.menuLook;
+    const n = min(ui.menuLabels.length, min(ui.menuKeys.length, ui.menuFlags.length));
+    const sep = (k: i64) => (ui.menuFlags[k] & MENU_SEPARATOR) != 0;
+    const enabled = (k: i64) => (ui.menuFlags[k] & MENU_ENABLED) != 0 && !sep(k);
+    const em = lk.em;
+    // (the widest text and the widest keys: the width of all the entries)
+    const widest = fold(iota(n), 0.0f32, (a, k) => max(a, lineWidth(fs[0], em, ui.menuLabels[k])));
+    const widestKeys = fold(iota(n), 0.0f32, (a, k) => max(a, lineWidth(fs[0], em, ui.menuKeys[k])));
+    const inner = max(lk.least - 8.0f32, lk.pad + widest + (widestKeys > 0.0f32 ? lk.pad + widestKeys : 0.0f32) + lk.pad);
+    const entries = map(iota(n), (k) => sep(k)
+        ? Div({ ...style(), width: Fill(1.0f32), height: Px(11.0f32), justify: Packed(Center), stretch: true }, [
+            Div({ ...style(), width: Fill(1.0f32), height: Px(1.0f32), background: lk.separator }, []),
+        ])
+        : Div({
+            ...style(),
+            width: Fill(1.0f32),
+            height: Px(lk.item),
+            direction: Row,
+            align: Center,
+            stretch: false,
+            padX: lk.pad,
+            background: ui.menuHover == k ? lk.selection : rgba(0.0f32, 0.0f32, 0.0f32, 0.0f32),
+            border: ui.menuHover == k && lk.selectionBorder.a > 0.0f32 ? 1.0f32 : 0.0f32,
+            borderColor: lk.selectionBorder,
+            radius: lk.itemRadius,
+            onClick: k,
+            cursor: ARROW,
+        }, [
+            Label(textStyle(em, enabled(k) ? lk.foreground : lk.disabled), ui.menuLabels[k]),
+            Div({ ...style(), width: Fill(1.0f32), height: Px(1.0f32) }, []),
+            Label(textStyle(em, enabled(k) ? lk.foreground : lk.disabled), ui.menuKeys[k]),
+        ]));
+    const tall = fold(iota(n), 8.0f32, (a, k) => a + (sep(k) ? 11.0f32 : lk.item));
+    const w = (inner + 8.0f32) * ui.scale;
+    const h = tall * ui.scale;
+    const x = max(0.0f32, min(ui.menuX, f32(ui.w) - w - 2.0f32));
+    const y = max(0.0f32, min(ui.menuY, f32(ui.h) - h - 2.0f32));
+    const box = Div({
+        ...style(),
+        padX: 4.0f32,
+        padY: 4.0f32,
+        background: lk.background,
+        border: 1.0f32,
+        borderColor: lk.border,
+        radius: lk.radius,
+        shadowBlur: 8.0f32,
+        shadowY: 2.0f32,
+        shadowColor: lk.shadow,
+        cursor: ARROW,
+    }, entries);
+    const [ps, hits] = placeFrame(fs, scaledElement(box, ui.scale), x, y, w, h, { offsets: [], caretOn: false, hotBar: -1, scale: ui.scale, deferred: true });
+    const own = map(hits, (p) => p.kind == CLICK ? { ...p, kind: MENU, range: p.id >= 0 && p.id < n && enabled(p.id) ? 1.0f32 : 0.0f32 } : p);
+    return [ps, concat([placeOf(x, y, w, h, -1, MENU, 0.0f32, ARROW)], own)] as const;
+}
+
 // the interface and the model after the event `ev` at the time `now` (what
 // the model asks added to `asked`)
 // (compiled once, called by each loop of each system)
@@ -501,7 +621,12 @@ export function step<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M
         Scaled(k) => k != k0,
         _ => false,
     };
-    const [u2, m2] = sized ? told(u1, m1, WindowSize(f32(u1.w) / u1.scale, f32(u1.h) / u1.scale), update) : [u1, m1] as const;
+    // (the density of the screen told when it changes, before the size)
+    const [ud, md] = match (ev) {
+        Scaled(k) => k != k0 ? told(u1, m1, Density(k), update) : [u1, m1] as const,
+        _ => [u1, m1] as const,
+    };
+    const [u2, m2] = sized ? told(ud, md, WindowSize(f32(ud.w) / ud.scale, f32(ud.h) / ud.scale), update) : [ud, md] as const;
     return viewports({ ...u2, toldH: resized ? u2.h : u2.toldH }, m2, before, resized, 0, sized, update);
 }
 
@@ -551,7 +676,8 @@ function stepOnce<M>(ui: Ui, m: M, ev: Ev, now: u64, update: (M, Input) => [M, E
         // (Escape closes the menu; another key closes it and is the model's)
         // (a key forgets an accent typed before it: Backspace and Escape do
         // nothing else then)
-        Pressed(k) => ui.menu && k == ESCAPE ? [{ ...ui, menu: false, menuHover: -1, dead: -1, redraw: true }, m] as const
+        Pressed(k) => ui.menu && ui.menuOwn ? menuKeyed(ui, m, k, now, update)
+            : ui.menu && k == ESCAPE ? [{ ...ui, menu: false, menuHover: -1, dead: -1, redraw: true }, m] as const
             : (ui.dead >= 0 && (k == BACKSPACE || k == ESCAPE) ? [{ ...ui, dead: -1 }, m] as const
             : keyPressed({ ...ui, since: now, menu: false, menuHover: -1, dead: -1 }, m, k, update)),
         Mods(mods) => [{ ...ui, mods: mods }, m] as const,
@@ -975,6 +1101,23 @@ function replacedOr(out: Ev[n], e: Ev, same: (Ev) => boolean): Ev[] {
     return n > 0 && same(out[n - 1]) ? out.with(n - 1, e) : concat(out, [e]);
 }
 
+// the events `out` with the wheel turned by `dy` after them: added to the
+// last one when it is the wheel too
+function wheeled(out: Ev[n], dy: f32): Ev[] {
+    return n > 0 ? match (out[n - 1]) {
+        Scroll(a) => out.with(n - 1, Scroll(a + dy)),
+        _ => concat(out, [Scroll(dy)]),
+    } : [Scroll(dy)];
+}
+
+// `wheeled` across
+function wheeledAcross(out: Ev[n], dx: f32): Ev[] {
+    return n > 0 ? match (out[n - 1]) {
+        ScrollX(a) => out.with(n - 1, ScrollX(a + dx)),
+        _ => concat(out, [ScrollX(dx)]),
+    } : [ScrollX(dx)];
+}
+
 // the events of the hand of the events of a window of Windows: the
 // modifiers followed (`mods`), a pair of units of UTF-16 joined (`high`,
 // the first of a pair waiting), the keys that edit and the letters held
@@ -1002,9 +1145,10 @@ function readFrom(evs: win.Event[n], i: i64, out: Ev[], mods: i64, high: i64): [
             _ => false,
         }), mods, high),
         win.Button(b, down) => readFrom(evs, i + 1, concat(out, [down ? Down(b) : Up(b)]), mods, high),
-        // a notch (120) of the wheel: 48 pixels
-        win.Wheel(d) => readFrom(evs, i + 1, concat(out, [Scroll(-f32(d) * 0.4f32)]), mods, high),
-        win.HWheel(d) => readFrom(evs, i + 1, concat(out, [ScrollX(f32(d) * 0.4f32)]), mods, high),
+        // a notch (120) of the wheel: 48 pixels; the notches of a batch one
+        // after the other added (a wheel turned fast: one step, one frame)
+        win.Wheel(d) => readFrom(evs, i + 1, wheeled(out, -f32(d) * 0.4f32), mods, high),
+        win.HWheel(d) => readFrom(evs, i + 1, wheeledAcross(out, f32(d) * 0.4f32), mods, high),
         win.Key(k, down, s) => {
             const bit = modifierOf(k);
             if (bit != 0) {

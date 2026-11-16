@@ -1,0 +1,55 @@
+// The tables of the characters of the map of the editor of code
+// (src/code_view.isc), made as Visual Studio Code makes those of its
+// minimap (minimapCharRenderer): each character of ASCII from 32 to 126
+// drawn at 16 pixels a em in a cell of 10 by 16 (its baseline that of the
+// middle of the em), its coverage averaged by boxes of 1 by 2 pixels
+// (scale 1) and 2 by 4 (scale 2), the brightest box made 255, then 80 %
+// of that (its « normal » font). Prints the two tables as Isocron.
+// usage: iscc run tools/mapchars.isc tests/fonts/DejaVuSansMono.ttf
+import { parse, Font, glyphOf } from "../src/font";
+import { rasterize } from "../src/text";
+
+// the coverage of the cell of the character `c`: 16 rows of 10
+function cell(f: Font, c: i64): f32[] {
+    const [left, top, w, h, mask] = rasterize(f, glyphOf(f, c), 16.0f32, 0.0f32);
+    const base = 13;
+    return map(iota(160), (i) => {
+        const x = i % 10 - left;
+        const y = i / 10 - base - top;
+        return x >= 0 && x < w && y >= 0 && y < h ? mask[y * w + x] : 0.0f32;
+    });
+}
+
+// the boxes of `s` by `2 s` of a cell: their mean coverage, row by row
+function boxes(cv: f32[n], s: i64): f32[] {
+    const bw = 10 / s;
+    const bh = 16 / (2 * s);
+    return map(iota(2 * s * s), (b) => {
+        const bx = b % s;
+        const by = b / s;
+        const sum = fold(iota(bw * bh), 0.0f32, (a, k) => a + cv[(by * bh + k / bw) * 10 + bx * bw + k % bw]);
+        return sum / f32(bw * bh);
+    });
+}
+
+function table(f: Font, s: i64): u8[] {
+    const all = map(iota(95), (i) => boxes(cell(f, 32 + i), s));
+    const brightest = fold(all, 0.0f32, (a, bs) => fold(bs, a, (m, v) => max(m, v)));
+    const k = brightest > 0.0f32 ? 255.0f32 / brightest : 0.0f32;
+    const n = 2 * s * s;
+    return map(iota(95 * n), (j) => u8(min(255.0f32, all[j / n][j % n] * k * 0.8f32 + 0.5f32)));
+}
+
+action main(args: string[k]): i32 {
+    return match (parse(readBytes(args.length > 0 ? args[0] : "tests/fonts/DejaVuSansMono.ttf"))) {
+        Ok(f) => {
+            print(`const MAP_CHARS_1: u8[] = [${join(map(table(f, 1), (v) => `${v}u8`), ", ")}];`);
+            print(`const MAP_CHARS_2: u8[] = [${join(map(table(f, 2), (v) => `${v}u8`), ", ")}];`);
+            return 0;
+        },
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+    };
+}

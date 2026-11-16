@@ -7,7 +7,7 @@
 // it changes, src/code.isc). Positions are lines and offsets of bytes of
 // their UTF-8 at the starts of characters; a column on the screen counts a
 // character as one, a tab up to its next stop (4).
-import { Input, Effect, Click, Drag, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, DELETE, TAB, ENTER, ESCAPE, LEFT, RIGHT, HOME, END, UP, DOWN, PAGE_UP, PAGE_DOWN, F3, SLASH, BRACKET_LEFT, BRACKET_RIGHT } from "./input";
+import { Input, Effect, Click, Drag, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, DELETE, TAB, ENTER, ESCAPE, LEFT, RIGHT, HOME, END, UP, DOWN, PAGE_UP, PAGE_DOWN, F2, F3, SLASH, BRACKET_LEFT, BRACKET_RIGHT } from "./input";
 import { Lang, Scan, scanLine, depthAfter, langOf } from "./code";
 import { utf8, Editing, editing } from "./edit";
 import { codePoints } from "./text";
@@ -72,6 +72,9 @@ export type Doc = {
     left: f32, width: f32, advance: f32, mapWidth: f32, grab: f32,
     // the lines wrapped at the width of the editor (Alt+Z)
     wrap: boolean,
+    // the pixels of a unit of the screen it is shown on (its map drawn in
+    // them, as Visual Studio Code draws its minimap)
+    ratio: f32,
 };
 
 export const TAB_SIZE: i64 = 4;
@@ -125,7 +128,7 @@ export function docOf(path: string, text: string): Doc {
         undo: [], redo: [], last: 0, version: 0, saved: 0,
         unit: 0, from: pos(0, 0), to: pos(0, 0), top: 0.0f32, height: 600.0f32,
         others: [], latest: -1, wordFind: false, lineCopied: "", find: noFind(), found: [],
-        left: 0.0f32, width: 0.0f32, advance: 7.7f32, mapWidth: 0.0f32, grab: 0.0f32, wrap: false,
+        left: 0.0f32, width: 0.0f32, advance: 7.7f32, mapWidth: 0.0f32, grab: 0.0f32, wrap: false, ratio: 1.0f32,
     };
 }
 
@@ -689,7 +692,8 @@ function keyedAll(d: Doc, k: i64, mods: i64): [Doc, Effect[]] {
     if (ctrl && !shift && !alt && k == 100) {
         return [nextOccurrence(d), []] as const;
     }
-    if (ctrl && shift && k == 108) {
+    // (Ctrl+F2, Change All Occurrences: the same)
+    if ((ctrl && shift && k == 108) || (ctrl && !shift && k == F2)) {
         return [allOccurrences(d), []] as const;
     }
     if (ctrl && alt && (k == UP || k == DOWN)) {
@@ -1602,12 +1606,26 @@ export const GUTTER: f32 = 68.0f32;
 export const VBAR: f32 = 14.0f32;
 
 // the box that scrolls the code laid out at `w` by `h` units: the width of
-// its map as Visual Studio Code gives it (a column of a unit for each
-// column of the code it leaves, 120 at most, and 8 units of margin), the
-// room of the code left
+// its map as Visual Studio Code gives it (a column of `mapScale` pixels for
+// each column of the code it leaves, 120 at most, and 8 units of margin),
+// the room of the code left
 export function boxSized(d: Doc, w: f32, h: f32, advance: f32): Doc {
-    const map = min(120.0f32, floor(max(0.0f32, w - VBAR - 2.0f32 - GUTTER) / (advance + 1.0f32))) + 8.0f32;
+    const cw = f32(mapScale(d)) / d.ratio;
+    const map = min(floor(120.0f32 * cw), floor(max(0.0f32, w - VBAR - 2.0f32 - GUTTER) * cw / (advance + cw))) + 8.0f32;
     return { ...d, width: max(0.0f32, w - GUTTER - map - VBAR), height: h, advance: advance, mapWidth: map };
+}
+
+// the document shown on a screen of `ratio` pixels a unit, its box laid out
+// at `w` by `h` units
+export function ratioSet(d: Doc, ratio: f32, w: f32, h: f32, advance: f32): Doc {
+    return boxSized({ ...d, ratio: max(0.25f32, ratio) }, w, h, advance);
+}
+
+// the pixels of a column of the map (its characters `mapScale` pixels wide
+// and twice as high): 2 on a screen of 2 pixels a unit or more, else 1, as
+// Visual Studio Code
+export function mapScale(d: Doc): i64 {
+    return d.ratio >= 2.0f32 ? 2 : 1;
 }
 
 // the width of the lines in sight, in units (the widest)
@@ -1911,6 +1929,14 @@ export function draggedTo(d: Doc, line: i64, column: i64): Doc {
 // the offset of the box that scrolls the document and the height it shows
 export function viewed(d: Doc, top: f32, height: f32): Doc {
     return { ...d, top: top, height: height };
+}
+
+// whether `after` moved its cursors or changed its text since `before`:
+// the line of its cursor then revealed (a click on the map or on a
+// scrollbar, which moves neither, leaves the box where it is)
+export function movedFrom(before: Doc, after: Doc): boolean {
+    return before.version != after.version || before.cursor != after.cursor || before.anchor != after.anchor || before.others.length != after.others.length
+        || count(iota(min(before.others.length, after.others.length)), (i) => before.others[i] != after.others[i]) > 0;
 }
 
 // the band of the line of the cursor in the content of its box: its top and

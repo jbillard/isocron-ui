@@ -1,0 +1,195 @@
+// The generic editor (examples/scripted/editor.ui.xml) driven without a
+// window at a density of 1.5, its file editor.ui.xml open (a line longer
+// than the box, with a letter of two bytes), in a window of 850 by 917
+// units: as Visual Studio Code draws it,
+// - each row of code one line of text (a run wider than the box is cut,
+//   never broken into lines over the next rows);
+// - no glyph seen right of the left edge of the map (the code cut there,
+//   not drawn in the column of the scrollbar);
+// - the map in the pixels of the screen (each of its pixels one of the
+//   screen, on whole pixels), its documents told the density;
+// - the right button over a line: the menu of the editor (its entries, the
+//   keys moving between them past the lines between groups, Enter
+//   choosing Copy: the line copied); over the thumb of the map, a press
+//   that leaves the box where it is.
+import { parse, Font } from "../src/font";
+import { Primitive, Pending, Clip, Unclip, Raster } from "../src/paint";
+import { interface, laidOutFonts, step, timed, Ui, Ev, Moved, Down, Up, Resized, Scroll, Scaled, Pressed } from "../src/app";
+import { Hit, CLICK, placeFrame, scaledElement } from "../src/ui";
+import { Input, Effect, Key, Text, TextRead, FolderListed, ReadText, ListFolder, ENTER, DOWN, WITH_CTRL } from "../src/input";
+import { lineWidth } from "../src/text";
+import * as sc from "../src/scripted";
+import * as sys from "sys";
+
+action answer(e: Effect): Input {
+    return match (e) {
+        ReadText(p) => match (sys.readText(p)) {
+            Ok(t) => TextRead(p, t, true),
+            Err(x) => TextRead(p, sys.message(x), false),
+        },
+        ListFolder(p) => match (sys.listDir(p)) {
+            Ok(names) => FolderListed(p, map(names, (x) => sys.isDir(p + "/" + x) ? x + "/" : x), true),
+            Err(x) => FolderListed(p, [], false),
+        },
+        _ => TextRead("", "", false),
+    };
+}
+
+action fed(a: sc.App, i: Input): sc.App {
+    const [a1, fx] = sc.update(a, i);
+    return answered(a1, fx, 0);
+}
+
+action answered(a: sc.App, fx: Effect[n], k: i64): sc.App {
+    return k >= n ? a : answered(fed(a, answer(fx[k])), fx, k + 1);
+}
+
+action typedFrom(a: sc.App, b: u8[n], i: i64): sc.App {
+    return i >= n ? a : typedFrom(fed(a, Text(i64(b[i]))), b, i + 1);
+}
+
+action font(path: string): Font {
+    return match (parse(readBytes(path))) {
+        Ok(f) => f,
+        Err(e) => font("tests/fonts/DejaVuSans.ttf"),
+    };
+}
+
+// the events `evs` from the `i`-th, a frame after each: the application,
+// the interface, the primitives of the last frame
+action played(fs: Font[k], a: sc.App, ui: Ui, evs: Ev[n], i: i64, ps: Primitive[]): [sc.App, Ui, Primitive[]] {
+    if (i >= n) {
+        return [a, ui, ps] as const;
+    }
+    const [u1, a1] = step(ui, a, evs[i], 0u64, sc.update);
+    const [u2, a2, due] = timed(u1, a1, 0u64, sc.update);
+    const [ps2, next] = laidOutFonts(u2, fs, a2, sc.view, 0u64);
+    return played(fs, a2, next, evs, i + 1, ps2);
+}
+
+// the primitives of the view of `a` laid out as the frame of `ui` lays it
+// out, its glyphs pending (their pen and their baseline)
+function laid(fs: Font[k], a: sc.App, ui: Ui): Primitive[] {
+    const [ps, hits] = placeFrame(fs, scaledElement(sc.view(a), ui.scale), 0.0f32, 0.0f32, f32(ui.w), f32(ui.h), { offsets: ui.offsets, caretOn: true, hotBar: -1, scale: ui.scale, deferred: true });
+    return ps;
+}
+
+// the places of the rows of the code: those of the host of kind 3
+function codeRows(a: sc.App, hits: Hit[n]): Hit[] {
+    return filter(hits, (h) => h.kind == CLICK && h.id >= 0 && h.id < a.hs.length && a.hs[h.id].kind == 3);
+}
+
+// the place of the map: the part 20 of the editor (the host's kind 4)
+function mapPlace(a: sc.App, hits: Hit[n]): i64 {
+    return findIndex(hits, (h) => h.kind == CLICK && h.id >= 0 && h.id < a.hs.length && a.hs[h.id].kind == 4 && a.hs[h.id].bind == 20);
+}
+
+// the glyphs drawn (their pen and baseline) and whether each is seen: its
+// pen within the clips around it
+type Seen = { x: i64, base: i64, seen: boolean };
+
+function glyphsSeen(ps: Primitive[n], i: i64, clips: [f32, f32, f32, f32][], out: Seen[]): Seen[] {
+    if (i >= n) {
+        return out;
+    }
+    return match (ps[i]) {
+        Clip(x0, y0, x1, y1) => {
+            const [a0, b0, a1, b1] = clips.length > 0 ? clips[clips.length - 1] : [-1e9f32, -1e9f32, 1e9f32, 1e9f32] as const;
+            return glyphsSeen(ps, i + 1, concat(clips, [[max(a0, x0), max(b0, y0), min(a1, x1), min(b1, y1)] as const]), out);
+        },
+        Unclip => glyphsSeen(ps, i + 1, clips.slice(0, max(0, clips.length - 1)), out),
+        Pending(g) => {
+            const [a0, b0, a1, b1] = clips.length > 0 ? clips[clips.length - 1] : [-1e9f32, -1e9f32, 1e9f32, 1e9f32] as const;
+            const x = f32(g.x);
+            return glyphsSeen(ps, i + 1, clips, concat(out, [{ x: g.x, base: g.base, seen: x >= a0 && x < a1 && f32(g.base) > b0 && f32(g.base) <= b1 + f32(g.em) }]));
+        },
+        _ => glyphsSeen(ps, i + 1, clips, out),
+    };
+}
+
+// the baselines of the glyphs seen within the row `h` from `from`, each
+// once
+function basesIn(gs: Seen[n], h: Hit, from: f32): i64[] {
+    const inside = map(filter(gs, (g) => g.seen && f32(g.base) >= h.y && f32(g.base) < h.y + h.h && f32(g.x) >= from), (g) => g.base);
+    return filter(iota(inside.length), (k) => findIndex(inside, (b) => b == inside[k]) == k);
+}
+
+// the images drawn: their box and their size in pixels
+function rasters(ps: Primitive[n]): [f32, f32, f32, f32, i64, i64][] {
+    return map(filter(ps, (p) => match (p) {
+        Raster(b) => true,
+        _ => false,
+    }), (p) => match (p) {
+        Raster(b) => [b.x, b.y, b.w, b.h, b.iw, b.ih] as const,
+        _ => [0.0f32, 0.0f32, 0.0f32, 0.0f32, 0, 0] as const,
+    });
+}
+
+action main(args: string[k]): i32 {
+    const base = font("tests/fonts/DejaVuSans.ttf");
+    const mono = font("tests/fonts/DejaVuSansMono.ttf");
+    const icons = font("tests/fonts/codicon.ttf");
+    const seti = font("tests/fonts/seti.ttf");
+    const bold = font("tests/fonts/DejaVuSans-Bold.ttf");
+    const fs = [base, mono, icons, seti, bold, icons, bold];
+    return match (sc.load("examples/scripted/editor.ui.xml")) {
+        Err(e) => {
+            print(e);
+            return 1;
+        },
+        Ok(a00) => {
+            const a0 = sc.measured(a00, lineWidth(mono, 14.0f32, "0000000000") / 10.0f32);
+            const a1 = typedFrom(fed(a0, Key(112, WITH_CTRL)), bytes("editor.ui.xml"), 0);
+            const a2 = fed(a1, Key(ENTER, 0));
+            const k = 1.5f32;
+            const w = i64(850.0f32 * k);
+            const h = i64(917.0f32 * k);
+            const [a3, u3, ps3] = played(fs, a2, interface(w, h, 0u64), [Scaled(k), Resized(w, h), Moved(1.0f32, 1.0f32)], 0, []);
+            print(`the file shown: ${a3.shownPath}, the density of its document: ${a3.docs[0].ratio}`);
+            // each row of code one line: one baseline in it
+            const rows = codeRows(a3, u3.hits);
+            const gs = glyphsSeen(laid(fs, a3, u3), 0, [], []);
+            // (the glyphs of the code: right of the numbers of the lines and
+            // of the gap after them, 68 units)
+            const lines = map(rows, (r) => basesIn(gs, r, r.x + 68.0f32 * k).length);
+            print(`rows of code: ${rows.length}, of more than one line: ${count(lines, (n) => n > 1)}, of none: ${count(lines, (n) => n == 0)}`);
+            // no glyph seen right of the map's left edge
+            const mp = mapPlace(a3, u3.hits);
+            const mapLeft = mp >= 0 ? u3.hits[mp].x : 0.0f32;
+            const mapTop = u3.hits[mp].y;
+            const mapBottom = mapTop + u3.hits[mp].h;
+            print(`the map at ${mp >= 0 ? `${i64(mapLeft)}` : "none"}; glyphs seen right of its left edge, along it: ${count(gs, (g) => g.seen && f32(g.x) >= mapLeft && f32(g.base) > mapTop && f32(g.base) <= mapBottom)}`);
+            // the map: its image of its box's size, on whole pixels
+            const rs = filter(rasters(laid(fs, a3, u3)), (r) => {
+                const [x, y, rw, rh, iw, ih] = r;
+                return x >= mapLeft - 1.0f32;
+            });
+            print(`images of the map: ${rs.length}; each pixel one of the screen: ${count(rs, (r) => {
+                const [x, y, rw, rh, iw, ih] = r;
+                return rw == f32(iw) && rh == f32(ih) && x == floor(x) && y == floor(y);
+            }) == rs.length}`);
+            // the right button over the row of line 3: the menu
+            const r3 = rows[2];
+            const cx = r3.x + 300.0f32;
+            const cy = r3.y + r3.h * 0.5f32;
+            const [a4, u4, ps4] = played(fs, a3, u3, [Moved(cx, cy), Down(1), Up(1)], 0, []);
+            print(`menu: ${u4.menu}, its entries: ${join(map(iota(u4.menuLabels.length), (i) => u4.menuLabels[i] == "" ? "-" : `${u4.menuLabels[i]} (${u4.menuKeys[i]})`), ", ")}`);
+            // Down from none: the first entry; Down three times: past the line
+            // to Copy; Enter: copied (the line of the cursor, the line 3)
+            const [a5, u5, ps5] = played(fs, a4, u4, [Pressed(DOWN), Pressed(DOWN), Pressed(DOWN)], 0, []);
+            print(`lit: ${u5.menuHover} (${u5.menuHover >= 0 ? u5.menuLabels[u5.menuHover] : "none"})`);
+            const [a6, u6, ps6] = played(fs, a5, u5, [Pressed(ENTER)], 0, []);
+            print(`menu after Enter: ${u6.menu}; copied: ${join(split(u6.clipboard, "\n"), "⏎")}; cursor ${a6.docs[0].cursor.line}:${a6.docs[0].cursor.col}`);
+            // the box scrolled down by the wheel, then a press on the thumb of
+            // the map: the box where it was
+            const [a7, u7, ps7] = played(fs, a6, u6, [Moved(cx, cy), Scroll(480.0f32)], 0, []);
+            const mp7 = mapPlace(a7, u7.hits);
+            const top7 = a7.docs[0].top;
+            const ty = u7.hits[mp7].y + (top7 / 19.0f32 * (2.0f32 / k)) * k + 2.0f32;
+            const [a8, u8, ps8] = played(fs, a7, u7, [Moved(u7.hits[mp7].x + 10.0f32, ty), Down(0)], 0, []);
+            print(`top after the wheel: ${top7}; after a press on the thumb of the map: ${a8.docs[0].top}`);
+            const [a9, u9, ps9] = played(fs, a8, u8, [Up(0)], 0, []);
+            return 0;
+        },
+    };
+}

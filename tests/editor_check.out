@@ -1,0 +1,8 @@
+the file shown: examples/scripted/editor.ui.xml, the density of its document: 1.5
+rows of code: 42, of more than one line: 0, of none: 0
+the map at 1191; glyphs seen right of its left edge, along it: 0
+images of the map: 1; each pixel one of the screen: true
+menu: true, its entries: Change All Occurrences (Ctrl+F2), -, Cut (Ctrl+X), Copy (Ctrl+C), Paste (Ctrl+V), -, Command Palette... (Ctrl+Shift+P)
+lit: 3 (Copy)
+menu after Enter: false; copied:      its theme 2026 Dark), read when the generic application starts⏎; cursor 2:16
+top after the wheel: 480; after a press on the thumb of the map: 480

@@ -41,11 +41,11 @@ import { Align, Start, Center, End } from "./text";
 import { Editing, editing, edited, utf8 } from "./edit";
 import { button, iconButton, textField, checkbox, toggleAt, progress, restyled, Hand } from "./widgets";
 import { renamed } from "./doc";
-import { Doc, docOf, keyed as docKeyed, typedCode, pasted, textOf, saved, dirty, clickedWith, draggedTo, viewed, topFor, cursorBand, columnOf, symbolsAt, boxSized, wheeledAcross, findFrom, statusOf, LINE_HEIGHT } from "./doc";
-import { CodeLook, codeLook, lookWith, codeElements, sightOf, columnAtX, codePartClicked, codePartDragged, rowClicked, rowDragged } from "./code_view";
+import { Doc, docOf, keyed as docKeyed, typedCode, pasted, textOf, saved, dirty, clickedWith, draggedTo, viewed, topFor, cursorBand, columnOf, symbolsAt, boxSized, ratioSet, movedFrom, wheeledAcross, findFrom, statusOf, LINE_HEIGHT } from "./doc";
+import { CodeLook, codeLook, lookWith, codeElements, sightOf, columnAtX, codePartClicked, codePartDragged, rowClicked, rowDragged, rowContext, codeMenu, codeMenuLook, codeMenuChosen, CODE_MENU_PALETTE } from "./code_view";
 import { Symbol } from "./doc";
 import * as inp from "./input";
-import { Input as HandInput, Effect, Click, Drag, Release, Hover, Key, Paste, Focus, Viewport, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, BoxSized, WheelX, CloseAsked, KeepOpen, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, WriteText, ScrollTo, Reveal, ENTER, ESCAPE, BACKSPACE, TAB, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END, WITH_CTRL, WITH_SHIFT, WITH_ALT } from "./input";
+import { Input as HandInput, Effect, Click, Drag, Release, Hover, Key, Paste, Focus, Viewport, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, BoxSized, WheelX, CloseAsked, KeepOpen, Density, ContextMenu, MenuChosen, shownMenu, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, WriteText, ScrollTo, Reveal, ENTER, ESCAPE, BACKSPACE, TAB, LEFT, UP, RIGHT, DOWN, DELETE, HOME, END, WITH_CTRL, WITH_SHIFT, WITH_ALT } from "./input";
 import { decode, Picture } from "./png";
 import * as sys from "sys";
 
@@ -782,6 +782,8 @@ export type App = {
     docs: Doc[], codeFocus: boolean, active: boolean, advance: f32, shownPath: string, shownScroll: i64,
     // the size of the box of the documents (each made laid out at it)
     codeWidth: f32, codeHeight: f32,
+    // the pixels of a unit of the screen (`Density`)
+    ratio: f32,
 };
 
 // what making the elements reads: the file of the view, its classes, the
@@ -1012,7 +1014,7 @@ action loaded(path: string, rattrs: Attr[n], rkids: Node[m], rline: i64): Result
                 drawn: attr(rattrs, "titlebar") == "custom", menu: menu, close: close, beforeClose: beforeClose,
                 key: key, seen: map(g2.binds, (x) => false), pressX: 0.0f32, pressY: 0.0f32,
                 memo: [], memoErr: "", luaRan: true,
-                docs: [], codeFocus: false, active: true, advance: 7.7f32, shownPath: "", shownScroll: -1, codeWidth: 0.0f32, codeHeight: 0.0f32,
+                docs: [], codeFocus: false, active: true, advance: 7.7f32, shownPath: "", shownScroll: -1, codeWidth: 0.0f32, codeHeight: 0.0f32, ratio: 1.0f32,
             };
             return Ok(rebuilt(filesAtOnce(a)));
         },
@@ -1097,7 +1099,7 @@ function docAsked(a: App, kinds: string[n], paths: string[n], texts: string[n], 
     const kind = kinds[k];
     const path = paths[k];
     const open = findIndex(a.docs, (d) => d.path == path) >= 0;
-    const a1 = kind == "doc" && !open ? { ...a, docs: concat(a.docs, [boxSized(docOf(path, texts[k]), a.codeWidth, a.codeHeight, a.advance)]) }
+    const a1 = kind == "doc" && !open ? { ...a, docs: concat(a.docs, [ratioSet(docOf(path, texts[k]), a.ratio, a.codeWidth, a.codeHeight, a.advance)]) }
         : (kind == "closedoc" ? { ...a, docs: filter(a.docs, (d) => d.path != path) }
         : (kind == "saveas" ? { ...a, docs: map(a.docs, (d) => d.path == path ? renamed(d, texts[k]) : d), shownPath: a.shownPath == path ? texts[k] : a.shownPath }
         : (kind == "focus" ? { ...a, codeFocus: true, focus: -1 } : (kind == "blur" ? { ...a, codeFocus: false } : a))));
@@ -1624,7 +1626,12 @@ export function update(a0: App, i: HandInput): [App, Effect[]] {
 
 function answered(a: App, i: HandInput): [App, Effect[]] {
     return match (i) {
-        Viewport(k, offset, height) => [k >= 0 ? viewported(k == a.shownScroll ? withShown(a, (d) => viewed(d, offset, a.codeHeight > 0.0f32 ? a.codeHeight : height)) : a, k, offset, height) : a, []] as const,
+        // (the box of the documents: its lines made by the host, not by Lua,
+        // which is not run for it: `host.offsets` holds its offset, its view
+        // made again from the values Lua gave)
+        Viewport(k, offset, height) => [k < 0 ? a : (k == a.shownScroll
+            ? { ...viewported(withShown(a, (d) => viewed(d, offset, a.codeHeight > 0.0f32 ? a.codeHeight : height)), k, offset, height), luaRan: a.luaRan }
+            : viewported(a, k, offset, height)), []] as const,
         WindowState(z) => [maximizedSet(a, z), []] as const,
         WindowSize(w, h) => [sizeSet(a, w, h), []] as const,
         WindowActive(z) => [flagSet({ ...a, active: z }, "active", z), []] as const,
@@ -1639,6 +1646,9 @@ function answered(a: App, i: HandInput): [App, Effect[]] {
         },
         // (the box of the documents laid out: each told its size)
         BoxSized(k, w, h) => [k == a.shownScroll ? { ...a, codeWidth: w, codeHeight: h, docs: map(a.docs, (d) => boxSized(d, w, h, a.advance)) } : a, []] as const,
+        // (another density of the screen: the maps of the documents in its
+        // pixels)
+        Density(k) => [{ ...a, ratio: k, docs: map(a.docs, (d) => ratioSet(d, k, a.codeWidth, a.codeHeight, a.advance)) }, []] as const,
         // (the wheel across over the code shown: it scrolls across)
         WheelX(p, dx) => [p >= 0 && p < a.hs.length && (a.hs[p].kind == H_CODE || a.hs[p].kind == H_PART) ? withShown(a, (d) => wheeledAcross(d, dx)) : a, []] as const,
         TextWritten(p, ok, reason) => [ok ? { ...a, docs: map(a.docs, (d) => d.path == p ? saved(d) : d) } : { ...a, err: `${p}: ${reason}` }, []] as const,
@@ -1689,6 +1699,30 @@ function answered(a: App, i: HandInput): [App, Effect[]] {
             return fp < 0 ? [a, []] as const : fieldEdited(a, a.hs[fp], i, fp);
         },
         Release(p) => [{ ...a, pressed: -1 }, []] as const,
+        // (the right button over a line of a document: its cursor there
+        // unless within a selection, the menu of the editor of Visual
+        // Studio Code)
+        ContextMenu(p, x, y) => {
+            if (p < 0 || p >= a.hs.length || a.hs[p].kind != H_CODE) {
+                return [a, []] as const;
+            }
+            const h = a.hs[p];
+            const d1 = rowContext(a.docs[h.change], lookOf(a), h.bind, x);
+            return codeChanged({ ...a, focus: -1, codeFocus: true }, h.change, d1, [shownMenu(codeMenuLook(), codeMenu(d1))]);
+        },
+        // (an entry of that menu: its shortcut; the palette Lua's, as Ctrl+Shift+P)
+        MenuChosen(k) => {
+            const di = shownDoc(a);
+            if (di < 0) {
+                return [a, []] as const;
+            }
+            if (k == CODE_MENU_PALETTE) {
+                const [a1, took] = keyed(a, 112, WITH_CTRL | WITH_SHIFT);
+                return [a1, []] as const;
+            }
+            const [d1, fx] = codeMenuChosen(a.docs[di], k);
+            return codeChanged({ ...a, codeFocus: true }, di, d1, fx);
+        },
         Focus(p) => [{ ...a, focus: p >= 0 && p < a.hs.length && a.hs[p].kind == H_FIELD ? a.hs[p].bind : -1 }, []] as const,
         Key(k0, mods0) => {
             const [a0, took] = keyed(a, k0, mods0);
@@ -1729,8 +1763,9 @@ function lookOf(a: App): CodeLook {
 // that scrolls it
 function codeChanged(a: App, di: i64, d: Doc, fx: Effect[n]): [App, Effect[]] {
     const [y, h] = cursorBand(d);
+    const reveal = a.shownScroll >= 0 && (di < 0 || di >= a.docs.length || movedFrom(a.docs[di], d));
     const a1 = { ...a, docs: map(iota(a.docs.length), (k) => k == di ? d : a.docs[k]) };
-    return [a1, a.shownScroll >= 0 ? concat(fx, [Reveal(a.shownScroll, y, h)]) : fx] as const;
+    return [a1, reveal ? concat(fx, [Reveal(a.shownScroll, y, h)]) : fx] as const;
 }
 
 // what the scripts read of the documents changed: their cursors, whether

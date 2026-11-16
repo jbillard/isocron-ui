@@ -8,11 +8,11 @@
 // and the panel shown or hidden (Ctrl+B, Ctrl+J), a tab closed (Ctrl+W).
 import { rgb, rgba, Color } from "../../src/paint";
 import * as sys from "sys";
-import { Input, Effect, Click, Drag, Release, Hover, Key, Text, Paste, Focus, Viewport, Tick, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, CloseAsked, WheelX, BoxSized, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, WriteText, ScrollTo, Reveal, KeepOpen, ENTER, ESCAPE, UP, DOWN, WITH_CTRL, WITH_SHIFT } from "../../src/input";
+import { Input, Effect, Click, Drag, Release, Hover, Key, Text, Paste, Focus, Viewport, Tick, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, CloseAsked, WheelX, BoxSized, Density, ContextMenu, MenuChosen, shownMenu, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, WriteText, ScrollTo, Reveal, KeepOpen, ENTER, ESCAPE, UP, DOWN, WITH_CTRL, WITH_SHIFT } from "../../src/input";
 import { Editing, editing, edited } from "../../src/edit";
 import { renamed } from "../../src/doc";
-import { Doc, docOf, keyed, typedCode, pasted, textOf, saved, dirty, clickedWith, draggedTo, viewed, topFor, cursorBand, columnOf, symbolsAt, boxSized, wheeledAcross, findFrom, statusOf, LINE_HEIGHT } from "../../src/doc";
-import { CodeLook, codeLook, lookWith, codeElements, columnAtX, codePartClicked, codePartDragged, rowClicked, rowDragged } from "../../src/code_view";
+import { Doc, docOf, keyed, typedCode, pasted, textOf, saved, dirty, clickedWith, draggedTo, viewed, topFor, cursorBand, columnOf, symbolsAt, boxSized, ratioSet, movedFrom, wheeledAcross, findFrom, statusOf, LINE_HEIGHT } from "../../src/doc";
+import { CodeLook, codeLook, lookWith, codeElements, columnAtX, codePartClicked, codePartDragged, rowClicked, rowDragged, rowContext, codeMenu, codeMenuLook, codeMenuChosen, CODE_MENU_PALETTE } from "../../src/code_view";
 import { Element } from "../../src/ui";
 
 // a file or a folder of the tree, in the order it is shown (a folder
@@ -38,6 +38,8 @@ export type Editor = {
     // the width of a column of the font of the code, in units; the size of
     // the box of the code
     advance: f32, codeWidth: f32, codeHeight: f32,
+    // the pixels of a unit of the screen (`Density`)
+    ratio: f32,
     // the dialog asking to save, what it closes once a file made is saved
     // under a path, whether the palette asks that path, the files made
     dialog: Dialog, afterSave: Dialog, saveAs: boolean, untitled: i64,
@@ -158,7 +160,7 @@ export function initial(root: string, rootName: string, system: string, nodes: N
         palette: false, query: editing(""), choice: 0, search: editing(""), field: -1,
         log: ["Isocron : éditeur prêt."], rootOpen: true,
         hover: -1, pressed: -1, width: 1100.0f32, height: 720.0f32, maximized: false, windowActive: true,
-        advance: advance, codeWidth: 0.0f32, codeHeight: 0.0f32,
+        advance: advance, codeWidth: 0.0f32, codeHeight: 0.0f32, ratio: 1.0f32,
         dialog: noDialog(), afterSave: noDialog(), saveAs: false, untitled: 0,
     };
 }
@@ -416,7 +418,7 @@ function readIn(m: Editor, path: string, text: string, ok: boolean): Editor {
     }
     const name = baseName(path);
     const binary = text.indexOf("\u{0}") >= 0;
-    const doc0 = boxSized(docOf(path, binary ? "The file is not displayed in the text editor because it is either binary or uses an unsupported text encoding." : text), m.codeWidth, m.codeHeight, m.advance);
+    const doc0 = ratioSet(docOf(path, binary ? "The file is not displayed in the text editor because it is either binary or uses an unsupported text encoding." : text), m.ratio, m.codeWidth, m.codeHeight, m.advance);
     const doc = m.active >= 0 && m.active < m.tabs.length ? findFrom(doc0, m.tabs[m.active].doc) : doc0;
     const tab = { path: path, name: name, doc: doc };
     return say({ ...m, tabs: concat(m.tabs, [tab]), active: m.tabs.length, current: path }, `Ouvert : ${rel(m, path)} (${doc.lines.length} lignes)`);
@@ -494,7 +496,7 @@ function dirtyPaths(m: Editor): string[] {
 function newFile(m: Editor): Editor {
     const n = m.untitled + 1;
     const path = `Untitled-${n}`;
-    const doc = boxSized(docOf(path, ""), m.codeWidth, m.codeHeight, m.advance);
+    const doc = ratioSet(docOf(path, ""), m.ratio, m.codeWidth, m.codeHeight, m.advance);
     return { ...m, untitled: n, tabs: concat(m.tabs, [{ path: path, name: path, doc: doc }]), active: m.tabs.length, current: path, field: CODE };
 }
 
@@ -614,8 +616,9 @@ function columnAt(m: Editor, x: f32): i64 {
 // box of the code
 function docChanged(m: Editor, d: Doc, fx: Effect[n]): [Editor, Effect[]] {
     const [y, h] = cursorBand(d);
+    const reveal = m.active < 0 || m.active >= m.tabs.length || movedFrom(m.tabs[m.active].doc, d);
     const m1 = withDoc(m, (x) => d);
-    return [m1, concat(fx, [Reveal(1, y, h)])] as const;
+    return [m1, reveal ? concat(fx, [Reveal(1, y, h)]) : fx] as const;
 }
 
 // Ctrl+S: the document of the tab shown written to its file
@@ -827,16 +830,38 @@ export function update(m: Editor, i: Input): [Editor, Effect[]] {
             // (a drag from a line of the code: the selection to the line and the
             // column under the pointer)
             if (p >= LINE && m.field == CODE) {
-                const m1 = withDoc(m, (d) => rowDragged(d, lookOf(m), p - LINE, x, y));
-                return m1.active >= 0 ? docChanged(m1, m1.tabs[m1.active].doc, []) : [m1, []] as const;
+                return m.active >= 0 && m.active < m.tabs.length ? docChanged(m, rowDragged(m.tabs[m.active].doc, lookOf(m), p - LINE, x, y), []) : [m, []] as const;
             }
             return p == m.field ? typed(m, i) : [m, []] as const;
         },
         Release(p) => [{ ...m, pressed: -1 }, []] as const,
+        // (the right button over a line of the code: its cursor there unless
+        // within a selection, the menu of the editor of Visual Studio Code)
+        ContextMenu(p, x, y) => {
+            if (p < LINE || m.active < 0 || m.active >= m.tabs.length) {
+                return [m, []] as const;
+            }
+            const d1 = rowContext(m.tabs[m.active].doc, lookOf(m), p - LINE, x);
+            return docChanged({ ...m, field: CODE }, d1, [shownMenu(codeMenuLook(), codeMenu(d1))]);
+        },
+        // (an entry of that menu: its shortcut; the palette, as Ctrl+Shift+P)
+        MenuChosen(k) => {
+            if (m.active < 0 || m.active >= m.tabs.length) {
+                return [m, []] as const;
+            }
+            if (k == CODE_MENU_PALETTE) {
+                return shortcut(m, 112, WITH_CTRL | WITH_SHIFT, Key(112, WITH_CTRL | WITH_SHIFT));
+            }
+            const [d1, fx] = codeMenuChosen(m.tabs[m.active].doc, k);
+            return docChanged({ ...m, field: CODE }, d1, fx);
+        },
         Key(k, mods) => shortcut(m, k, mods, i),
         Viewport(k, offset, height) => [k == 1 ? withDoc(m, (d) => viewed(d, offset, d.height)) : m, []] as const,
         // (the box of the code laid out: each document told its size)
         BoxSized(k, w, h) => [k == 1 ? { ...m, codeWidth: w, codeHeight: h, tabs: map(m.tabs, (t) => ({ ...t, doc: boxSized(t.doc, w, h, m.advance) })) } : m, []] as const,
+        // (another density of the screen: the maps of the documents in its
+        // pixels)
+        Density(k) => [{ ...m, ratio: k, tabs: map(m.tabs, (t) => ({ ...t, doc: ratioSet(t.doc, k, m.codeWidth, m.codeHeight, m.advance) })) }, []] as const,
         // (the wheel across over the code: it scrolls across)
         WheelX(p, dx) => [(p >= LINE || (p >= PART && p < PART + 100)) ? withDoc(m, (d) => wheeledAcross(d, dx)) : m, []] as const,
         TextWritten(p, ok, reason) => [written(m, p, ok, reason), []] as const,
