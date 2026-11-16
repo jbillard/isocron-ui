@@ -88,6 +88,13 @@ function isPending(p: Primitive): boolean {
 // the same time) and kept; the atlas after them (emptied first when it
 // holds more than MOST pixels or half its slots)
 export function resolved(fs: Font[k], a0: Atlas, ps: Primitive[n]): [Primitive[n], Atlas] {
+    return resolvedAt(fs, a0, ps, false);
+}
+
+// `resolved`, each glyph's coverage left in the pixels of the atlas when
+// `refer` (`Sprite.at`: drawn by `renderWith` from them, not copied), else
+// copied into it
+export function resolvedAt(fs: Font[k], a0: Atlas, ps: Primitive[n], refer: boolean): [Primitive[n], Atlas] {
     const pend = filter(iota(n), (i) => isPending(ps[i]));
     if (pend.length == 0) {
         return [ps, a0] as const;
@@ -146,7 +153,10 @@ export function resolved(fs: Font[k], a0: Atlas, ps: Primitive[n]): [Primitive[n
             const w = a2.ws[e];
             const h = a2.hs[e];
             const s = a2.starts[e];
-            return Glyph({ x: g.x + a2.lefts[e], y: g.base + a2.tops[e], w: w, h: h, color: g.color, mask: a2.pixels.slice(s, s + w * h) });
+            // (its coverage in the pixels of the atlas, not copied: drawn by
+            // `renderWith` from them; else a copy of its own)
+            return refer ? Glyph({ x: g.x + a2.lefts[e], y: g.base + a2.tops[e], w: w, h: h, color: g.color, mask: [], at: s, key: k })
+                : Glyph({ x: g.x + a2.lefts[e], y: g.base + a2.tops[e], w: w, h: h, color: g.color, mask: a2.pixels.slice(s, s + w * h), at: -1, key: -1 });
         },
         p => p,
     });

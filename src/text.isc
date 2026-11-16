@@ -206,7 +206,7 @@ function glyphAt(f: Font, g: i64, em: f32, frac: f32, whole: i64, base: i64, c: 
         return Pending({ glyph: g, em: em, quarter: i64(frac * 4.0f32), x: whole, base: base, color: c, face: face });
     }
     const [left, top, w, h, mask] = rasterize(f, g, em, frac);
-    return Glyph({ x: whole + left, y: base + top, w: w, h: h, color: c, mask: mask });
+    return Glyph({ x: whole + left, y: base + top, w: w, h: h, color: c, mask: mask, at: -1, key: -1 });
 }
 
 // how the lines of a paragraph are placed in its width

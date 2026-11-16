@@ -280,6 +280,10 @@ interface. Besides the vocabulary of `uigen`:
   parent by that on each side), `moves`, `barWidth`, `barColor`,
   `barHoverColor`, `barRadius` and `barInset` (the thumb of its scrollbar).
   A border of 1 unit is one pixel at any density, as a browser draws it.
+- `host.openFile(path, done)` in Lua: the file read and its document made
+  by the host (the editor of code), `done` then called with true, or with
+  nil and the reason; its text never given to Lua, however large (a log of
+  58 MB opened in about 0.1 s).
 - `host.readFile(path, done)` and `host.listFolder(path, done)` in Lua: the
   file or the folder read after the input that asked it (by the loop of
   the window: the effects `ReadText`, `ListFolder`), `done` then called
@@ -307,6 +311,11 @@ interface. Besides the vocabulary of `uigen`:
   pointer, its entries and its look, made of `MenuItem`s by `shownMenu`).
 - `src/edit.isc`: the text of a field (`Editing`: its caret and selection)
   and how the keys, the pointer and the clipboard change it (`edited`).
+- `src/lines.isc`: the lines of a document in a tree of shared nodes (a
+  rope: leaves of about 256 lines), each with its scan and its effect on
+  the depth of the brackets: a document copied shares them, a change makes
+  again the leaves it touches (a file of 157616 lines edited and scrolled
+  at frames of 12 to 18 ms, 180 to 290 before).
 - `src/doc.isc`: a document of the editor of code (`Doc`: its lines, its
   cursor and selection, its undo, the scans of its lines) and what the
   hand does to it, as Visual Studio Code; `src/code.isc`: its lines cut in

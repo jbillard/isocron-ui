@@ -269,7 +269,7 @@ sections = { "Outline", "Timeline" }
 
 -- ----- tabs ------------------------------------------------------------
 
--- a file opened: its document made by the host (host.openDoc: its lines,
+-- a file opened: its document made by the host (host.openFile: its lines,
 -- its cursor, its colours, its undo; the keys and the pointer change it
 -- there), a tab for it, the keyboard given to its code
 function openFile(path)
@@ -282,15 +282,14 @@ function openFile(path)
     end
   end
   local name = string.match(path, "([^/\\]+)$") or path
-  host.readFile(path, function(text, err)
-    if not text then
+  -- (its document made by the host as it reads it: its text, however
+  -- large, never given to Lua; a binary file shown as Visual Studio Code
+  -- says it cannot be)
+  host.openFile(path, function(ok, err)
+    if not ok then
       say("Lecture impossible : " .. path .. " (" .. tostring(err) .. ")")
       return
     end
-    if string.find(text, "\0", 1, true) then
-      text = "The file is not displayed in the text editor because it is either binary or uses an unsupported text encoding."
-    end
-    host.openDoc(path, text)
     tabs[#tabs + 1] = { path = path, name = name }
     active = #tabs
     current = path

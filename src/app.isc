@@ -18,7 +18,7 @@ import * as net from "net";
 import * as wl from "./wayland";
 import * as x11 from "./x11";
 import { IoError, ioError } from "sys";
-import { rgb, rgba, render, renderAgain, blank, Canvas, Primitive, Box, quad, rounded, bordered, transparent } from "./paint";
+import { rgb, rgba, render, renderAgain, renderWith, blank, Canvas, Primitive, Box, quad, rounded, bordered, transparent } from "./paint";
 import { Font, parse } from "./font";
 import { Element, Div, Label, Px, Fill, Hit, Frame, placeFrame, placeOf, scaledElement, hitTest, clickAt, cursorAt, barAt, fieldAt, offsetAt, charAt, scrolled, thumb, style, textStyle, ARROW, FIELD, BAR, CLICK, MENU, FOCUS, WHEEL, MOVE, tipOf, Row, Packed } from "./ui";
 import { POINTER as POINTER_SHAPE, TEXT as TEXT_SHAPE } from "./ui";
@@ -26,7 +26,7 @@ import { Input, Effect, Click, Drag, Release, Hover, Text, Key, Paste, Focus, Vi
 import { DEAD, DEAD_ACCENTS, composed, spacingAccent } from "./input";
 import { Keymap, parseKeymap, charOf } from "./xkb";
 import * as cursors from "./cursors";
-import { Atlas, emptyAtlas, resolved } from "./atlas";
+import { Atlas, emptyAtlas, resolved, resolvedAt } from "./atlas";
 import { lineWidth, Center } from "./text";
 
 // the half period of the caret's blinking, in nanoseconds
@@ -786,6 +786,12 @@ export function laidOut<M>(ui: Ui, f: Font, m: M, view: (M) => Element, now: u64
 
 // `laidOut` with the fonts `fs` (`runWithFonts`)
 export function laidOutFonts<M>(ui: Ui, fs: Font[nf], m: M, view: (M) => Element, now: u64): [Primitive[], Ui] {
+    return laidOutAt(ui, fs, m, view, now, false);
+}
+
+// `laidOutFonts`, the glyphs referring to the pixels of the atlas when
+// `refer` (drawn by `renderWith` with them: the loops of the windows)
+export function laidOutAt<M>(ui: Ui, fs: Font[nf], m: M, view: (M) => Element, now: u64, refer: boolean): [Primitive[], Ui] {
     const shown = caretShown(ui, now);
     // (its glyphs `Pending`: their images those the atlas keeps, the others
     // drawn once and kept)
@@ -802,7 +808,7 @@ export function laidOutFonts<M>(ui: Ui, fs: Font[nf], m: M, view: (M) => Element
     const tip = ui.hover >= 0 && ui.pressed < 0 && !ui.menu && !ui.tipOff ? tipOf(e, ui.hover) : "";
     const due = tip != "" && now >= ui.hoverSince + TIP_DELAY;
     const tps = due ? tipLaidOut(ui, fs, tip) : [];
-    const [ps, atlas] = resolved(fs, ui.atlas, concat(concat(concat(vps, ring), tps), mps));
+    const [ps, atlas] = resolvedAt(fs, ui.atlas, concat(concat(concat(vps, ring), tps), mps), refer);
     const hits = concat(vhits, mhits);
     // the place under the pointer, its shape, as the new places have them
     const hover = ui.pressed >= 0 ? ui.cursor : cursorAt(hits, ui.x, ui.y);
@@ -1014,8 +1020,8 @@ action frame<M>(w: win.Window, fs: Font[nf], m: M, view: (M) => Element, ui: Ui,
     if (!draw) {
         return [ui, cv] as const;
     }
-    const [ps, next] = laidOutFonts(ui, fs, m, view, clock());
-    const c = renderAgain(cv, ui.w, ui.h, rgb(0xFFFFFFu32), ps);
+    const [ps, next] = laidOutAt(ui, fs, m, view, clock(), true);
+    const c = renderWith(cv, ui.w, ui.h, rgb(0xFFFFFFu32), ps, next.atlas.pixels);
     const shown = win.show(w, c.pixels, ui.w, ui.h);
     // the areas of a title the application draws given to the window when
     // they changed: those that move it, the places over them that keep the
@@ -1464,10 +1470,10 @@ action drawWayland<M>(c: net.Conn, fs: Font[nf], m: M, view: (M) => Element, ui:
     if (!draw) {
         return [ui, st, cv] as const;
     }
-    const [ps, next] = laidOutFonts(ui, fs, m, view, clock());
+    const [ps, next] = laidOutAt(ui, fs, m, view, clock(), true);
     const pool = st.next;
     const buffer = st.next + 1u32;
-    const c2 = renderAgain(cv, ui.w, ui.h, rgb(0xFFFFFFu32), ps);
+    const c2 = renderWith(cv, ui.w, ui.h, rgb(0xFFFFFFu32), ps, next.atlas.pixels);
     return match (unix.shared(ui.w * ui.h * 4)) {
         Ok(mem) => {
             const written = unix.writeSharedU32(mem, 0, c2.pixels);
@@ -1927,8 +1933,8 @@ action drawX11<M>(c: net.Conn, fs: Font[nf], m: M, view: (M) => Element, ui: Ui,
     if (!draw) {
         return [ui, cv] as const;
     }
-    const [ps, next] = laidOutFonts(ui, fs, m, view, clock());
-    const c2 = renderAgain(cv, ui.w, ui.h, rgb(0xFFFFFFu32), ps);
+    const [ps, next] = laidOutAt(ui, fs, m, view, clock(), true);
+    const c2 = renderWith(cv, ui.w, ui.h, rgb(0xFFFFFFu32), ps, next.atlas.pixels);
     const shown = st.shm > 0 && st.setup.littleImages && shmShown(c, st, c2.pixels, ui.w, ui.h);
     const sent = shown || stripsX(c, st, c2.pixels, ui.w, ui.h, 0, x11.rowsPerRequest(ui.w, st.setup.maxRequest));
     return [next, c2] as const;

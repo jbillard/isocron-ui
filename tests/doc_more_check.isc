@@ -7,6 +7,7 @@
 // across. Each step prints the text, then each selection (cursor and
 // anchor, line:offset), the primary first.
 import { Doc, docOf, keyed, typedCode, pasted, textOf, clickedAt, clickedWith, allSelections, currentFound, findClicked, sized, wheeledAcross, leftShown, rowStarts, totalRows, positionAtRow, FIND_ALL, FIND_CASE } from "../src/doc";
+import { lineAt, lineCount } from "../src/lines";
 import { compiled, matchesOf, substituted } from "../src/regex";
 import { Effect, Copy, Click, WITH_SHIFT, WITH_CTRL, WITH_ALT, ENTER, ESCAPE, UP, DOWN, END, HOME, F2, F3, SLASH, BRACKET_RIGHT } from "../src/input";
 
@@ -138,7 +139,7 @@ action main(args: string[k]): i32 {
     // their spaces, the rows after the first indented as the line; Down by
     // rows
     const z0 = key(sized(docOf("i.txt", "alpha beta gamma delta\nshort\n  indented line here"), 80.0f32, 300.0f32, 8.0f32), 122, WITH_ALT);
-    print(`${z0.wrap} ${join(map(rowStarts(z0.lines[0], 10), (x) => `${x}`), ",")} ${join(map(rowStarts(z0.lines[2], 10), (x) => `${x}`), ",")} ${totalRows(z0)}`);
+    print(`${z0.wrap} ${join(map(rowStarts(lineAt(z0.lines, 0), 10), (x) => `${x}`), ",")} ${join(map(rowStarts(lineAt(z0.lines, 2), 10), (x) => `${x}`), ",")} ${totalRows(z0)}`);
     const z1 = key(z0, DOWN, 0);
     const z2 = key(z1, DOWN, 0);
     print(`${z1.cursor.line}:${z1.cursor.col} ${z2.cursor.line}:${z2.cursor.col} ${key(z2, DOWN, 0).cursor.line}:${key(z2, DOWN, 0).cursor.col} ${leftShown(key(z0, END, 0))}`);

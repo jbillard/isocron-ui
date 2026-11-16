@@ -1,0 +1,250 @@
+// The lines of a document of the editor of code (src/doc.isc) in a tree of
+// nodes counted by reference (a rope, as the piece tree of Visual Studio
+// Code or the rope of Zed): leaves of about LEAF lines under a root. A
+// document copied (each input of an application gives one back) shares its
+// lines; a change makes again the leaves it touches and the root, not the
+// other lines: a file of 157616 lines (58 MB) copied in no time, a
+// character typed in it in microseconds, where an array of its lines was
+// copied whole at each input.
+//
+// Each line keeps its scan (its tokens; whether a comment of a block is
+// open at its end) and its effect on the depth of the brackets: from a
+// depth `d` at its start, `max(d + S, C)` at its end (its opening brackets
+// less its closing ones, `S`; the depth after it from 0, `C`: the depth
+// never goes below 0). Two effects in a row are one of the same form, so
+// each leaf keeps that of its lines, and the depth at the start of a line
+// is that of the leaves before it and of the lines before it in its leaf.
+import { Lang, Scan, scanLine, K_PUNCT } from "./code";
+
+// the lines of a leaf: their texts, their scans, the effects of each on the
+// depth of the brackets (`ss`, `cs`); a node: its children, the lines up to
+// the end of each (`ends`), the effect of each (`ss`, `cs`)
+export type Lines = LinesLeaf(string[], Scan[], i64[], i64[]) | LinesNode(Lines[], i64[], i64[], i64[]);
+
+// the lines a leaf is made with (a change may leave from half of it to
+// twice it before the leaf is cut again)
+const LEAF: i64 = 256;
+
+// ----- the effect of a line on the depth of the brackets -----------------
+
+// the effect of the line `text` scanned as `raws`: [S, C]
+function effectOf(text: string, s: Scan): [i64, i64] {
+    const b = bytes(text);
+    return fold(s.raws, [0, 0] as const, (acc, r) => {
+        if (r.kind != K_PUNCT) {
+            return acc;
+        }
+        return fold(iota(r.end - r.start), acc, (e, j) => {
+            const [sum, c] = e;
+            const ch = b[r.start + j];
+            return ch == 40u8 || ch == 91u8 || ch == 123u8 ? [sum + 1, c + 1] as const
+                : (ch == 41u8 || ch == 93u8 || ch == 125u8 ? [sum - 1, max(0, c - 1)] as const : e);
+        });
+    });
+}
+
+// the effect of `a` then of `b`
+function then(a: [i64, i64], b: [i64, i64]): [i64, i64] {
+    const [s1, c1] = a;
+    const [s2, c2] = b;
+    return [s1 + s2, max(c1 + s2, c2)] as const;
+}
+
+// the effect of the first `k` effects of `ss`, `cs`
+function prefixOf(ss: i64[n], cs: i64[n], k: i64): [i64, i64] {
+    return fold(iota(min(k, n)), [0, 0] as const, (acc, i) => then(acc, [ss[i], cs[i]] as const));
+}
+
+// ----- made, read ----------------------------------------------------------
+
+// the lines `texts` of the language `l`: each scanned (whether a comment of
+// a block is open at its start found line after line, an array of booleans
+// grown in place; then all scanned at once), cut into leaves
+export function linesOf(texts: string[n], l: Lang): Lines {
+    return chunked(texts, scansOf(texts, l, false));
+}
+
+// the scans of the lines `texts`, a comment of a block open at the start
+// of the first when `open`
+function scansOf(texts: string[n], l: Lang, open: boolean): Scan[n] {
+    const opens = l.plain || l.xml ? fill(n, false) : opensFrom(texts, l, 0, open, []);
+    return map(iota(n), (k) => scanLine(texts[k], l, opens[k]));
+}
+
+// whether a comment of a block is open at the start of each line from the
+// `k`-th (`open` at its start)
+function opensFrom(texts: string[n], l: Lang, k: i64, open: boolean, out: boolean[]): boolean[] {
+    if (k >= n) {
+        return out;
+    }
+    return opensFrom(texts, l, k + 1, scanLine(texts[k], l, open).open, concat(out, [open]));
+}
+
+// a leaf of the lines `texts` scanned as `scans`
+function leafOf(texts: string[n], scans: Scan[n]): Lines {
+    const es = map(iota(n), (k) => effectOf(texts[k], scans[k]));
+    return LinesLeaf(texts, scans, map(es, (e) => {
+        const [s, c] = e;
+        return s;
+    }), map(es, (e) => {
+        const [s, c] = e;
+        return c;
+    }));
+}
+
+// the lines `texts` scanned as `scans` cut into leaves of LEAF lines (one
+// at least, empty when there are none)
+function leavesOf(texts: string[n], scans: Scan[n]): Lines[] {
+    const m = max(1, (n + LEAF - 1) / LEAF);
+    return map(iota(m), (j) => leafOf(texts.slice(j * LEAF, min(n, (j + 1) * LEAF)), scans.slice(j * LEAF, min(n, (j + 1) * LEAF))));
+}
+
+function chunked(texts: string[n], scans: Scan[n]): Lines {
+    return rootOf(leavesOf(texts, scans));
+}
+
+// the count of the lines of a leaf
+function leafCount(r: Lines): i64 {
+    return match (r) {
+        LinesLeaf(ts, sc, ss, cs) => ts.length,
+        LinesNode(kids, ends, ss, cs) => ends.length == 0 ? 0 : ends[ends.length - 1],
+    };
+}
+
+// the effect of all the lines of `r`
+function effectAll(r: Lines): [i64, i64] {
+    return match (r) {
+        LinesLeaf(ts, sc, ss, cs) => prefixOf(ss, cs, ss.length),
+        LinesNode(kids, ends, ss, cs) => prefixOf(ss, cs, ss.length),
+    };
+}
+
+// the root of the leaves `leaves`
+function rootOf(leaves: Lines[n]): Lines {
+    const es = map(leaves, (x) => effectAll(x));
+    return LinesNode(leaves, scan(map(leaves, (x) => leafCount(x)), (a, b) => a + b, 0), map(es, (e) => {
+        const [s, c] = e;
+        return s;
+    }), map(es, (e) => {
+        const [s, c] = e;
+        return c;
+    }));
+}
+
+// the count of the lines
+export function lineCount(r: Lines): i64 {
+    return leafCount(r);
+}
+
+// the first part whose end is past `k`, between `lo` and `hi` (by halves)
+function partOf(ends: i64[n], k: i64, lo: i64, hi: i64): i64 {
+    if (lo >= hi) {
+        return lo;
+    }
+    const mid = (lo + hi) / 2;
+    return ends[mid] > k ? partOf(ends, k, lo, mid) : partOf(ends, k, mid + 1, hi);
+}
+
+// the text of the line `k`
+export function lineAt(r: Lines, k: i64): string {
+    return match (r) {
+        LinesLeaf(ts, sc, ss, cs) => ts[k],
+        LinesNode(kids, ends, ss, cs) => {
+            const j = min(partOf(ends, k, 0, ends.length), ends.length - 1);
+            return lineAt(kids[j], k - (j == 0 ? 0 : ends[j - 1]));
+        },
+    };
+}
+
+// the scan of the line `k`
+export function scanAt(r: Lines, k: i64): Scan {
+    return match (r) {
+        LinesLeaf(ts, sc, ss, cs) => sc[k],
+        LinesNode(kids, ends, ss, cs) => {
+            const j = min(partOf(ends, k, 0, ends.length), ends.length - 1);
+            return scanAt(kids[j], k - (j == 0 ? 0 : ends[j - 1]));
+        },
+    };
+}
+
+// the depth of the brackets at the start of the line `k`
+export function depthAt(r: Lines, k: i64): i64 {
+    const [s, c] = effectBefore(r, k);
+    return c;
+}
+
+// the effect of the lines before the line `k`
+function effectBefore(r: Lines, k: i64): [i64, i64] {
+    return match (r) {
+        LinesLeaf(ts, sc, ss, cs) => prefixOf(ss, cs, k),
+        LinesNode(kids, ends, ss, cs) => {
+            const j = min(partOf(ends, k, 0, ends.length), ends.length - 1);
+            return then(prefixOf(ss, cs, j), effectBefore(kids[j], k - (j == 0 ? 0 : ends[j - 1])));
+        },
+    };
+}
+
+// the texts of the lines from `from` to `to` (excluded)
+export function linesIn(r: Lines, from: i64, to: i64): string[] {
+    return map(iota(max(0, to - from)), (i) => lineAt(r, from + i));
+}
+
+// the texts of every line
+export function allLines(r: Lines): string[] {
+    return linesIn(r, 0, lineCount(r));
+}
+
+// the scans of the lines from `from` to `to` (excluded)
+function scansIn(r: Lines, from: i64, to: i64): Scan[] {
+    return map(iota(max(0, to - from)), (i) => scanAt(r, from + i));
+}
+
+// ----- changed ---------------------------------------------------------------
+
+// the lines from `from` to `to` (excluded) replaced by `texts`, scanned; the
+// lines after them scanned again while the comment of a block open at
+// their start is not that before the change; only the leaves holding them
+// made again (cut again into leaves of LEAF lines when they pass twice it
+// or fall under half of it), the others shared
+export function spliced(r: Lines, from: i64, to: i64, texts: string[m], l: Lang): Lines {
+    const n = lineCount(r);
+    const open = from > 0 ? scanAt(r, from - 1).open : false;
+    const fresh = scansOf(texts, l, open);
+    const after = m > 0 ? fresh[m - 1].open : open;
+    // (the lines after them scanned again while their start differs)
+    const [more, moreScans, stop] = rescanAfter(r, l, to, after, n, [], []);
+    return match (r) {
+        LinesLeaf(ts, sc, ss, cs) => chunked(concat(concat(linesIn(r, 0, from), concat(texts, more)), linesIn(r, stop, n)), concat(concat(scansIn(r, 0, from), concat(fresh, moreScans)), scansIn(r, stop, n))),
+        LinesNode(kids, ends, ss, cs) => {
+            const k = ends.length;
+            // (the leaves holding the lines from `from` to `stop`)
+            const j0 = min(partOf(ends, from, 0, k), k - 1);
+            const j1 = stop > from ? min(partOf(ends, stop - 1, 0, k), k - 1) : j0;
+            const lo = j0 == 0 ? 0 : ends[j0 - 1];
+            const hi = ends[j1];
+            const ts = concat(concat(linesIn(r, lo, from), concat(texts, more)), linesIn(r, stop, hi));
+            const scs = concat(concat(scansIn(r, lo, from), concat(fresh, moreScans)), scansIn(r, stop, hi));
+            // (a leaf of the change between half LEAF and twice LEAF lines
+            // kept whole; else cut again)
+            const made: Lines[] = ts.length > 0 && ts.length <= 2 * LEAF ? [leafOf(ts, scs)] : (ts.length == 0 ? [] : leavesOf(ts, scs));
+            const leaves = concat(concat(kids.slice(0, j0), made), kids.slice(j1 + 1, k));
+            return leaves.length == 0 ? chunked([""], scansOf([""], l, false)) : rootOf(leaves);
+        },
+    };
+}
+
+// the lines from the `t`-th scanned again with a comment of a block open at
+// their start when `open`, while that differs from before (the scan of the
+// line before them); their texts, their scans, the first line not scanned
+function rescanAfter(r: Lines, l: Lang, t: i64, open: boolean, n: i64, texts: string[], scans: Scan[]): [string[], Scan[], i64] {
+    if (t >= n) {
+        return [texts, scans, t] as const;
+    }
+    const was = t > 0 ? scanAt(r, t - 1).open : false;
+    if (open == was) {
+        return [texts, scans, t] as const;
+    }
+    const text = lineAt(r, t);
+    const s = scanLine(text, l, open);
+    return rescanAfter(r, l, t + 1, s.open, n, concat(texts, [text]), concat(scans, [s]));
+}

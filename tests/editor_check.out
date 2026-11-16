@@ -6,3 +6,4 @@ menu: true, its entries: Change All Occurrences (Ctrl+F2), -, Cut (Ctrl+X), Copy
 lit: 3 (Copy)
 menu after Enter: false; copied:      its theme 2026 Dark), read when the generic application starts⏎; cursor 2:16
 top after the wheel: 480; after a press on the thumb of the map: 480
+top before the drag of the map: 0; after: 1140; cursor 2:16 -> 2:16, anchor 2:16

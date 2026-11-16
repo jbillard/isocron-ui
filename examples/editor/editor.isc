@@ -11,6 +11,7 @@ import * as sys from "sys";
 import { Input, Effect, Click, Drag, Release, Hover, Key, Text, Paste, Focus, Viewport, Tick, TextRead, FolderListed, WindowState, WindowSize, WindowActive, TextWritten, CloseAsked, WheelX, BoxSized, Density, ContextMenu, MenuChosen, shownMenu, ReadText, ListFolder, Minimize, ToggleMaximized, CloseWindow, WriteText, ScrollTo, Reveal, KeepOpen, ENTER, ESCAPE, UP, DOWN, WITH_CTRL, WITH_SHIFT } from "../../src/input";
 import { Editing, editing, edited } from "../../src/edit";
 import { renamed } from "../../src/doc";
+import { lineAt, lineCount } from "../../src/lines";
 import { Doc, docOf, keyed, typedCode, pasted, textOf, saved, dirty, clickedWith, draggedTo, viewed, topFor, cursorBand, columnOf, symbolsAt, boxSized, ratioSet, movedFrom, wheeledAcross, findFrom, statusOf, LINE_HEIGHT } from "../../src/doc";
 import { CodeLook, codeLook, lookWith, codeElements, columnAtX, codePartClicked, codePartDragged, rowClicked, rowDragged, rowContext, codeMenu, codeMenuLook, codeMenuChosen, CODE_MENU_PALETTE } from "../../src/code_view";
 import { Element } from "../../src/ui";
@@ -421,7 +422,7 @@ function readIn(m: Editor, path: string, text: string, ok: boolean): Editor {
     const doc0 = ratioSet(docOf(path, binary ? "The file is not displayed in the text editor because it is either binary or uses an unsupported text encoding." : text), m.ratio, m.codeWidth, m.codeHeight, m.advance);
     const doc = m.active >= 0 && m.active < m.tabs.length ? findFrom(doc0, m.tabs[m.active].doc) : doc0;
     const tab = { path: path, name: name, doc: doc };
-    return say({ ...m, tabs: concat(m.tabs, [tab]), active: m.tabs.length, current: path }, `Ouvert : ${rel(m, path)} (${doc.lines.length} lignes)`);
+    return say({ ...m, tabs: concat(m.tabs, [tab]), active: m.tabs.length, current: path }, `Ouvert : ${rel(m, path)} (${lineCount(doc.lines)} lignes)`);
 }
 
 // the folder of the node `i` read: its children inserted after it, open

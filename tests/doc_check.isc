@@ -2,6 +2,7 @@
 // to it, as Visual Studio Code does it: each step prints the text, the
 // cursor and the anchor (line:offset), and what it asks.
 import { Doc, docOf, keyed, typedCode, pasted, textOf, clickedAt, draggedTo, saved, dirty, selection, columnOf, offsetOf, viewed, topFor } from "../src/doc";
+import { lineAt, lineCount, scanAt, depthAt } from "../src/lines";
 import { Effect, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, BACKSPACE, DELETE, TAB, ENTER, ESCAPE, LEFT, RIGHT, HOME, END, UP, DOWN, PAGE_UP, PAGE_DOWN } from "../src/input";
 
 function shown(d: Doc): string {
@@ -72,7 +73,7 @@ action main(args: string[k]): i32 {
     const v0 = docOf("f.txt", "long line here\nab\n\tsecond tab");
     const v1 = key(clickedAt(v0, 0, 10, 1, false), DOWN, 0);
     const v2 = key(v1, DOWN, 0);
-    print(`${v1.cursor.line}:${v1.cursor.col} ${v2.cursor.line}:${v2.cursor.col} ${columnOf(v0.lines[2], 7)} ${offsetOf(v0.lines[2], 2)} ${offsetOf(v0.lines[2], 3)}`);
+    print(`${v1.cursor.line}:${v1.cursor.col} ${v2.cursor.line}:${v2.cursor.col} ${columnOf(lineAt(v0.lines, 2), 7)} ${offsetOf(lineAt(v0.lines, 2), 2)} ${offsetOf(lineAt(v0.lines, 2), 3)}`);
     // Shift+arrows select; an arrow without Shift collapses to that side
     const s1 = key(key(clickedAt(v0, 0, 2, 1, false), RIGHT, WITH_SHIFT), DOWN, WITH_SHIFT);
     const [sa, sb] = selection(s1);
@@ -102,10 +103,10 @@ action main(args: string[k]): i32 {
     // a comment of a block opened: the colours of the lines after it change
     const k0 = docOf("i.isc", "a\nb\nc");
     const k1 = typedAll(k0, "/*");
-    print(`${k0.scans[2].raws[0].kind} ${k1.scans[2].raws[0].kind} ${k1.scans[2].open}`);
+    print(`${scanAt(k0.lines, 2).raws[0].kind} ${scanAt(k1.lines, 2).raws[0].kind} ${scanAt(k1.lines, 2).open}`);
     // the depths of the brackets at the starts of the lines
     const b0 = docOf("j.isc", "f({\n[x]\n})");
-    print(b0.depths);
+    print(map(iota(lineCount(b0.lines)), (k) => depthAt(b0.lines, k)));
     // the ends of lines of Windows kept
     print(join(split(textOf(typedAll(docOf("k.txt", "a\r\nb"), "z")), "\r\n"), "|"));
     // Page Down by the lines a page holds; the offset that shows the cursor

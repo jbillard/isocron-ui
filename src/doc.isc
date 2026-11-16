@@ -9,6 +9,7 @@
 // character as one, a tab up to its next stop (4).
 import { Input, Effect, Click, Drag, Text, Key, Paste, Copy, AskPaste, WITH_SHIFT, WITH_CTRL, WITH_ALT, BACKSPACE, DELETE, TAB, ENTER, ESCAPE, LEFT, RIGHT, HOME, END, UP, DOWN, PAGE_UP, PAGE_DOWN, F2, F3, SLASH, BRACKET_LEFT, BRACKET_RIGHT } from "./input";
 import { Lang, Scan, scanLine, depthAfter, langOf } from "./code";
+import { Lines, linesOf, lineAt, lineCount, scanAt, depthAt, allLines, linesIn, spliced } from "./lines";
 import { utf8, Editing, editing } from "./edit";
 import { codePoints } from "./text";
 import * as ed from "./edit";
@@ -21,7 +22,7 @@ export type Pos = { line: i64, col: i64 };
 export type Sel = { cursor: Pos, anchor: Pos, goal: i64 };
 
 // what an undo brings back
-export type Snap = { lines: string[], cursor: Pos, anchor: Pos, others: Sel[] };
+export type Snap = { lines: Lines, cursor: Pos, anchor: Pos, others: Sel[] };
 
 // a text found by the search: its line, its first byte and the byte after
 // it
@@ -41,7 +42,9 @@ export type Find = {
 
 export type Doc = {
     path: string, lang: Lang, indent: i64, crlf: boolean,
-    lines: string[], scans: Scan[], depths: i64[],
+    // its lines, their scans and the depths of their brackets (a tree of
+    // shared nodes, src/lines.isc: a copy of the document shares them)
+    lines: Lines,
     cursor: Pos, anchor: Pos,
     // the column on the screen the cursor keeps going up and down (-1:
     // that of the cursor)
@@ -75,6 +78,8 @@ export type Doc = {
     // the pixels of a unit of the screen it is shown on (its map drawn in
     // them, as Visual Studio Code draws its minimap)
     ratio: f32,
+    // the width of the box that shows it (0: not laid out yet)
+    boxW: f32,
 };
 
 export const TAB_SIZE: i64 = 4;
@@ -120,15 +125,14 @@ export function docOf(path: string, text: string): Doc {
     const raw = split(text, "\n");
     const lines = map(raw, (l) => l.endsWith("\r") ? l.slice(0, l.length - 1) : l);
     const l = langOf(path);
-    const [scans, depths] = scanned(lines, l, 0, false, 0, [], []);
     return {
         path: path, lang: l, indent: indentOfLines(lines), crlf: crlf,
-        lines: lines, scans: scans, depths: depths,
+        lines: linesOf(lines, l),
         cursor: pos(0, 0), anchor: pos(0, 0), goal: -1,
         undo: [], redo: [], last: 0, version: 0, saved: 0,
         unit: 0, from: pos(0, 0), to: pos(0, 0), top: 0.0f32, height: 600.0f32,
         others: [], latest: -1, wordFind: false, lineCopied: "", find: noFind(), found: [],
-        left: 0.0f32, width: 0.0f32, advance: 7.7f32, mapWidth: 0.0f32, grab: 0.0f32, wrap: false, ratio: 1.0f32,
+        left: 0.0f32, width: 0.0f32, advance: 7.7f32, mapWidth: 0.0f32, grab: 0.0f32, wrap: false, ratio: 1.0f32, boxW: 0.0f32,
     };
 }
 
@@ -138,19 +142,9 @@ export function noFind(): Find {
         inSelection: false, scopeFrom: pos(0, 0), scopeTo: pos(0, 0), preserveCase: false };
 }
 
-// the lines from `k` scanned (`open` and `depth` at the start of the line
-// `k`): their scans, the depths of the brackets at their starts
-function scanned(lines: string[n], l: Lang, k: i64, open: boolean, depth: i64, scans: Scan[], depths: i64[]): [Scan[], i64[]] {
-    if (k >= n) {
-        return [scans, depths] as const;
-    }
-    const s = scanLine(lines[k], l, open);
-    return scanned(lines, l, k + 1, s.open, depthAfter(lines[k], s.raws, depth), concat(scans, [s]), concat(depths, [depth]));
-}
-
 // the text of the document, its lines ended as they were read
 export function textOf(d: Doc): string {
-    return join(d.lines, d.crlf ? "\r\n" : "\n");
+    return join(allLines(d.lines), d.crlf ? "\r\n" : "\n");
 }
 
 // the document saved (its text written by the application)
@@ -271,11 +265,11 @@ function wordAround(text: string, i: i64): [i64, i64] {
 // the text between the positions `a` and `b` (a before b)
 export function textBetween(d: Doc, a: Pos, b: Pos): string {
     if (a.line == b.line) {
-        return d.lines[a.line].slice(a.col, b.col);
+        return lineAt(d.lines, a.line).slice(a.col, b.col);
     }
-    const first = d.lines[a.line].slice(a.col, d.lines[a.line].length);
-    const middle = map(iota(b.line - a.line - 1), (k) => d.lines[a.line + 1 + k]);
-    const last = d.lines[b.line].slice(0, b.col);
+    const first = lineAt(d.lines, a.line).slice(a.col, lineAt(d.lines, a.line).length);
+    const middle = map(iota(b.line - a.line - 1), (k) => lineAt(d.lines, a.line + 1 + k));
+    const last = lineAt(d.lines, b.line).slice(0, b.col);
     return join(concat(concat([first], middle), [last]), "\n");
 }
 
@@ -286,11 +280,13 @@ export function textBetween(d: Doc, a: Pos, b: Pos): string {
 // typing, 2 deleting)
 function replace(d: Doc, a: Pos, b: Pos, text: string, kind: i64): Doc {
     const parts = split(join(split(text, "\r\n"), "\n"), "\n");
-    const headLine = d.lines[a.line].slice(0, a.col);
-    const tailLine = d.lines[b.line].slice(b.col, d.lines[b.line].length);
+    const headLine = lineAt(d.lines, a.line).slice(0, a.col);
+    const tailLine = lineAt(d.lines, b.line).slice(b.col, lineAt(d.lines, b.line).length);
     const n = parts.length;
     const made = map(iota(n), (k) => (k == 0 ? headLine : "") + parts[k] + (k == n - 1 ? tailLine : ""));
-    const lines = concat(concat(map(iota(a.line), (k) => d.lines[k]), made), map(iota(d.lines.length - b.line - 1), (k) => d.lines[b.line + 1 + k]));
+    // (the lines from `a` to `b` replaced, scanned with those after them
+    // whose comments the change opens or closes; the others shared)
+    const lines = spliced(d.lines, a.line, b.line + 1, made, d.lang);
     const end = pos(a.line + n - 1, n == 1 ? a.col + parts[0].length : parts[n - 1].length);
     // (the undo: a change of another kind, or after a move, begins one)
     const joins = kind != 0 && kind == d.last;
@@ -301,7 +297,9 @@ function replace(d: Doc, a: Pos, b: Pos, text: string, kind: i64): Doc {
         : (p.line == b.line && p.col >= b.col ? pos(end.line, end.col + p.col - b.col) : end));
     const others = map(d.others, (o) => ({ cursor: shifted(o.cursor), anchor: shifted(o.anchor), goal: o.goal }));
     const d1 = { ...d, lines: lines, cursor: end, anchor: end, goal: -1, undo: capped(undo), redo: [], last: kind, version: d.version + 1, others: others };
-    return rescanned(d1, d.scans, a.line, a.line + n, n - (b.line - a.line + 1));
+    // (a digit more or less in the numbers of the lines: the room of the code
+    // laid out again)
+    return d.boxW > 0.0f32 && moreDigits(d1) != moreDigits(d) ? boxSized(d1, d.boxW, d.height, d.advance) : d1;
 }
 
 // what an undo of the next change brings back
@@ -314,45 +312,9 @@ function capped(u: Snap[n]): Snap[] {
     return n > 1000 ? map(iota(1000), (k) => u[n - 1000 + k]) : u;
 }
 
-// the lines from `from` scanned again: those of the change (to `changed`,
-// excluded), then those after it while the comment of a block open at
-// their start differs from before (`old` the scans before the change,
-// `shift` the lines it added); the others' scans kept; the depths of the
-// brackets made again from `from`
-function rescanned(d: Doc, old: Scan[m], from: i64, changed: i64, shift: i64): Doc {
-    const keep = min(from, d.lines.length);
-    const open = keep > 0 ? old[keep - 1].open : false;
-    const scans = rescanFrom(d.lines, d.lang, old, keep, changed, shift, open, map(iota(keep), (k) => old[k]));
-    const depths = depthsFrom(d.lines, scans, keep, keep > 0 ? depthAfter(d.lines[keep - 1], scans[keep - 1].raws, d.depths[keep - 1]) : 0, map(iota(keep), (k) => d.depths[k]));
-    return { ...d, scans: scans, depths: depths };
-}
-
-function rescanFrom(lines: string[n], l: Lang, old: Scan[m], k: i64, changed: i64, shift: i64, open: boolean, out: Scan[]): Scan[] {
-    if (k >= n) {
-        return out;
-    }
-    // (past the change, the same comment open at its start as before: the
-    // scans of the lines left kept as they were)
-    const j = k - shift;
-    const wasOpen = j > 0 && j - 1 < m ? old[j - 1].open : false;
-    if (k >= changed && j >= 0 && j < m && open == wasOpen) {
-        return concat(out, map(iota(n - k), (i) => old[j + i]));
-    }
-    const s = scanLine(lines[k], l, open);
-    return rescanFrom(lines, l, old, k + 1, changed, shift, s.open, concat(out, [s]));
-}
-
-function depthsFrom(lines: string[n], scans: Scan[m], k: i64, depth: i64, out: i64[]): i64[] {
-    if (k >= n) {
-        return out;
-    }
-    return depthsFrom(lines, scans, k + 1, depthAfter(lines[k], scans[k].raws, depth), concat(out, [depth]));
-}
-
-// every line scanned again (an undo, a redo)
+// every line scanned again (another language)
 function rescannedAll(d: Doc): Doc {
-    const [scans, depths] = scanned(d.lines, d.lang, 0, false, 0, [], []);
-    return { ...d, scans: scans, depths: depths };
+    return { ...d, lines: linesOf(allLines(d.lines), d.lang) };
 }
 
 // the selection removed (nothing when there is none)
@@ -377,7 +339,7 @@ const CLOSES: string = ")]}\"'`";
 // the line or a closing one
 function typedChar(d: Doc, c: i64): Doc {
     const ch = stringOf(utf8(c));
-    const line = d.lines[d.cursor.line];
+    const line = lineAt(d.lines, d.cursor.line);
     const next = d.cursor.col < line.length ? line.slice(d.cursor.col, d.cursor.col + 1) : "";
     if (!hasSelection(d) && next == ch && CLOSES.indexOf(ch) >= 0) {
         const p = pos(d.cursor.line, d.cursor.col + 1);
@@ -401,10 +363,10 @@ function typedChar(d: Doc, c: i64): Doc {
 // an opening bracket, its closing bracket on a line of its own after it
 function newline(d: Doc): Doc {
     const [a, b] = selection(d);
-    const line = d.lines[a.line];
+    const line = lineAt(d.lines, a.line);
     const lead = leadOf(line).slice(0, min(leadOf(line).length, a.col));
     const prev = a.col > 0 ? line.slice(a.col - 1, a.col) : "";
-    const nextLine = d.lines[b.line];
+    const nextLine = lineAt(d.lines, b.line);
     const next = b.col < nextLine.length ? nextLine.slice(b.col, b.col + 1) : "";
     const opens = prev == "{" || prev == "[" || prev == "(";
     const step = join(map(iota(d.indent), (k) => " "), "");
@@ -421,7 +383,7 @@ function newline(d: Doc): Doc {
 function tabbed(d: Doc, outdent: boolean): Doc {
     const [a, b] = selection(d);
     if (!outdent && a.line == b.line) {
-        const c = columnOf(d.lines[a.line], a.col);
+        const c = columnOf(lineAt(d.lines, a.line), a.col);
         const n = d.indent - c % d.indent;
         return typed(d, join(map(iota(n), (k) => " "), ""));
     }
@@ -429,11 +391,8 @@ function tabbed(d: Doc, outdent: boolean): Doc {
     // at its start)
     const last = b.line > a.line && b.col == 0 ? b.line - 1 : b.line;
     const step = join(map(iota(d.indent), (k) => " "), "");
-    const lines = map(iota(d.lines.length), (k) => {
-        if (k < a.line || k > last) {
-            return d.lines[k];
-        }
-        const l = d.lines[k];
+    const changed = map(iota(last - a.line + 1), (i) => {
+        const l = lineAt(d.lines, a.line + i);
         if (!outdent) {
             return l == "" ? l : step + l;
         }
@@ -445,12 +404,11 @@ function tabbed(d: Doc, outdent: boolean): Doc {
         if (p.line < a.line || p.line > last) {
             return p;
         }
-        const delta = lines[p.line].length - d.lines[p.line].length;
+        const delta = changed[p.line - a.line].length - lineAt(d.lines, p.line).length;
         return pos(p.line, max(0, p.col + delta));
     };
-    const d1 = { ...d, lines: lines, cursor: shift(d.cursor), anchor: shift(d.anchor), undo: capped(concat(d.undo, [snapOf(d)])), redo: [], last: 0, version: d.version + 1, goal: -1,
+    return { ...d, lines: spliced(d.lines, a.line, last + 1, changed, d.lang), cursor: shift(d.cursor), anchor: shift(d.anchor), undo: capped(concat(d.undo, [snapOf(d)])), redo: [], last: 0, version: d.version + 1, goal: -1,
         others: map(d.others, (o) => ({ cursor: shift(o.cursor), anchor: shift(o.anchor), goal: -1 })) };
-    return rescanned(d1, d.scans, a.line, last + 1, 0);
 }
 
 // Backspace: the selection removed, else the character before the cursor
@@ -462,9 +420,9 @@ function backspaced(d: Doc): Doc {
     }
     const p = d.cursor;
     if (p.col == 0) {
-        return p.line == 0 ? d : replace(d, pos(p.line - 1, d.lines[p.line - 1].length), p, "", 2);
+        return p.line == 0 ? d : replace(d, pos(p.line - 1, lineAt(d.lines, p.line - 1).length), p, "", 2);
     }
-    const line = d.lines[p.line];
+    const line = lineAt(d.lines, p.line);
     const b = bytes(line);
     const lead = leadOf(line);
     if (p.col <= lead.length && b[p.col - 1] == 32u8) {
@@ -487,9 +445,9 @@ function deleted(d: Doc): Doc {
         return cut(d, 2);
     }
     const p = d.cursor;
-    const line = d.lines[p.line];
+    const line = lineAt(d.lines, p.line);
     if (p.col >= line.length) {
-        return p.line + 1 >= d.lines.length ? d : replace(d, p, pos(p.line + 1, 0), "", 2);
+        return p.line + 1 >= lineCount(d.lines) ? d : replace(d, p, pos(p.line + 1, 0), "", 2);
     }
     return replace(d, p, pos(p.line, nextChar(bytes(line), p.col)), "", 2);
 }
@@ -507,16 +465,16 @@ function vertical(d: Doc, lines: i64, extend: boolean): Doc {
     if (wrapped(d)) {
         return verticalRows(d, lines, extend);
     }
-    const goal = d.goal >= 0 ? d.goal : columnOf(d.lines[d.cursor.line], d.cursor.col);
+    const goal = d.goal >= 0 ? d.goal : columnOf(lineAt(d.lines, d.cursor.line), d.cursor.col);
     const target = d.cursor.line + lines;
     if (target < 0) {
         return { ...moved(d, pos(0, 0), extend, false), goal: goal };
     }
-    if (target >= d.lines.length) {
-        const last = d.lines.length - 1;
-        return { ...moved(d, pos(last, d.lines[last].length), extend, false), goal: goal };
+    if (target >= lineCount(d.lines)) {
+        const last = lineCount(d.lines) - 1;
+        return { ...moved(d, pos(last, lineAt(d.lines, last).length), extend, false), goal: goal };
     }
-    return { ...moved(d, pos(target, offsetOf(d.lines[target], goal)), extend, false), goal: goal };
+    return { ...moved(d, pos(target, offsetOf(lineAt(d.lines, target), goal)), extend, false), goal: goal };
 }
 
 // `vertical` of the lines wrapped: by rows, at the column of the row the
@@ -529,8 +487,8 @@ function verticalRows(d: Doc, rows: i64, extend: boolean): Doc {
         return { ...moved(d, pos(0, 0), extend, false), goal: goal };
     }
     if (target >= total) {
-        const last = d.lines.length - 1;
-        return { ...moved(d, pos(last, d.lines[last].length), extend, false), goal: goal };
+        const last = lineCount(d.lines) - 1;
+        return { ...moved(d, pos(last, lineAt(d.lines, last).length), extend, false), goal: goal };
     }
     return { ...moved(d, positionAtRow(d, target, goal), extend, false), goal: goal };
 }
@@ -546,12 +504,12 @@ function keyedOne(d: Doc, k: i64, mods: i64): [Doc, Effect[]] {
     const shift = (mods & WITH_SHIFT) != 0;
     const ctrl = (mods & WITH_CTRL) != 0;
     const p = d.cursor;
-    const line = d.lines[p.line];
+    const line = lineAt(d.lines, p.line);
     const b = bytes(line);
     const [a, z] = selection(d);
     if (ctrl && k == 97) {
-        const last = d.lines.length - 1;
-        return [{ ...d, anchor: pos(0, 0), cursor: pos(last, d.lines[last].length), last: 0 }, []] as const;
+        const last = lineCount(d.lines) - 1;
+        return [{ ...d, anchor: pos(0, 0), cursor: pos(last, lineAt(d.lines, last).length), last: 0 }, []] as const;
     }
     if (ctrl && (k == 99 || k == 120)) {
         // (no selection: the whole line, its end of line with it)
@@ -560,7 +518,7 @@ function keyedOne(d: Doc, k: i64, mods: i64): [Doc, Effect[]] {
             return [d, [Copy(text)]] as const;
         }
         const d1 = hasSelection(d) ? cut(d, 0)
-            : (d.lines.length > 1 ? removedLine(d, p.line) : replace(d, pos(0, 0), pos(0, line.length), "", 0));
+            : (lineCount(d.lines) > 1 ? removedLine(d, p.line) : replace(d, pos(0, 0), pos(0, line.length), "", 0));
         return [d1, [Copy(text)]] as const;
     }
     if (ctrl && k == 118) {
@@ -576,14 +534,14 @@ function keyedOne(d: Doc, k: i64, mods: i64): [Doc, Effect[]] {
         if (!shift && hasSelection(d) && !ctrl) {
             return [moved(d, a, false, false), []] as const;
         }
-        const to = p.col > 0 ? pos(p.line, ctrl ? wordLeft(b, p.col) : prevChar(b, p.col)) : (p.line > 0 ? pos(p.line - 1, d.lines[p.line - 1].length) : p);
+        const to = p.col > 0 ? pos(p.line, ctrl ? wordLeft(b, p.col) : prevChar(b, p.col)) : (p.line > 0 ? pos(p.line - 1, lineAt(d.lines, p.line - 1).length) : p);
         return [moved(d, to, shift, false), []] as const;
     }
     if (k == RIGHT) {
         if (!shift && hasSelection(d) && !ctrl) {
             return [moved(d, z, false, false), []] as const;
         }
-        const to = p.col < b.length ? pos(p.line, ctrl ? wordRight(b, p.col) : nextChar(b, p.col)) : (p.line + 1 < d.lines.length ? pos(p.line + 1, 0) : p);
+        const to = p.col < b.length ? pos(p.line, ctrl ? wordRight(b, p.col) : nextChar(b, p.col)) : (p.line + 1 < lineCount(d.lines) ? pos(p.line + 1, 0) : p);
         return [moved(d, to, shift, false), []] as const;
     }
     if (k == UP || k == DOWN) {
@@ -606,8 +564,8 @@ function keyedOne(d: Doc, k: i64, mods: i64): [Doc, Effect[]] {
     }
     if (k == END) {
         if (ctrl) {
-            const last = d.lines.length - 1;
-            return [moved(d, pos(last, d.lines[last].length), shift, false), []] as const;
+            const last = lineCount(d.lines) - 1;
+            return [moved(d, pos(last, lineAt(d.lines, last).length), shift, false), []] as const;
         }
         return [moved(d, pos(p.line, b.length), shift, false), []] as const;
     }
@@ -669,8 +627,8 @@ function keyedAll(d: Doc, k: i64, mods: i64): [Doc, Effect[]] {
         return [findClosed(d), []] as const;
     }
     if (ctrl && !shift && k == 97) {
-        const last = d.lines.length - 1;
-        return [{ ...d, anchor: pos(0, 0), cursor: pos(last, d.lines[last].length), others: [], latest: -1, last: 0 }, []] as const;
+        const last = lineCount(d.lines) - 1;
+        return [{ ...d, anchor: pos(0, 0), cursor: pos(last, lineAt(d.lines, last).length), others: [], latest: -1, last: 0 }, []] as const;
     }
     if (ctrl && !alt && (k == 99 || k == 120) && !shift) {
         return copiedOrCut(d, k == 120);
@@ -867,7 +825,7 @@ function copiedOrCut(d: Doc, cutting: boolean): [Doc, Effect[]] {
     const some = count(ss, (s) => !emptySel(s)) > 0;
     const texts = map(ss, (s) => {
         const [a, b] = rangeOf(s);
-        return emptySel(s) ? d.lines[a.line] : textBetween(d, a, b);
+        return emptySel(s) ? lineAt(d.lines, a.line) : textBetween(d, a, b);
     });
     const text = some ? join(texts, "\n") : join(map(texts, (x) => x + "\n"), "");
     const d1 = { ...d, lineCopied: some ? "" : text };
@@ -875,7 +833,7 @@ function copiedOrCut(d: Doc, cutting: boolean): [Doc, Effect[]] {
         return [d1, [Copy(text)]] as const;
     }
     const d2 = each(d1, (x, i) => hasSelection(x) ? cut(x, 0)
-        : (x.lines.length > 1 ? removedLine(x, x.cursor.line) : replace(x, pos(0, 0), pos(0, x.lines[0].length), "", 0)));
+        : (lineCount(x.lines) > 1 ? removedLine(x, x.cursor.line) : replace(x, pos(0, 0), pos(0, lineAt(x.lines, 0).length), "", 0)));
     return [d2, [Copy(text)]] as const;
 }
 
@@ -907,7 +865,7 @@ export function pasted(d: Doc, s: string): Doc {
 // the word holding the cursor (the one before it at its end) selected
 function wordSelected(d: Doc): Doc {
     const p = d.cursor;
-    const line = d.lines[p.line];
+    const line = lineAt(d.lines, p.line);
     const b = bytes(line);
     const at = p.col < b.length && classOf(b[p.col]) == 1 ? p.col : (p.col > 0 && classOf(b[p.col - 1]) == 1 ? p.col - 1 : -1);
     if (at < 0) {
@@ -981,7 +939,7 @@ function nextOccurrence(d: Doc): Doc {
     if (a.line != b.line || same(a, b)) {
         return d;
     }
-    const ms = occurrences(d.lines, d.lines[a.line].slice(a.col, b.col), d.wordFind || d.find.matchCase, d.wordFind || d.find.wholeWord);
+    const ms = occurrences(allLines(d.lines), lineAt(d.lines, a.line).slice(a.col, b.col), d.wordFind || d.find.matchCase, d.wordFind || d.find.wholeWord);
     const free = filter(ms, (m) => count(all, (s) => isMatch(s, m)) == 0);
     if (free.length == 0) {
         return d;
@@ -999,7 +957,7 @@ function allOccurrences(d: Doc): Doc {
     if (a.line != b.line || same(a, b)) {
         return d0;
     }
-    const ms = occurrences(d0.lines, d0.lines[a.line].slice(a.col, b.col), d0.wordFind || d0.find.matchCase, d0.wordFind || d0.find.wholeWord);
+    const ms = occurrences(allLines(d0.lines), lineAt(d0.lines, a.line).slice(a.col, b.col), d0.wordFind || d0.find.matchCase, d0.wordFind || d0.find.wholeWord);
     const sels = map(ms, (m) => ({ cursor: pos(m.line, m.end), anchor: pos(m.line, m.start), goal: -1 }));
     return { ...d0, others: filter(sels, (s) => !same(s.anchor, a)), latest: -1, last: 0 };
 }
@@ -1008,12 +966,12 @@ function allOccurrences(d: Doc): Doc {
 // the column it keeps
 function cursorAdded(d: Doc, down: boolean): Doc {
     const s = latestOf(d);
-    const goal = s.goal >= 0 ? s.goal : columnOf(d.lines[s.cursor.line], s.cursor.col);
+    const goal = s.goal >= 0 ? s.goal : columnOf(lineAt(d.lines, s.cursor.line), s.cursor.col);
     const line = s.cursor.line + (down ? 1 : -1);
-    if (line < 0 || line >= d.lines.length) {
+    if (line < 0 || line >= lineCount(d.lines)) {
         return d;
     }
-    const p = pos(line, offsetOf(d.lines[line], goal));
+    const p = pos(line, offsetOf(lineAt(d.lines, line), goal));
     if (count(allSelections(d), (x) => emptySel(x) && same(x.cursor, p)) > 0) {
         return d;
     }
@@ -1079,10 +1037,11 @@ function blockAt(bs: [i64, i64][n], k: i64): i64 {
 // the lines made `lines`, the ends of each selection moved by `moved`;
 // undone at once
 function relined(d: Doc, lines: string[], moved: (Pos) => Pos): Doc {
-    const d1 = { ...d, lines: lines, cursor: moved(d.cursor), anchor: moved(d.anchor), goal: -1,
+    // (every line scanned again: a command over lines, not a character)
+    const d1 = { ...d, lines: linesOf(lines, d.lang), cursor: moved(d.cursor), anchor: moved(d.anchor), goal: -1,
         others: map(d.others, (s) => ({ cursor: moved(s.cursor), anchor: moved(s.anchor), goal: -1 })),
         undo: capped(concat(d.undo, [snapOf(d)])), redo: [], last: 0, version: d.version + 1 };
-    return merged(rescannedAll(d1));
+    return merged(d1);
 }
 
 // a position of a line where `delta` bytes are put (positive) or taken
@@ -1107,26 +1066,26 @@ function commented(d: Doc): Doc {
     if (tok == "") {
         return open == "" ? d : blockCommented(d, bs, open, close);
     }
-    const n = d.lines.length;
-    const ks = filter(iota(n), (k) => blockAt(bs, k) >= 0 && d.lines[k].trim() != "");
+    const n = lineCount(d.lines);
+    const ks = filter(iota(n), (k) => blockAt(bs, k) >= 0 && lineAt(d.lines, k).trim() != "");
     if (ks.length == 0) {
         return d;
     }
     const undo = count(ks, (k) => {
-        const l = d.lines[k];
+        const l = lineAt(d.lines, k);
         return l.slice(leadOf(l).length, l.length).startsWith(tok);
     }) == ks.length;
-    const leads = map(bs, (b) => fold(filter(ks, (k) => k >= firstOf(b) && k <= lastOf(b)), 1000000, (acc, k) => min(acc, leadOf(d.lines[k]).length)));
-    const at = map(iota(n), (k) => blockAt(bs, k) < 0 || d.lines[k].trim() == "" ? -1 : (undo ? leadOf(d.lines[k]).length : leads[blockAt(bs, k)]));
+    const leads = map(bs, (b) => fold(filter(ks, (k) => k >= firstOf(b) && k <= lastOf(b)), 1000000, (acc, k) => min(acc, leadOf(lineAt(d.lines, k)).length)));
+    const at = map(iota(n), (k) => blockAt(bs, k) < 0 || lineAt(d.lines, k).trim() == "" ? -1 : (undo ? leadOf(lineAt(d.lines, k)).length : leads[blockAt(bs, k)]));
     const delta = map(iota(n), (k) => {
         if (at[k] < 0) {
             return 0;
         }
-        const l = d.lines[k];
+        const l = lineAt(d.lines, k);
         return undo ? -(tok.length + (l.slice(at[k] + tok.length, l.length).startsWith(" ") ? 1 : 0)) : tok.length + 1;
     });
     const lines = map(iota(n), (k) => {
-        const l = d.lines[k];
+        const l = lineAt(d.lines, k);
         return at[k] < 0 ? l : (undo ? l.slice(0, at[k]) + l.slice(at[k] - delta[k], l.length) : l.slice(0, at[k]) + tok + " " + l.slice(at[k], l.length));
     });
     return relined(d, lines, (p) => shiftedAt(p, at[p.line], delta[p.line]));
@@ -1148,25 +1107,25 @@ function commentOf(l: Lang): [string, string, string] {
 // the comment of a block of the language (`<!--`, `-->`) put around each
 // block of lines, or taken when each is within one
 function blockCommented(d: Doc, bs: [i64, i64][m], open: string, close: string): Doc {
-    const n = d.lines.length;
+    const n = lineCount(d.lines);
     const undo = count(bs, (b) => {
-        const a = d.lines[firstOf(b)];
-        const z = d.lines[lastOf(b)];
+        const a = lineAt(d.lines, firstOf(b));
+        const z = lineAt(d.lines, lastOf(b));
         return a.slice(leadOf(a).length, a.length).startsWith(open) && z.endsWith(close);
     }) == m;
     const heads = map(iota(n), (k) => findIndex(bs, (b) => firstOf(b) == k) >= 0);
     const tails = map(iota(n), (k) => findIndex(bs, (b) => lastOf(b) == k) >= 0);
     // (the head first: its place and the bytes put or taken)
-    const at = map(iota(n), (k) => heads[k] ? leadOf(d.lines[k]).length : -1);
+    const at = map(iota(n), (k) => heads[k] ? leadOf(lineAt(d.lines, k)).length : -1);
     const delta = map(iota(n), (k) => {
         if (!heads[k]) {
             return 0;
         }
-        const l = d.lines[k];
+        const l = lineAt(d.lines, k);
         return undo ? -(open.length + (l.slice(at[k] + open.length, l.length).startsWith(" ") ? 1 : 0)) : open.length + 1;
     });
     const headed = map(iota(n), (k) => {
-        const l = d.lines[k];
+        const l = lineAt(d.lines, k);
         return !heads[k] ? l : (undo ? l.slice(0, at[k]) + l.slice(at[k] - delta[k], l.length) : l.slice(0, at[k]) + open + " " + l.slice(at[k], l.length));
     });
     const lines = map(iota(n), (k) => {
@@ -1190,13 +1149,13 @@ function blockCommented(d: Doc, bs: [i64, i64][m], open: string, close: string):
 // not empty), or out by one (a step of spaces at most, or a tab)
 function shiftedLines(d: Doc, out: boolean): Doc {
     const bs = blocksOf(d);
-    const n = d.lines.length;
+    const n = lineCount(d.lines);
     const step = join(map(iota(d.indent), (k) => " "), "");
     const delta = map(iota(n), (k) => {
         if (blockAt(bs, k) < 0) {
             return 0;
         }
-        const l = d.lines[k];
+        const l = lineAt(d.lines, k);
         if (!out) {
             return l == "" ? 0 : d.indent;
         }
@@ -1205,14 +1164,14 @@ function shiftedLines(d: Doc, out: boolean): Doc {
     if (count(iota(n), (k) => delta[k] != 0) == 0) {
         return d;
     }
-    const lines = map(iota(n), (k) => delta[k] > 0 ? step + d.lines[k] : d.lines[k].slice(-delta[k], d.lines[k].length));
+    const lines = map(iota(n), (k) => delta[k] > 0 ? step + lineAt(d.lines, k) : lineAt(d.lines, k).slice(-delta[k], lineAt(d.lines, k).length));
     return relined(d, lines, (p) => delta[p.line] > 0 ? pos(p.line, p.col + delta[p.line]) : pos(p.line, max(0, p.col + delta[p.line])));
 }
 
 // Alt+Up, Alt+Down: the lines of the selections moved past the line above
 // or below them
 function linesMoved(d: Doc, down: boolean): Doc {
-    const n = d.lines.length;
+    const n = lineCount(d.lines);
     const bs = filter(blocksOf(d), (b) => down ? lastOf(b) + 1 < n : firstOf(b) > 0);
     if (bs.length == 0) {
         return d;
@@ -1227,14 +1186,14 @@ function linesMoved(d: Doc, down: boolean): Doc {
         const k = holder(i);
         return k < 0 ? i : (down ? (i == lastOf(bs[k]) + 1 ? firstOf(bs[k]) : i + 1) : (i == firstOf(bs[k]) - 1 ? lastOf(bs[k]) : i - 1));
     });
-    return relined(d, map(iota(n), (j) => d.lines[src[j]]), (p) => pos(dst[p.line], p.col));
+    return relined(d, map(iota(n), (j) => lineAt(d.lines, src[j])), (p) => pos(dst[p.line], p.col));
 }
 
 // Shift+Alt+Down, Up: the lines of the selections copied after them, the
 // selections on the copy (down) or on the lines copied (up)
 function linesCopied(d: Doc, down: boolean): Doc {
     const bs = blocksOf(d);
-    const n = d.lines.length;
+    const n = lineCount(d.lines);
     const len = (b: [i64, i64]) => lastOf(b) - firstOf(b) + 1;
     // (the lines put before the old line `i`: the copies of the blocks
     // ending before it)
@@ -1252,7 +1211,7 @@ function linesCopied(d: Doc, down: boolean): Doc {
         const before = fold(bs, 0, (acc, b) => lastOf(b) + added(lastOf(b)) + len(b) < j ? acc + len(b) : acc);
         return j - before;
     });
-    return relined(d, map(iota(total), (j) => d.lines[src[j]]), (p) => {
+    return relined(d, map(iota(total), (j) => lineAt(d.lines, src[j])), (p) => {
         const k = blockAt(bs, p.line);
         return pos(p.line + added(p.line) + (down && k >= 0 ? len(bs[k]) : 0), p.col);
     });
@@ -1262,9 +1221,9 @@ function linesCopied(d: Doc, down: boolean): Doc {
 // line after them at its column
 function linesDeleted(d: Doc): Doc {
     const bs = blocksOf(d);
-    const n = d.lines.length;
+    const n = lineCount(d.lines);
     const kept = filter(iota(n), (k) => blockAt(bs, k) < 0);
-    const lines0 = map(kept, (k) => d.lines[k]);
+    const lines0 = map(kept, (k) => lineAt(d.lines, k));
     const lines = lines0.length == 0 ? [""] : lines0;
     return relined(d, lines, (p) => {
         const at = count(kept, (j) => j < p.line);
@@ -1272,7 +1231,7 @@ function linesDeleted(d: Doc): Doc {
             return pos(at, p.col);
         }
         const line = min(at, lines.length - 1);
-        return pos(line, offsetOf(lines[line], columnOf(d.lines[p.line], p.col)));
+        return pos(line, offsetOf(lines[line], columnOf(lineAt(d.lines, p.line), p.col)));
     });
 }
 
@@ -1281,8 +1240,8 @@ function linesDeleted(d: Doc): Doc {
 function lineSelected(d: Doc): Doc {
     return each(d, (x, i) => {
         const [a, b] = selection(x);
-        const last = x.lines.length - 1;
-        const end = b.line + 1 > last ? pos(last, x.lines[last].length) : pos(b.line + 1, 0);
+        const last = lineCount(x.lines) - 1;
+        const end = b.line + 1 > last ? pos(last, lineAt(x.lines, last).length) : pos(b.line + 1, 0);
         return { ...x, anchor: pos(a.line, 0), cursor: end, goal: -1, last: 0 };
     });
 }
@@ -1291,7 +1250,7 @@ function lineSelected(d: Doc): Doc {
 // the cursor on it
 function lineAbove(d: Doc): Doc {
     const p = d.cursor;
-    const lead = leadOf(d.lines[p.line]);
+    const lead = leadOf(lineAt(d.lines, p.line));
     const r = replace(d, pos(p.line, 0), pos(p.line, 0), lead + "\n", 0);
     const at = pos(p.line, lead.length);
     return { ...r, cursor: at, anchor: at };
@@ -1318,7 +1277,7 @@ export const FIND_PRESERVE: i64 = 12;
 // the texts the widget finds in the lines (none when it is closed or
 // empty)
 export function refound(d: Doc): Doc {
-    return { ...d, found: d.find.shown && d.find.query.text != "" ? searched(d.lines, d.find) : [] };
+    return { ...d, found: d.find.shown && d.find.query.text != "" ? searched(allLines(d.lines), d.find) : [] };
 }
 
 function searched(lines: string[n], f: Find): Match[] {
@@ -1376,7 +1335,7 @@ function findOpened(d: Doc, replacing: boolean): Doc {
     const one = a.line == b.line && hasSelection(d);
     const w = wordSelected(d);
     const [wa, wb] = selection(w);
-    const seed = one ? d.lines[a.line].slice(a.col, b.col) : (!replacing && hasSelection(w) ? w.lines[wa.line].slice(wa.col, wb.col) : "");
+    const seed = one ? lineAt(d.lines, a.line).slice(a.col, b.col) : (!replacing && hasSelection(w) ? lineAt(w.lines, wa.line).slice(wa.col, wb.col) : "");
     const text = seed != "" ? seed : d.find.query.text;
     const q = { ...editing(text), anchor: 0 };
     const f = { ...d.find, shown: true, replacing: replacing || (d.find.shown && d.find.replacing), query: q, field: replacing && one ? 2 : 1 };
@@ -1397,7 +1356,7 @@ function toggled(d: Doc, part: i64): Doc {
     // without one)
     const [sa, sb] = selection(d);
     const scoped = hasSelection(d) ? { ...f, inSelection: !f.inSelection, scopeFrom: sa, scopeTo: sb }
-        : { ...f, inSelection: !f.inSelection, scopeFrom: pos(sa.line, 0), scopeTo: pos(sa.line, d.lines[sa.line].length) };
+        : { ...f, inSelection: !f.inSelection, scopeFrom: pos(sa.line, 0), scopeTo: pos(sa.line, lineAt(d.lines, sa.line).length) };
     const f1 = part == FIND_CASE ? { ...f, matchCase: !f.matchCase } : (part == FIND_WORD ? { ...f, wholeWord: !f.wholeWord }
         : (part == FIND_SELECTION ? scoped : (part == FIND_PRESERVE ? { ...f, preserveCase: !f.preserveCase } : { ...f, regex: !f.regex })));
     const [a, b] = selection(d);
@@ -1432,8 +1391,8 @@ function replacedAll(d: Doc): Doc {
 // the text that replaces the text found `m`: that of the field, its `$&`
 // and `$1` to `$9` the text found and its groups for a regular expression
 function replacement(d: Doc, m: Match): string {
-    const to = d.find.regex ? regexReplacement(d.lines[m.line], m, d.find.query.text, d.find.matchCase, d.find.replaceText.text) : d.find.replaceText.text;
-    return d.find.preserveCase ? caseKept(d.lines[m.line].slice(m.start, m.end), to) : to;
+    const to = d.find.regex ? regexReplacement(lineAt(d.lines, m.line), m, d.find.query.text, d.find.matchCase, d.find.replaceText.text) : d.find.replaceText.text;
+    return d.find.preserveCase ? caseKept(lineAt(d.lines, m.line).slice(m.start, m.end), to) : to;
 }
 
 // the replacement `to` in the case of the text replaced `was`: in capitals
@@ -1611,8 +1570,20 @@ export const VBAR: f32 = 14.0f32;
 // the room of the code left
 export function boxSized(d: Doc, w: f32, h: f32, advance: f32): Doc {
     const cw = f32(mapScale(d)) / d.ratio;
-    const map = min(floor(120.0f32 * cw), floor(max(0.0f32, w - VBAR - 2.0f32 - GUTTER) * cw / (advance + cw))) + 8.0f32;
-    return { ...d, width: max(0.0f32, w - GUTTER - map - VBAR), height: h, advance: advance, mapWidth: map };
+    const g = GUTTER + moreDigits(d) * advance;
+    const map = min(floor(120.0f32 * cw), floor(max(0.0f32, w - VBAR - 2.0f32 - g) * cw / (advance + cw))) + 8.0f32;
+    return { ...d, width: max(0.0f32, w - g - map - VBAR), height: h, advance: advance, mapWidth: map, boxW: w };
+}
+
+// the digits of the numbers of the lines past five (Visual Studio Code's
+// least): a column more of the numbers for each
+export function moreDigits(d: Doc): f32 {
+    return f32(max(0, `${lineCount(d.lines)}`.length - 5));
+}
+
+// the width of the numbers of the lines and of the gap after them, in units
+export function gutterOf(d: Doc): f32 {
+    return GUTTER + moreDigits(d) * d.advance;
 }
 
 // the document shown on a screen of `ratio` pixels a unit, its box laid out
@@ -1631,8 +1602,8 @@ export function mapScale(d: Doc): i64 {
 // the width of the lines in sight, in units (the widest)
 export function widestShown(d: Doc): f32 {
     const first = max(0, i64(d.top / LINE_HEIGHT));
-    const last = min(d.lines.length, i64((d.top + d.height) / LINE_HEIGHT) + 1);
-    const cols = fold(iota(max(0, last - first)), 0, (acc, i) => max(acc, columnOf(d.lines[first + i], d.lines[first + i].length)));
+    const last = min(lineCount(d.lines), i64((d.top + d.height) / LINE_HEIGHT) + 1);
+    const cols = fold(iota(max(0, last - first)), 0, (acc, i) => max(acc, columnOf(lineAt(d.lines, first + i), lineAt(d.lines, first + i).length)));
     return f32(cols) * d.advance;
 }
 
@@ -1722,7 +1693,7 @@ function columnsTo(b: u8[n], i: i64, end: i64, col: i64): i64 {
 
 // the starts of the rows of the line `k` (one row: not wrapped)
 export function rowsOfLine(d: Doc, k: i64): i64[] {
-    return wrapped(d) ? rowStarts(d.lines[k], wrapColumns(d)) : [0];
+    return wrapped(d) ? rowStarts(lineAt(d.lines, k), wrapColumns(d)) : [0];
 }
 
 // the first row of the line `k`
@@ -1732,20 +1703,20 @@ export function rowOfLine(d: Doc, k: i64): i64 {
 
 // every row of the document
 export function totalRows(d: Doc): i64 {
-    return rowOfLine(d, d.lines.length);
+    return rowOfLine(d, lineCount(d.lines));
 }
 
 // the line of the row `r` and the index of the row among its own
 export function lineOfRow(d: Doc, r: i64): [i64, i64] {
     if (!wrapped(d)) {
-        return [min(r, d.lines.length - 1), 0] as const;
+        return [min(r, lineCount(d.lines) - 1), 0] as const;
     }
     return lineFrom(d, 0, r);
 }
 
 function lineFrom(d: Doc, k: i64, r: i64): [i64, i64] {
-    if (k >= d.lines.length - 1) {
-        return [d.lines.length - 1, min(r, rowsOfLine(d, d.lines.length - 1).length - 1)] as const;
+    if (k >= lineCount(d.lines) - 1) {
+        return [lineCount(d.lines) - 1, min(r, rowsOfLine(d, lineCount(d.lines) - 1).length - 1)] as const;
     }
     const c = rowsOfLine(d, k).length;
     return r < c ? [k, r] as const : lineFrom(d, k + 1, r - c);
@@ -1764,7 +1735,7 @@ export function rowOfPos(d: Doc, p: Pos): i64 {
 // the column of the position `p` in its row (the indentation of a row
 // after the first counted)
 export function rowColumn(d: Doc, p: Pos): i64 {
-    const text = d.lines[p.line];
+    const text = lineAt(d.lines, p.line);
     const st = rowsOfLine(d, p.line);
     const g = segmentOf(st, p.col);
     return columnOf(text, p.col) - columnOf(text, st[g]) + (g > 0 ? wrapIndent(text, wrapColumns(d)) : 0);
@@ -1774,7 +1745,7 @@ export function rowColumn(d: Doc, p: Pos): i64 {
 // last character when a row follows it)
 export function positionAtRow(d: Doc, r: i64, x: i64): Pos {
     const [k, g] = lineOfRow(d, max(0, r));
-    const text = d.lines[k];
+    const text = lineAt(d.lines, k);
     const b = bytes(text);
     const st = rowsOfLine(d, k);
     const s = st[g];
@@ -1796,7 +1767,7 @@ export function statusOf(d: Doc): string {
     if (sels.length > 1) {
         return chars > 0 ? `${sels.length} selections (${chars} characters selected)` : `${sels.length} selections`;
     }
-    const col = columnOf(d.lines[d.cursor.line], d.cursor.col) + 1;
+    const col = columnOf(lineAt(d.lines, d.cursor.line), d.cursor.col) + 1;
     return chars > 0 ? `Ln ${d.cursor.line + 1}, Col ${col} (${chars} selected)` : `Ln ${d.cursor.line + 1}, Col ${col}`;
 }
 
@@ -1816,7 +1787,7 @@ function acrossShown(d: Doc): Doc {
     if (d.width <= 0.0f32 || d.wrap) {
         return d;
     }
-    const x = f32(columnOf(d.lines[d.cursor.line], d.cursor.col)) * d.advance;
+    const x = f32(columnOf(lineAt(d.lines, d.cursor.line), d.cursor.col)) * d.advance;
     const l = d.left;
     const left = x < l ? max(0.0f32, x - ROOM_RIGHT) : (x + ROOM_RIGHT > l + d.width ? x + ROOM_RIGHT - d.width : l);
     return { ...d, left: max(0.0f32, left) };
@@ -1836,8 +1807,8 @@ export function scrolledAcross(d: Doc, left: f32): Doc {
 // the line `k` removed (Ctrl+X without a selection), the cursor at the
 // start of the line after it
 function removedLine(d: Doc, k: i64): Doc {
-    const last = k + 1 >= d.lines.length;
-    const d1 = last ? replace(d, pos(k - 1, d.lines[k - 1].length), pos(k, d.lines[k].length), "", 0) : replace(d, pos(k, 0), pos(k + 1, 0), "", 0);
+    const last = k + 1 >= lineCount(d.lines);
+    const d1 = last ? replace(d, pos(k - 1, lineAt(d.lines, k - 1).length), pos(k, lineAt(d.lines, k).length), "", 0) : replace(d, pos(k, 0), pos(k + 1, 0), "", 0);
     return d1;
 }
 
@@ -1847,8 +1818,8 @@ function undone(d: Doc): Doc {
         return d;
     }
     const s = d.undo[d.undo.length - 1];
-    const d1 = { ...d, lines: s.lines, cursor: s.cursor, anchor: s.anchor, others: s.others, undo: map(iota(d.undo.length - 1), (k) => d.undo[k]), redo: concat(d.redo, [snapOf(d)]), last: 0, version: d.version + 1, goal: -1 };
-    return rescannedAll(d1);
+    // (its lines as they were, scanned: shared, not scanned again)
+    return { ...d, lines: s.lines, cursor: s.cursor, anchor: s.anchor, others: s.others, undo: map(iota(d.undo.length - 1), (k) => d.undo[k]), redo: concat(d.redo, [snapOf(d)]), last: 0, version: d.version + 1, goal: -1 };
 }
 
 // the change redone
@@ -1857,8 +1828,7 @@ function redone(d: Doc): Doc {
         return d;
     }
     const s = d.redo[d.redo.length - 1];
-    const d1 = { ...d, lines: s.lines, cursor: s.cursor, anchor: s.anchor, others: s.others, redo: map(iota(d.redo.length - 1), (k) => d.redo[k]), undo: concat(d.undo, [snapOf(d)]), last: 0, version: d.version + 1, goal: -1 };
-    return rescannedAll(d1);
+    return { ...d, lines: s.lines, cursor: s.cursor, anchor: s.anchor, others: s.others, redo: map(iota(d.redo.length - 1), (k) => d.redo[k]), undo: concat(d.undo, [snapOf(d)]), last: 0, version: d.version + 1, goal: -1 };
 }
 
 // a character typed (a code point, a space or above): at each selection;
@@ -1877,11 +1847,11 @@ export function positionAt(d: Doc, line: i64, column: i64): Pos {
     if (line < 0) {
         return pos(0, 0);
     }
-    if (line >= d.lines.length) {
-        const last = d.lines.length - 1;
-        return pos(last, d.lines[last].length);
+    if (line >= lineCount(d.lines)) {
+        const last = lineCount(d.lines) - 1;
+        return pos(last, lineAt(d.lines, last).length);
     }
-    return pos(line, offsetOf(d.lines[line], max(0, column)));
+    return pos(line, offsetOf(lineAt(d.lines, line), max(0, column)));
 }
 
 // a click at the line `line` and the column `column`, `clicks` its count:
@@ -1891,11 +1861,11 @@ export function clickedAt(d0: Doc, line: i64, column: i64, clicks: i64, shift: b
     const d = { ...d0, others: [], latest: -1, wordFind: false, find: { ...d0.find, field: 0 } };
     const p = positionAt(d, line, column);
     if (clicks >= 3) {
-        const end = p.line + 1 < d.lines.length ? pos(p.line + 1, 0) : pos(p.line, d.lines[p.line].length);
+        const end = p.line + 1 < lineCount(d.lines) ? pos(p.line + 1, 0) : pos(p.line, lineAt(d.lines, p.line).length);
         return { ...d, anchor: pos(p.line, 0), cursor: end, unit: 2, from: pos(p.line, 0), to: end, goal: -1, last: 0 };
     }
     if (clicks == 2) {
-        const [l, r] = wordAround(d.lines[p.line], p.col);
+        const [l, r] = wordAround(lineAt(d.lines, p.line), p.col);
         return { ...d, anchor: pos(p.line, l), cursor: pos(p.line, r), unit: 1, from: pos(p.line, l), to: pos(p.line, r), goal: -1, last: 0 };
     }
     return { ...moved(d, p, shift, false), unit: 0, from: p, to: p };
@@ -1916,11 +1886,11 @@ export function clickedWith(d: Doc, line: i64, column: i64, clicks: i64, mods: i
 export function draggedTo(d: Doc, line: i64, column: i64): Doc {
     const p = positionAt(d, line, column);
     if (d.unit == 2) {
-        const end = p.line + 1 < d.lines.length ? pos(p.line + 1, 0) : pos(p.line, d.lines[p.line].length);
+        const end = p.line + 1 < lineCount(d.lines) ? pos(p.line + 1, 0) : pos(p.line, lineAt(d.lines, p.line).length);
         return before(p, d.from) ? { ...d, anchor: d.to, cursor: pos(p.line, 0) } : { ...d, anchor: d.from, cursor: end };
     }
     if (d.unit == 1) {
-        const [l, r] = wordAround(d.lines[p.line], p.col);
+        const [l, r] = wordAround(lineAt(d.lines, p.line), p.col);
         return before(p, d.from) ? { ...d, anchor: d.to, cursor: pos(p.line, l) } : { ...d, anchor: d.from, cursor: before(d.to, pos(p.line, r)) ? pos(p.line, r) : d.to };
     }
     return { ...d, cursor: p, goal: -1 };
@@ -1981,18 +1951,18 @@ export function symbolsAt(d: Doc): Symbol[] {
         return [];
     }
     const c = d.cursor.line;
-    return symbolsFrom(d.lines, c - 1, leadColumnsOf(d.lines[c]), []);
+    return symbolsFrom(d.lines, c - 1, leadColumnsOf(lineAt(d.lines, c)), []);
 }
 
-function symbolsFrom(lines: string[n], k: i64, level: i64, out: Symbol[]): Symbol[] {
+function symbolsFrom(lines: Lines, k: i64, level: i64, out: Symbol[]): Symbol[] {
     if (k < 0 || level == 0) {
         return out;
     }
-    const g = leadColumnsOf(lines[k]);
+    const g = leadColumnsOf(lineAt(lines, k));
     if (g >= level) {
         return symbolsFrom(lines, k - 1, level, out);
     }
-    const text = lines[k].trim();
+    const text = lineAt(lines, k).trim();
     const b = bytes(text);
     // (a member: `"name": {` or `"name": [`)
     const close = b.length > 1 && b[0] == 34u8 ? findIndex(iota(b.length - 1), (i) => b[i + 1] == 34u8) + 1 : -1;
@@ -2006,11 +1976,11 @@ function symbolsFrom(lines: string[n], k: i64, level: i64, out: Symbol[]): Symbo
 
 // the index of the element at the indentation `g` that the line after `k`
 // opens: the elements before it in its array
-function elementIndex(lines: string[n], k: i64, g: i64, count: i64): i64 {
-    if (k < 0 || leadColumnsOf(lines[k]) < g) {
+function elementIndex(lines: Lines, k: i64, g: i64, count: i64): i64 {
+    if (k < 0 || leadColumnsOf(lineAt(lines, k)) < g) {
         return count;
     }
-    const t = lines[k].trim();
-    const opens = leadColumnsOf(lines[k]) == g && t != "" && !t.startsWith("]") && !t.startsWith("}");
+    const t = lineAt(lines, k).trim();
+    const opens = leadColumnsOf(lineAt(lines, k)) == g && t != "" && !t.startsWith("]") && !t.startsWith("}");
     return elementIndex(lines, k - 1, g, opens ? count + 1 : count);
 }

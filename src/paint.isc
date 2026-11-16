@@ -31,7 +31,11 @@ export type Shadow = {
 // a glyph, or any small image of coverage: the place of its top left
 // pixel (whole pixels), its size, its colour, the coverage of each of its
 // pixels in [0, 1] (rows from the top; at least one pixel)
-export type Sprite = { x: i64, y: i64, w: i64, h: i64, color: Color, mask: f32[] };
+// (`at`: the place of its coverage in the pixels of the atlas given to
+// `renderWith`, its `mask` then empty; -1: its own `mask`. `key`: the key of
+// its image in the atlas, -1 for its own: two sprites of the same key at
+// the same place have the same pixels, compared without them)
+export type Sprite = { x: i64, y: i64, w: i64, h: i64, color: Color, mask: f32[], at: i64, key: i64 };
 
 // an image drawn in the rectangle (x, y, w, h): its `iw` by `ih` pixels
 // (`0xAARRGGBB`, not premultiplied, rows from the top), each pixel of the
@@ -446,7 +450,24 @@ function sameTile(a: Kept, ps: Primitive[n], boxes: [f32, f32, f32, f32][n], b: 
 // (`hidden`), its colour is the start, the others drawn over it; a quad
 // that covers every pixel has a coverage of 1 without its distances
 // computed (the same bits as computed).
-function tile(t: i64, tx: i64, width: i64, height: i64, base: Color, ps: Primitive[n], boxes: [f32, f32, f32, f32][n], ids: i64[], hidden: boolean): u32[256] {
+// the coverage of the sprite `gl` over the tile `t`, its pixels from `at`
+// in `m`: each pixel's, 0 outside it or its clip
+function glyphCover(m: f32[], at: i64, gl: Sprite, t: i64, tx: i64, ox: f32, oy: f32, x0: f32, y0: f32, x1: f32, y1: f32): f32[256] {
+    return map(iota(256), (j) => {
+        const col = (t % tx) * TILE + j % TILE - gl.x;
+        const row = (t / tx) * TILE + j / TILE - gl.y;
+        const px = ox + f32(j % TILE);
+        const py = oy + f32(j / TILE);
+        // (its box: the sprite within its clip)
+        const inside = col >= 0 && col < gl.w && row >= 0 && row < gl.h && px > x0 && px < x1 && py > y0 && py < y1;
+        // (the place read whatever the pixel, then kept or not: a branch
+        // that cannot fail, for every pixel at once)
+        const v = m[inside ? at + row * gl.w + col : at];
+        return inside ? gl.color.a * v : 0.0f32;
+    });
+}
+
+function tile(t: i64, tx: i64, width: i64, height: i64, base: Color, ps: Primitive[n], boxes: [f32, f32, f32, f32][n], ids: i64[], hidden: boolean, masks: f32[]): u32[256] {
     const ox = f32((t % tx) * TILE) + 0.5f32;
     const oy = f32((t / tx) * TILE) + 0.5f32;
     const [cx0, cy0, cx1, cy1] = centres(t, tx, width, height);
@@ -492,19 +513,8 @@ function tile(t: i64, tx: i64, width: i64, height: i64, base: Color, ps: Primiti
                 return [over(r, sh.color.r), over(g, sh.color.g), over(b, sh.color.b), map(iota(256), (j) => sa[j] + a[j] * (1.0f32 - sa[j]))] as const;
             },
             Glyph(gl) => {
-                const m = gl.mask;
-                const sa = map(iota(256), (j) => {
-                    const col = (t % tx) * TILE + j % TILE - gl.x;
-                    const row = (t / tx) * TILE + j / TILE - gl.y;
-                    const px = ox + f32(j % TILE);
-                    const py = oy + f32(j / TILE);
-                    // (its box: the sprite within its clip)
-                    const inside = col >= 0 && col < gl.w && row >= 0 && row < gl.h && px > x0 && px < x1 && py > y0 && py < y1;
-                    // (the place read whatever the pixel, then kept or not: a
-                    // branch that cannot fail, for every pixel at once)
-                    const v = m[inside ? row * gl.w + col : 0];
-                    return inside ? gl.color.a * v : 0.0f32;
-                });
+                // (its coverage in the atlas, else its own)
+                const sa = gl.at >= 0 ? glyphCover(masks, gl.at, gl, t, tx, ox, oy, x0, y0, x1, y1) : glyphCover(gl.mask, 0, gl, t, tx, ox, oy, x0, y0, x1, y1);
                 const over = (d: f32[256], cc: f32) => map(iota(256), (j) => cc * sa[j] + d[j] * (1.0f32 - sa[j]));
                 return [over(r, gl.color.r), over(g, gl.color.g), over(b, gl.color.b), map(iota(256), (j) => sa[j] + a[j] * (1.0f32 - sa[j]))] as const;
             },
@@ -584,6 +594,12 @@ export function render(width: i64, height: i64, base: Color, ps: Primitive[n]): 
 // colour under all) keeps its pixels; the others are drawn, in parallel,
 // the pixels of a tile together.
 export function renderAgain(prev: Canvas, width: i64, height: i64, base: Color, ps: Primitive[n]): Canvas {
+    return renderWith(prev, width, height, base, ps, []);
+}
+
+// `renderAgain`, the glyphs of the atlas (`Sprite.at`) drawn from its pixels
+// `masks`
+export function renderWith(prev: Canvas, width: i64, height: i64, base: Color, ps: Primitive[n], masks: f32[]): Canvas {
     const tx = (width + TILE - 1) / TILE;
     const ty = (height + TILE - 1) / TILE;
     const nt = tx * ty;
@@ -614,7 +630,7 @@ export function renderAgain(prev: Canvas, width: i64, height: i64, base: Color, 
     const tiles = map(fresh, (t) => {
         const k = kept[t];
         const [ids, hidden] = k.n >= 0 ? [k.ids.slice(0, k.n), k.hidden] as const : listed(t, tx, width, height, ps, boxes, bands[t / tx].ids);
-        return { px: tile(t, tx, width, height, base, ps, boxes, ids, hidden) };
+        return { px: tile(t, tx, width, height, base, ps, boxes, ids, hidden, masks) };
     });
     // the place of each tile drawn among them
     const at = scan(map(iota(nt), (t) => same[t] ? 0 : 1), (a, b) => a + b, 0);

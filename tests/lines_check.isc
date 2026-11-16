@@ -1,0 +1,57 @@
+// The lines of a document in their tree (src/lines.isc), against them made
+// anew: a document of 1000 lines of a language with comments of blocks and
+// brackets (several leaves), changed by text typed, lines removed across
+// the ends of leaves, a comment of a block opened then closed (the lines
+// after it scanned again across leaves), a paste of 3000 lines (leaves cut
+// again), Enter, the undo and the redo; after each change its texts, the
+// scans of its lines and the depths of their brackets the same as those of
+// its text read again as a new document.
+import { Doc, docOf, textOf, keyed, typedCode, pasted, clickedAt } from "../src/doc";
+import { lineAt, lineCount, scanAt, depthAt } from "../src/lines";
+import { ENTER, WITH_CTRL, WITH_SHIFT, DOWN, END } from "../src/input";
+
+// the same lines, scans and depths as the document of its text made anew:
+// the count of the lines that differ
+function differs(d: Doc): i64 {
+    const fresh = docOf(d.path, textOf(d));
+    const n = lineCount(d.lines);
+    return n != lineCount(fresh.lines) ? -1 : count(iota(n), (k) => lineAt(d.lines, k) != lineAt(fresh.lines, k)
+        || scanAt(d.lines, k) != scanAt(fresh.lines, k) || depthAt(d.lines, k) != depthAt(fresh.lines, k));
+}
+
+function key(d: Doc, k: i64, mods: i64): Doc {
+    const [d1, fx] = keyed(d, k, mods);
+    return d1;
+}
+
+function typedAll(d: Doc, s: string): Doc {
+    return fold(bytes(s), d, (acc, c) => typedCode(acc, i64(c)));
+}
+
+action main(args: string[k]): i32 {
+    const text = join(map(iota(1000), (i) => i % 7 == 0 ? `function f${i}(a) {` : (i % 7 == 6 ? "}" : `  x[${i}] = (a + ${i}) // line ${i}`)), "\n");
+    const d0 = docOf("big.isc", text);
+    print(`lines ${lineCount(d0.lines)}, differing ${differs(d0)}, depth at 500: ${depthAt(d0.lines, 500)}, at 503: ${depthAt(d0.lines, 503)}`);
+    // text typed on the line 600
+    const d1 = typedAll(clickedAt(d0, 600, 3, 1, false), "y(z");
+    print(`typed: differing ${differs(d1)}, depth at 601: ${depthAt(d1.lines, 601)}, at 999: ${depthAt(d1.lines, 999)}`);
+    // the lines 250 to 520 removed (across leaves)
+    const d2 = key(key(clickedAt(d1, 250, 0, 1, false), 120, WITH_CTRL), 120, WITH_CTRL);
+    const d3 = fold(iota(270), d2, (acc, i) => key(acc, 107, WITH_CTRL | WITH_SHIFT));
+    print(`removed: lines ${lineCount(d3.lines)}, differing ${differs(d3)}`);
+    // a comment of a block opened at the line 100, then closed at 700
+    const d4 = typedAll(clickedAt(d3, 100, 0, 1, false), "/*");
+    print(`opened: differing ${differs(d4)}, the line 600 in it: ${scanAt(d4.lines, 600).raws[0].kind == scanAt(d4.lines, 101).raws[0].kind}`);
+    const d5 = typedAll(clickedAt(d4, 700, 0, 1, false), "*/");
+    print(`closed: differing ${differs(d5)}`);
+    // a paste of 3000 lines at the line 50
+    const block = join(map(iota(3000), (i) => `  p[${i}] = {${i}}`), "\n");
+    const d6 = pasted(clickedAt(d5, 50, 0, 1, false), block + "\n");
+    print(`pasted: lines ${lineCount(d6.lines)}, differing ${differs(d6)}`);
+    // Enter at the end of a line, then undone and redone
+    const d7 = key(key(clickedAt(d6, 2000, 0, 1, false), END, 0), ENTER, 0);
+    const d8 = key(d7, 122, WITH_CTRL);
+    const d9 = key(d8, 121, WITH_CTRL);
+    print(`enter: lines ${lineCount(d7.lines)}, differing ${differs(d7)}; undone: lines ${lineCount(d8.lines)}, differing ${differs(d8)}, the text of before ${textOf(d8) == textOf(d6)}; redone: ${textOf(d9) == textOf(d7)}`);
+    return 0;
+}

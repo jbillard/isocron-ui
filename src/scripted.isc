@@ -41,6 +41,7 @@ import { Align, Start, Center, End } from "./text";
 import { Editing, editing, edited, utf8 } from "./edit";
 import { button, iconButton, textField, checkbox, toggleAt, progress, restyled, Hand } from "./widgets";
 import { renamed } from "./doc";
+import { lineAt, lineCount } from "./lines";
 import { Doc, docOf, keyed as docKeyed, typedCode, pasted, textOf, saved, dirty, clickedWith, draggedTo, viewed, topFor, cursorBand, columnOf, symbolsAt, boxSized, ratioSet, movedFrom, wheeledAcross, findFrom, statusOf, LINE_HEIGHT } from "./doc";
 import { CodeLook, codeLook, lookWith, codeElements, sightOf, columnAtX, codePartClicked, codePartDragged, rowClicked, rowDragged, rowContext, codeMenu, codeMenuLook, codeMenuChosen, CODE_MENU_PALETTE } from "./code_view";
 import { Symbol } from "./doc";
@@ -748,6 +749,11 @@ function isNone(v: PV): boolean {
 // loops
 export type H = { kind: i64, click: i64, drag: i64, enter: i64, change: i64, bind: i64, args: V[] };
 
+// no place (a press outside every place)
+function noPlace(): H {
+    return { kind: -1, click: -1, drag: -1, enter: -1, change: -1, bind: -1, args: [] };
+}
+
 const H_BOX: i64 = 0;
 const H_COMP: i64 = 1;
 const H_FIELD: i64 = 2;
@@ -774,6 +780,10 @@ export type App = {
     // the function run when the window asks to close (-1: none)
     beforeClose: i64,
     key: i64, seen: boolean[], pressX: f32, pressY: f32,
+    // the place pressed as it was when it was pressed (none: kind -1): a
+    // drag goes to it, though the places are numbered again as the view is
+    // made again (the rows of code in sight, more or fewer as it scrolls)
+    held: H,
     memo: V[], memoErr: string, luaRan: boolean,
     // the documents the host keeps (`host.openDoc`), whether the keyboard
     // goes to the one shown, whether the window is active, the width of a
@@ -784,6 +794,9 @@ export type App = {
     codeWidth: f32, codeHeight: f32,
     // the pixels of a unit of the screen (`Density`)
     ratio: f32,
+    // the files asked by `host.openFile` not read yet: their documents made
+    // by the host when they are
+    fileReads: string[],
 };
 
 // what making the elements reads: the file of the view, its classes, the
@@ -833,6 +846,9 @@ const HOST_LUA: string = join([
     "function host.readFile(path, done)",
     "  host.requests[#host.requests + 1] = { \"read\", path, done }",
     "end",
+    "function host.openFile(path, done)",
+    "  host.requests[#host.requests + 1] = { \"openfile\", path, done }",
+    "end",
     "function host.listFolder(path, done)",
     "  host.requests[#host.requests + 1] = { \"list\", path, done }",
     "end",
@@ -842,7 +858,7 @@ const HOST_LUA: string = join([
     "    out[#out + 1] = r[1]",
     "    out[#out + 1] = r[2]",
     "    out[#out + 1] = (r[1] == \"doc\" or r[1] == \"saveas\") and r[3] or \"\"",
-    "    if r[1] == \"read\" or r[1] == \"list\" then",
+    "    if r[1] == \"read\" or r[1] == \"list\" or r[1] == \"openfile\" then",
     "      host.pending[#host.pending + 1] = r[3]",
     "    end",
     "  end",
@@ -1012,9 +1028,9 @@ action loaded(path: string, rattrs: Attr[n], rkids: Node[m], rline: i64): Result
                 focus: -1, hover: -1, pressed: -1, err: "", title: has(rattrs, "title") ? attr(rattrs, "title") : "Isocron", width: dim("width", 480), height: dim("height", 400),
                 resizable: attr(rattrs, "resizable") != "false", minimizable: attr(rattrs, "minimizable") != "false", maximizable: attr(rattrs, "maximizable") != "false",
                 drawn: attr(rattrs, "titlebar") == "custom", menu: menu, close: close, beforeClose: beforeClose,
-                key: key, seen: map(g2.binds, (x) => false), pressX: 0.0f32, pressY: 0.0f32,
+                key: key, seen: map(g2.binds, (x) => false), pressX: 0.0f32, pressY: 0.0f32, held: noPlace(),
                 memo: [], memoErr: "", luaRan: true,
-                docs: [], codeFocus: false, active: true, advance: 7.7f32, shownPath: "", shownScroll: -1, codeWidth: 0.0f32, codeHeight: 0.0f32, ratio: 1.0f32,
+                docs: [], codeFocus: false, active: true, advance: 7.7f32, shownPath: "", shownScroll: -1, codeWidth: 0.0f32, codeHeight: 0.0f32, ratio: 1.0f32, fileReads: [],
             };
             return Ok(rebuilt(filesAtOnce(a)));
         },
@@ -1083,11 +1099,12 @@ function requestsDone(a: App, kinds: string[n], paths: string[n], texts: string[
     if (k >= n) {
         return [a, out] as const;
     }
-    const a1 = docAsked(a, kinds, paths, texts, k);
+    const a0 = kinds[k] == "openfile" ? { ...a, fileReads: concat(a.fileReads, [paths[k]]) } : a;
+    const a1 = docAsked(a0, kinds, paths, texts, k);
     const kind = kinds[k];
     const path = kind == "saveas" ? texts[k] : paths[k];
     const di = findIndex(a1.docs, (d) => d.path == path);
-    const fx: Effect[] = kind == "read" ? [ReadText(path)] : (kind == "list" ? [ListFolder(path)] : (kind == "min" ? [Minimize] : (kind == "max" ? [ToggleMaximized]
+    const fx: Effect[] = kind == "read" || kind == "openfile" ? [ReadText(path)] : (kind == "list" ? [ListFolder(path)] : (kind == "min" ? [Minimize] : (kind == "max" ? [ToggleMaximized]
         : (kind == "close" ? [CloseWindow] : ((kind == "save" || kind == "saveas") && di >= 0 ? [WriteText(path, textOf(a1.docs[di]))] : [])))));
     return requestsDone(a1, kinds, paths, texts, k + 1, concat(out, fx));
 }
@@ -1175,6 +1192,18 @@ function delivered(a: App, i: HandInput): App {
         _ => [a.vm, [lua.nilValue(), lua.nilValue()]] as const,
     };
     const [v2, rs] = lua.call(v1, deliver, args);
+    if (lua.failed(v2)) {
+        const why = a.err == "" ? lua.errorText(v2) : a.err;
+        return { ...a, vm: lua.recover(v2), err: why, luaRan: true };
+    }
+    return { ...a, vm: v2, luaRan: true };
+}
+
+// the file asked by `host.openFile` open: its `done` called with true
+function deliveredOpen(a: App): App {
+    const host = lua.global(a.vm, "host");
+    const deliver = lua.fieldOf(a.vm, host, "deliver");
+    const [v2, rs] = lua.call(a.vm, deliver, [lua.booleanValue(true), lua.nilValue()]);
     if (lua.failed(v2)) {
         const why = a.err == "" ? lua.errorText(v2) : a.err;
         return { ...a, vm: lua.recover(v2), err: why, luaRan: true };
@@ -1652,53 +1681,68 @@ function answered(a: App, i: HandInput): [App, Effect[]] {
         // (the wheel across over the code shown: it scrolls across)
         WheelX(p, dx) => [p >= 0 && p < a.hs.length && (a.hs[p].kind == H_CODE || a.hs[p].kind == H_PART) ? withShown(a, (d) => wheeledAcross(d, dx)) : a, []] as const,
         TextWritten(p, ok, reason) => [ok ? { ...a, docs: map(a.docs, (d) => d.path == p ? saved(d) : d) } : { ...a, err: `${p}: ${reason}` }, []] as const,
-        TextRead(p, t, ok) => [delivered(a, i), []] as const,
+        // (a file asked by `host.openFile`: its document made here, its text
+        // not given to Lua, which is told it is open)
+        TextRead(p, t, ok) => {
+            const k = findIndex(a.fileReads, (x) => x == p);
+            if (k < 0) {
+                return [delivered(a, i), []] as const;
+            }
+            const a1 = { ...a, fileReads: concat(a.fileReads.slice(0, k), a.fileReads.slice(k + 1, a.fileReads.length)) };
+            if (!ok) {
+                return [delivered(a1, i), []] as const;
+            }
+            const open = findIndex(a1.docs, (d) => d.path == p) >= 0;
+            const shown = t.indexOf("\u{0}") >= 0 ? "The file is not displayed in the text editor because it is either binary or uses an unsupported text encoding." : t;
+            const a2 = open ? a1 : { ...a1, docs: concat(a1.docs, [ratioSet(docOf(p, shown), a1.ratio, a1.codeWidth, a1.codeHeight, a1.advance)]) };
+            return [deliveredOpen(a2), []] as const;
+        },
         FolderListed(p, names, ok) => [delivered(a, i), []] as const,
         Hover(p) => [{ ...a, hover: p }, []] as const,
         Click(p, x, y, at, clicks, mods) => {
             if (p < 0 || p >= a.hs.length) {
-                return [{ ...a, pressed: p }, []] as const;
+                return [{ ...a, pressed: p, held: noPlace() }, []] as const;
             }
             const h = a.hs[p];
             if (h.kind == H_CODE) {
                 // (the cursor of the document at the line and the column
                 // clicked; with Alt, a cursor more)
-                const a1 = { ...a, pressed: p, focus: -1, codeFocus: true, pressX: x, pressY: y };
+                const a1 = { ...a, pressed: p, held: h, focus: -1, codeFocus: true, pressX: x, pressY: y };
                 return codeChanged(a1, h.change, rowClicked(a.docs[h.change], lookOf(a), h.bind, x, clicks, mods), []);
             }
             if (h.kind == H_PART) {
                 // (a part of its editor: the widget of the search, the map, the
                 // bar across)
-                const a1 = { ...a, pressed: p, focus: -1, codeFocus: true, pressX: x, pressY: y };
+                const a1 = { ...a, pressed: p, held: h, focus: -1, codeFocus: true, pressX: x, pressY: y };
                 const [d1, fx] = codePartClicked(a.docs[h.change], lookOf(a), h.bind, i);
                 return codeChanged(a1, h.change, d1, fx);
             }
             if (h.kind == H_FIELD) {
-                return fieldEdited({ ...a, focus: h.bind, pressed: p, codeFocus: false }, h, i, p);
+                return fieldEdited({ ...a, focus: h.bind, pressed: p, held: h, codeFocus: false }, h, i, p);
             }
-            const a1 = { ...a, pressed: p, focus: h.kind == H_BOX ? -1 : a.focus, pressX: x, pressY: y, codeFocus: false };
+            const a1 = { ...a, pressed: p, held: h, focus: h.kind == H_BOX ? -1 : a.focus, pressX: x, pressY: y, codeFocus: false };
             return [ran(a1, h.click, h.args), []] as const;
         },
         // (a drag from a box with `ondrag`; else the selection of a field)
         Drag(p, x, y, at) => {
+            // (the place as it was pressed, whatever its number now)
+            const h = p == a.pressed ? a.held : (p >= 0 && p < a.hs.length ? a.hs[p] : noPlace());
             // (a drag from a line of a document: the selection to the line and
             // the column under the pointer)
-            if (p >= 0 && p < a.hs.length && a.hs[p].kind == H_CODE) {
-                const h = a.hs[p];
+            if (h.kind == H_CODE && h.change < a.docs.length) {
                 return codeChanged(a, h.change, rowDragged(a.docs[h.change], lookOf(a), h.bind, x, y), []);
             }
-            if (p >= 0 && p < a.hs.length && a.hs[p].kind == H_PART) {
-                const h = a.hs[p];
+            if (h.kind == H_PART && h.change < a.docs.length) {
                 const [d1, fx] = codePartDragged(a.docs[h.change], lookOf(a), h.bind, i);
                 return [{ ...a, docs: map(iota(a.docs.length), (k) => k == h.change ? d1 : a.docs[k]) }, fx] as const;
             }
-            if (p >= 0 && p < a.hs.length && a.hs[p].drag >= 0) {
-                return [ran(a, a.hs[p].drag, concat(a.hs[p].args, [lua.floatValue(f64(x - a.pressX)), lua.floatValue(f64(y - a.pressY))])), []] as const;
+            if (h.kind >= 0 && h.drag >= 0) {
+                return [ran(a, h.drag, concat(h.args, [lua.floatValue(f64(x - a.pressX)), lua.floatValue(f64(y - a.pressY))])), []] as const;
             }
             const fp = focusedPlace(a);
             return fp < 0 ? [a, []] as const : fieldEdited(a, a.hs[fp], i, fp);
         },
-        Release(p) => [{ ...a, pressed: -1 }, []] as const,
+        Release(p) => [{ ...a, pressed: -1, held: noPlace() }, []] as const,
         // (the right button over a line of a document: its cursor there
         // unless within a selection, the menu of the editor of Visual
         // Studio Code)
@@ -1803,7 +1847,7 @@ function docEntries(vm: lua.Vm, t: i64, docs: Doc[n], k: i64): lua.Vm {
     }
     const d = docs[k];
     const [v1, e] = lua.newTable(vm, 0, 8);
-    const v2 = fieldSet(fieldSet(v1, e, "line", lua.integerValue(d.cursor.line + 1)), e, "col", lua.integerValue(columnOf(d.lines[d.cursor.line], d.cursor.col) + 1));
+    const v2 = fieldSet(fieldSet(v1, e, "line", lua.integerValue(d.cursor.line + 1)), e, "col", lua.integerValue(columnOf(lineAt(d.lines, d.cursor.line), d.cursor.col) + 1));
     const v3 = fieldSet(fieldSet(v2, e, "dirty", lua.booleanValue(dirty(d))), e, "indent", lua.integerValue(d.indent));
     const v4 = textSet(textSet(textSet(v3, e, "lang", d.lang.name), e, "eol", d.crlf ? "CRLF" : "LF"), e, "status", statusOf(d));
     const syms = symbolsAt(d);

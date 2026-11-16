@@ -2,11 +2,12 @@
 // alone (`render`), whatever changed between them: a quad moved, a colour
 // changed, a text, a quad under the pointer lit (few tiles: written into
 // the last frame), nothing, the size of the image, the colour under all;
-// the tiles drawn each time.
+// the tiles drawn each time. The glyphs left in the pixels of the atlas
+// (`resolvedAt`, `renderWith`): the same pixels again, frame after frame.
 import { parse, Font } from "../src/font";
-import { render, renderAgain, blank, Canvas, rgb, rgba, quad, rounded, bordered, Box, Primitive } from "../src/paint";
+import { render, renderAgain, renderWith, blank, Canvas, rgb, rgba, quad, rounded, bordered, Box, Primitive } from "../src/paint";
 import { Element, Div, Label, style, textStyle, Px, Fill, placeFrame } from "../src/ui";
-import { resolved, emptyAtlas } from "../src/atlas";
+import { resolved, resolvedAt, emptyAtlas, Atlas } from "../src/atlas";
 
 // a scene of quads, a rounded card with a border and a text
 function scene(fs: Font[n], w: i64, h: i64, x: f32, lit: boolean, label: string): Primitive[] {
@@ -16,6 +17,24 @@ function scene(fs: Font[n], w: i64, h: i64, x: f32, lit: boolean, label: string)
     const [ps, hits] = placeFrame(fs, root, 0.0f32, 0.0f32, f32(w), f32(h), { offsets: [], caretOn: false, hotBar: -1, scale: 1.0f32, deferred: true });
     const [rs, atlas] = resolved(fs, emptyAtlas(), concat(ps, [Box(rounded(quad(x, 150.0f32, 60.0f32, 40.0f32, rgba(0.9f32, 0.2f32, 0.1f32, 0.7f32)), 5.0f32))]));
     return rs;
+}
+
+// the scene with its glyphs in the atlas: the primitives, the atlas
+function sceneAt(fs: Font[n], w: i64, h: i64, x: f32, lit: boolean, label: string): [Primitive[], Atlas] {
+    const card = Div({ ...style(), width: Px(240.0f32), height: Px(90.0f32), padding: 12.0f32, background: rgb(0xFFFFFFu32), border: 1.0f32, borderColor: rgb(0xD1D5DBu32), radius: 8.0f32 }, [Label(textStyle(15.0f32, rgb(0x111827u32)), label)]);
+    const root = Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), padding: 20.0f32, gap: 10.0f32, background: rgb(0xF3F4F6u32) }, [card,
+        Div({ ...style(), width: Px(120.0f32), height: Px(30.0f32), radius: 6.0f32, background: lit ? rgb(0x2563EBu32) : rgb(0x93C5FDu32) }, [])]);
+    const [ps, hits] = placeFrame(fs, root, 0.0f32, 0.0f32, f32(w), f32(h), { offsets: [], caretOn: false, hotBar: -1, scale: 1.0f32, deferred: true });
+    return resolvedAt(fs, emptyAtlas(), concat(ps, [Box(rounded(quad(x, 150.0f32, 60.0f32, 40.0f32, rgba(0.9f32, 0.2f32, 0.1f32, 0.7f32)), 5.0f32))]), true);
+}
+
+// the frame of the scene with its glyphs in the atlas after `c`: the same
+// pixels as with its glyphs copied, drawn alone
+function comparedAt(fs: Font[n], c: Canvas, w: i64, h: i64, x: f32, lit: boolean, label: string): [Canvas, boolean] {
+    const [ps, atlas] = sceneAt(fs, w, h, x, lit, label);
+    const c2 = renderWith(c, w, h, rgb(0xFFFFFFu32), ps, atlas.pixels);
+    const alone = render(w, h, rgb(0xFFFFFFu32), scene(fs, w, h, x, lit, label));
+    return [c2, c2.pixels.length == alone.length && count(iota(alone.length), (i) => c2.pixels[i] != alone[i]) == 0] as const;
 }
 
 // the frame of `ps` after `c`: the same pixels as `ps` drawn alone, the
@@ -41,6 +60,10 @@ action main(args: string[k]): i32 {
             print([s0, s1, s2, s3, s4, s5, s6] as const);
             print([d0, d1, d2, d3, d4, d5, d6] as const);
             print([c4.damage, c2.damage] as const);
+            const [e0, t0] = comparedAt(fs, blank(), 300, 220, 30.0f32, false, "Une carte");
+            const [e1, t1] = comparedAt(fs, e0, 300, 220, 37.0f32, false, "Une carte");
+            const [e2, t2] = comparedAt(fs, e1, 300, 220, 37.0f32, true, "Deux cartes");
+            print([t0, t1, t2, e1.drawn, e2.drawn] as const);
             return 0;
         },
         Err(e) => {

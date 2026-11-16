@@ -189,6 +189,18 @@ action main(args: string[k]): i32 {
             const [a8, u8, ps8] = played(fs, a7, u7, [Moved(u7.hits[mp7].x + 10.0f32, ty), Down(0)], 0, []);
             print(`top after the wheel: ${top7}; after a press on the thumb of the map: ${a8.docs[0].top}`);
             const [a9, u9, ps9] = played(fs, a8, u8, [Up(0)], 0, []);
+            // from the top of the file, the thumb of the map taken and dragged
+            // down by steps of 20 pixels: the box follows it, the cursor
+            // stays (the rows in sight grow in number as the box leaves the
+            // top: the place pressed stays the map)
+            const [b0, v0, qs0] = played(fs, a9, u9, [Moved(cx, cy), Scroll(-2000.0f32)], 0, []);
+            const mpb = mapPlace(b0, v0.hits);
+            const mx = v0.hits[mpb].x + 10.0f32;
+            const my = v0.hits[mpb].y + 6.0f32;
+            const steps = map(iota(6), (i) => Moved(mx, my + f32(i + 1) * 20.0f32));
+            const [b1, v1, qs1] = played(fs, b0, v0, concat([Moved(mx, my), Down(0)], steps), 0, []);
+            const [b2, v2, qs2] = played(fs, b1, v1, [Up(0)], 0, []);
+            print(`top before the drag of the map: ${b0.docs[0].top}; after: ${b2.docs[0].top}; cursor ${b0.docs[0].cursor.line}:${b0.docs[0].cursor.col} -> ${b2.docs[0].cursor.line}:${b2.docs[0].cursor.col}, anchor ${b2.docs[0].anchor.line}:${b2.docs[0].anchor.col}`);
             return 0;
         },
     };

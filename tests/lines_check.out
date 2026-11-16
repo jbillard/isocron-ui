@@ -1,0 +1,7 @@
+lines 1000, differing 0, depth at 500: 1, at 503: 1
+typed: differing 0, depth at 601: 2, at 999: 2
+removed: lines 728, differing 0
+opened: differing 0, the line 600 in it: true
+closed: differing 0
+pasted: lines 3728, differing 0
+enter: lines 3729, differing 0; undone: lines 3728, differing 0, the text of before true; redone: true

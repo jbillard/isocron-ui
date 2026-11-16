@@ -15,8 +15,9 @@ import { Picture } from "./png";
 import { Editing } from "./edit";
 import * as inp from "./input";
 import { Effect, ScrollTo, AskPaste, MenuItem, MenuLook, menuItem, menuSeparator, WITH_CTRL, F2 } from "./input";
-import { Doc, Pos, Sel, Match, mapScale, keyed, selection, hasSelection, columnOf, allSelections, rangeOf, currentFound, findClicked, leftShown, widestShown, scrolledAcross, clickedWith, draggedTo, wrapped, wrapColumns, wrapIndent, rowsOfLine, lineOfRow, totalRows, positionAtRow, LINE_HEIGHT, TAB_SIZE, GUTTER, VBAR, FIND_QUERY, FIND_WITH, FIND_CASE, FIND_WORD, FIND_REGEX, FIND_PREV, FIND_NEXT, FIND_CLOSE, FIND_TOGGLE, FIND_ONE, FIND_ALL, FIND_SELECTION, FIND_PRESERVE } from "./doc";
+import { Doc, Pos, Sel, Match, mapScale, keyed, selection, hasSelection, columnOf, allSelections, rangeOf, currentFound, findClicked, leftShown, widestShown, scrolledAcross, clickedWith, draggedTo, wrapped, wrapColumns, wrapIndent, rowsOfLine, lineOfRow, totalRows, positionAtRow, LINE_HEIGHT, TAB_SIZE, GUTTER, VBAR, moreDigits, gutterOf, FIND_QUERY, FIND_WITH, FIND_CASE, FIND_WORD, FIND_REGEX, FIND_PREV, FIND_NEXT, FIND_CLOSE, FIND_TOGGLE, FIND_ONE, FIND_ALL, FIND_SELECTION, FIND_PRESERVE } from "./doc";
 import { Piece, piecesOf, kindColor } from "./code";
+import { lineAt, lineCount, scanAt, depthAt } from "./lines";
 
 // how the code looks (the theme 2026 Dark of Visual Studio Code by
 // default): the width of a column of its font of fixed width at its size
@@ -92,13 +93,13 @@ export function codeRows(d: Doc, look: CodeLook): Element[] {
 // the rows of the lines wrapped from the row `g` of the line `k` (the row
 // `r` of the document) to the row `last`
 function wrappedRows(d: Doc, look: CodeLook, k: i64, g: i64, r: i64, last: i64, sels: Sel[ns], cur: i64, out: Element[]): Element[] {
-    if (r >= last || k >= d.lines.length) {
+    if (r >= last || k >= lineCount(d.lines)) {
         return out;
     }
     const st = rowsOfLine(d, k);
-    const n = bytes(d.lines[k]).length;
+    const n = bytes(lineAt(d.lines, k)).length;
     const end = g + 1 < st.length ? st[g + 1] : n;
-    const indent = g > 0 ? wrapIndent(d.lines[k], wrapColumns(d)) : 0;
+    const indent = g > 0 ? wrapIndent(lineAt(d.lines, k), wrapColumns(d)) : 0;
     const row = lineRow(d, look, k, true, sels, cur, 0.0f32, st[g], g + 1 < st.length ? end : -1, r, indent);
     return g + 1 < st.length ? wrappedRows(d, look, k, g + 1, r + 1, last, sels, cur, concat(out, [row]))
         : wrappedRows(d, look, k + 1, 0, r + 1, last, sels, cur, concat(out, [row]));
@@ -110,8 +111,8 @@ export function rowClicked(d: Doc, look: CodeLook, row: i64, x: f32, clicks: i64
     if (!wrapped(d)) {
         return clickedWith(d, row, columnAtX(d, look, x), clicks, mods);
     }
-    const p = positionAtRow(d, row, max(0, i64(floor((x - look.gutter - look.gap) / look.advance + 0.5f32))));
-    return clickedWith(d, p.line, columnOf(d.lines[p.line], p.col), clicks, mods);
+    const p = positionAtRow(d, row, max(0, i64(floor((x - numbersOf(d, look) - look.gap) / look.advance + 0.5f32))));
+    return clickedWith(d, p.line, columnOf(lineAt(d.lines, p.line), p.col), clicks, mods);
 }
 
 // a drag from the row `row` to (x, y) of it: the selection to the line and
@@ -124,14 +125,20 @@ export function rowDragged(d: Doc, look: CodeLook, row: i64, x: f32, y: f32): Do
     if (r < 0) {
         return draggedTo(d, -1, 0);
     }
-    const p = positionAtRow(d, r, max(0, i64(floor((x - look.gutter - look.gap) / look.advance + 0.5f32))));
-    return draggedTo(d, r >= totalRows(d) ? d.lines.length : p.line, columnOf(d.lines[p.line], p.col));
+    const p = positionAtRow(d, r, max(0, i64(floor((x - numbersOf(d, look) - look.gap) / look.advance + 0.5f32))));
+    return draggedTo(d, r >= totalRows(d) ? lineCount(d.lines) : p.line, columnOf(lineAt(d.lines, p.line), p.col));
 }
 
 // the column of the code under the pointer at `x` units from the left of a
 // line (its number and the gap after it, the code scrolled across)
 export function columnAtX(d: Doc, look: CodeLook, x: f32): i64 {
-    return i64(floor((x - look.gutter - look.gap + leftShown(d)) / look.advance + 0.5f32));
+    return i64(floor((x - numbersOf(d, look) - look.gap + leftShown(d)) / look.advance + 0.5f32));
+}
+
+// the width of the numbers of the lines: wider by a column for each digit
+// past five (Visual Studio Code's)
+export function numbersOf(d: Doc, look: CodeLook): f32 {
+    return look.gutter + moreDigits(d) * look.advance;
 }
 
 // a run of the line to draw: its bytes, its colour, its background (none:
@@ -170,10 +177,17 @@ function marksOf(sels: Sel[n], k: i64, len: i64): Marks {
 // end; a row of a line wrapped, `indent` columns in when not its first),
 // its message that of the row `row`
 function lineRow(d: Doc, look: CodeLook, k: i64, live: boolean, sels: Sel[ns], cur: i64, shift: f32, rs: i64, re0: i64, row: i64, indent: i64): Element {
-    const text = d.lines[k];
-    const n = bytes(text).length;
-    const re = re0 < 0 ? n : re0;
-    const lastRow = re0 < 0;
+    const text = lineAt(d.lines, k);
+    const bs = bytes(text);
+    const n = bs.length;
+    // (a long line not wrapped: its bytes from a few columns before the
+    // first in sight to a few after the last alone, after a space of the
+    // width of those before them: its glyphs out of sight never made, as
+    // Visual Studio Code draws the part of a line in sight)
+    const cutting = rs == 0 && re0 < 0 && d.width > 0.0f32 && n > 160;
+    const rs1 = cutting ? byteOfColumn(bs, max(0, i64(shift / look.advance) - 4), 0, 0) : rs;
+    const re = cutting ? byteOfColumn(bs, i64((shift + d.width) / look.advance) + 8, 0, 0) : (re0 < 0 ? n : re0);
+    const lastRow = re0 < 0 && re == n;
     // (the cursors on the line: their carets, the light of the line when
     // one has no selection)
     const cursors = live ? filter(sels, (s) => s.cursor.line == k) : [];
@@ -183,22 +197,22 @@ function lineRow(d: Doc, look: CodeLook, k: i64, live: boolean, sels: Sel[ns], c
             const [a, b] = rangeOf(s);
             return (a.line != b.line || a.col != b.col) && k >= a.line && k <= b.line;
         }) == 0;
-    const number = Div({ ...style(), width: Px(look.gutter), height: Px(look.lineHeight), direction: Row, justify: Packed(End), align: Center, stretch: false },
-        rs == 0 ? [Label({ ...textStyle(look.em, active ? look.numberActive : look.number), face: look.face }, `${k + 1}`)] : []);
+    const number = Div({ ...style(), width: Px(numbersOf(d, look)), height: Px(look.lineHeight), direction: Row, justify: Packed(End), align: Center, stretch: false },
+        rs == 0 ? [Spans({ ...textStyle(look.em, active ? look.numberActive : look.number), face: look.face }, [span(`${k + 1}`, active ? look.numberActive : look.number)])] : []);
     const gap = Div({ ...style(), width: Px(look.gap), height: Px(1.0f32) }, []);
     const ms = live ? marksOf(sels, k, n) : { starts: [], ends: [], past: [] };
     const found = filter(iota(d.found.length), (i) => d.found[i].line == k);
-    const [pieces, depth] = piecesOf(text, d.scans[k].raws, d.depths[k]);
+    const [pieces, depth] = piecesOf(text, scanAt(d.lines, k).raws, depthAt(d.lines, k));
     // (the indentation: its guides each `indent` columns, the runs within)
     const lead = leadColumns(text);
     const levels = lead.bytes == n || rs > 0 ? 0 : lead.columns / d.indent;
     // (no caret while the widget of the search has the keyboard; those of
     // this row of the line)
-    const carets = look.focused && d.find.field == 0 ? filter(map(cursors, (s) => s.cursor.col), (c) => c >= rs && (c < re || (lastRow && c == re))) : [];
-    const cuts = sortedCuts(concat(concat(concat(concat(concat(ms.starts, ms.ends), carets), guideCuts(text, levels, d.indent)), [rs, re]),
+    const carets = look.focused && d.find.field == 0 ? filter(map(cursors, (s) => s.cursor.col), (c) => c >= rs1 && (c < re || (lastRow && c == re))) : [];
+    const cuts = sortedCuts(concat(concat(concat(concat(concat(ms.starts, ms.ends), carets), guideCuts(text, levels, d.indent)), [rs1, re]),
         concat(concat(map(pieces, (p) => p.start), map(pieces, (p) => p.end)), concat(map(found, (i) => d.found[i].start), map(found, (i) => d.found[i].end)))), n);
     const selColor = look.focused ? look.selection : look.inactiveSelection;
-    const runs = filter(runsOf(pieces, cuts, ms, d.found, found, cur, selColor, look), (r) => r.start >= rs && r.end <= re);
+    const runs = filter(runsOf(pieces, cuts, ms, d.found, found, cur, selColor, look), (r) => r.start >= rs1 && r.end <= re);
     // (the guides of the indentation: a line along the left of the run at
     // each of its levels)
     const guides = map(iota(levels), (g) => offsetAtColumn(text, g * d.indent));
@@ -207,14 +221,15 @@ function lineRow(d: Doc, look: CodeLook, k: i64, live: boolean, sels: Sel[ns], c
     // its start; its runs, a caret before each that begins at one; a caret
     // at its end; the selection going on below it: a column of its colour)
     const pad: Span[] = indent > 0 ? [span(join(map(iota(indent), (x) => "\u{A0}"), ""), look.caret)] : [];
-    const caretFirst: Span[] = count(carets, (c) => c == rs) > 0 ? [caretSpan(look)] : [];
-    const caretEnd: Span[] = count(carets, (c) => c == re) > 0 && re > rs ? [caretSpan(look)] : [];
+    const caretFirst: Span[] = count(carets, (c) => c == rs1) > 0 ? [caretSpan(look)] : [];
+    const caretEnd: Span[] = count(carets, (c) => c == re) > 0 && re > rs1 ? [caretSpan(look)] : [];
     const eol: Span[] = past ? [{ ...span("\u{A0}", look.caret), back: selColor }] : [];
-    const spans = concat(concat(concat(concat(pad, caretFirst), spansOf(text, runs, look, carets, rs, guides)), caretEnd), eol);
+    const spans = concat(concat(concat(concat(pad, caretFirst), spansOf(text, runs, look, carets, rs1, guides)), caretEnd), eol);
+    const before: Element[] = cutting && rs1 > 0 ? [Div({ ...style(), width: Px(f32(columnOf(text, rs1)) * look.advance), height: Px(1.0f32) }, [])] : [];
     // (the code cut to its box, before the map: moved left when scrolled
     // across)
     const code = Div({ ...style(), width: Fill(1.0f32), height: Px(look.lineHeight), direction: Row, align: Center, stretch: false,
-        background: lit ? look.current : transparent(), clip: true, shiftX: shift }, [Spans({ ...textStyle(look.em, look.caret), face: look.face }, spans)]);
+        background: lit ? look.current : transparent(), clip: true, shiftX: shift }, concat(before, [Spans({ ...textStyle(look.em, look.caret), face: look.face }, spans)]));
     // (the room of the map after the code: the code ends at its left edge,
     // as in Visual Studio Code, not drawn under it)
     const room: Element[] = d.mapWidth > 8.0f32 && d.width > 0.0f32 ? [Div({ ...style(), width: Px(d.mapWidth), height: Px(1.0f32) }, [])] : [];
@@ -242,6 +257,21 @@ function spansFrom(text: string, runs: Run[n], look: CodeLook, carets: i64[c], r
     const mark: Span[] = r.start > rs && count(carets, (x) => x == r.start) > 0 ? [caretSpan(look)] : [];
     const edge = count(guides, (x) => x == r.start) > 0 ? look.guide : transparent();
     return spansFrom(text, runs, look, carets, rs, guides, i + 1, concat(concat(out, mark), [{ text: spacedText(text, r.start, r.end), color: r.color, back: r.back, edge: edge, caret: false }]));
+}
+
+// the first byte of a line at or past the column `c` (its length past its
+// end), from the byte `i` at the column `col`: one pass
+function byteOfColumn(b: u8[n], c: i64, i: i64, col: i64): i64 {
+    if (i >= n || col >= c) {
+        return i;
+    }
+    return byteOfColumn(b, c, charAfter(b, i + 1), b[i] == 9u8 ? (col / TAB_SIZE + 1) * TAB_SIZE : col + 1);
+}
+
+// the start of the character at or after the byte `i` (past the bytes that
+// continue a character of UTF-8)
+function charAfter(b: u8[n], i: i64): i64 {
+    return i < n && (b[i] & 0xC0u8) == 0x80u8 ? charAfter(b, i + 1) : i;
 }
 
 // the leading spaces and tabs of a line: their bytes and their columns
@@ -326,10 +356,10 @@ function spacedFrom(text: string, b: u8[n], i: i64, e: i64, from: i64, out: stri
 // out); in a box over the code, a line and a shadow under it
 export function stickyOf(d: Doc, look: CodeLook): Element[] {
     const [first, g] = lineOfRow(d, i64(d.top / look.lineHeight));
-    if (first <= 0 || first >= d.lines.length) {
+    if (first <= 0 || first >= lineCount(d.lines)) {
         return [];
     }
-    const chain = stickyFrom(d, first - 1, leadColumns(d.lines[first]).columns, []);
+    const chain = stickyFrom(d, first - 1, leadColumns(lineAt(d.lines, first)).columns, []);
     const n = min(5, chain.length);
     if (n == 0) {
         return [];
@@ -345,9 +375,9 @@ function stickyFrom(d: Doc, k: i64, level: i64, out: i64[]): i64[] {
     if (k < 0 || level == 0) {
         return out;
     }
-    const lead = leadColumns(d.lines[k]);
-    const blank = lead.bytes == bytes(d.lines[k]).length;
-    const body = d.lines[k].trim();
+    const lead = leadColumns(lineAt(d.lines, k));
+    const blank = lead.bytes == bytes(lineAt(d.lines, k)).length;
+    const body = lineAt(d.lines, k).trim();
     const bare = body == "{" || body == "[" || body == "(";
     return lead.columns < level && !blank && !bare ? stickyFrom(d, k - 1, lead.columns, concat(out, [k])) : stickyFrom(d, k - 1, level, out);
 }
@@ -375,8 +405,8 @@ function mapLine(d: Doc): f32 {
 // the offset of the map in units: the map scrolled in proportion with the
 // box
 function mapScroll(d: Doc): f32 {
-    const content = f32(d.lines.length) * LINE_HEIGHT;
-    const mapped = f32(d.lines.length) * mapLine(d);
+    const content = f32(lineCount(d.lines)) * LINE_HEIGHT;
+    const mapped = f32(lineCount(d.lines)) * mapLine(d);
     return mapped > d.height && content > d.height ? min(1.0f32, d.top / (content - d.height)) * (mapped - d.height) : 0.0f32;
 }
 
@@ -410,7 +440,7 @@ function mapPicture(d: Doc, look: CodeLook, w: i64, h: i64): Picture {
     const first = scrollPx / lh;
     const off = scrollPx - first * lh;
     const cols = max(0, (pw - MAP_MARGIN) / s);
-    const count = max(0, min(d.lines.length - first, ph / lh + 2));
+    const count = max(0, min(lineCount(d.lines) - first, ph / lh + 2));
     const rows = map(iota(count), (i) => mapRow(d, first + i, cols));
     const bg = look.background;
     const back = 0xFF000000u32 | (u32(bg.r * 255.0f32) << 16u32) | (u32(bg.g * 255.0f32) << 8u32) | u32(bg.b * 255.0f32);
@@ -443,10 +473,11 @@ function mapPicture(d: Doc, look: CodeLook, w: i64, h: i64): Picture {
 // their stops; a byte past ASCII drawn as an `x`) and the colours of their
 // tokens
 function mapRow(d: Doc, k: i64, w: i64): MapRow {
-    const text = d.lines[k];
+    const text = lineAt(d.lines, k);
     const b = bytes(text);
-    const [pieces, depth] = piecesOf(text, d.scans[k].raws, d.depths[k]);
-    const offs = map(iota(w), (x) => offsetAtColumnOf(text, x));
+    const [pieces, depth] = piecesOf(text, scanAt(d.lines, k).raws, depthAt(d.lines, k));
+    // (a line without tabs: a column a byte, read at once; else each found)
+    const offs = findIndex(b, (x) => x == 9u8) < 0 ? iota(w) : map(iota(w), (x) => offsetAtColumnOf(text, x));
     return {
         codes: map(offs, (o) => o >= b.length || b[o] == 32u8 || b[o] == 9u8 ? 0 : (b[o] >= 33u8 && b[o] <= 126u8 ? i64(b[o]) : 120)),
         colors: map(offs, (o) => {
@@ -509,7 +540,7 @@ function barAcross(d: Doc, look: CodeLook): Element[] {
     ]);
     return [Div({ ...style(), width: Fill(1.0f32), height: Fill(1.0f32), floating: true, direction: Column, justify: Packed(End), stretch: false }, [
         Div({ ...style(), width: Fill(1.0f32), height: Px(HBAR_HEIGHT), direction: Row, stretch: false }, [
-            Div({ ...style(), width: Px(GUTTER), height: Px(1.0f32) }, []), track,
+            Div({ ...style(), width: Px(gutterOf(d)), height: Px(1.0f32) }, []), track,
         ]),
     ])];
 }
@@ -673,8 +704,8 @@ export function codePartDragged(d: Doc, look: CodeLook, part: i64, i: inp.Input)
             if (part == MAP) {
                 // (the top of the thumb under the pointer: the box at the
                 // offset whose thumb is there)
-                const content = f32(d.lines.length) * LINE_HEIGHT;
-                const mapped = f32(d.lines.length) * mapLine(d);
+                const content = f32(lineCount(d.lines)) * LINE_HEIGHT;
+                const mapped = f32(lineCount(d.lines)) * mapLine(d);
                 const [ty, th] = mapThumb(d);
                 const room = min(d.height, mapped) - th;
                 const ratio = room > 0.0f32 ? max(0.0f32, min(1.0f32, (y - d.grab) / room)) : 0.0f32;
