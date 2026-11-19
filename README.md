@@ -358,6 +358,14 @@ interface. Besides the vocabulary of `uigen`:
   window and its image, the table of the keyboard, the pointers of the font
   `cursor`, the selection, the density of `Xft.dpi`, MIT-SHM).
 
+## Requirements
+
+Isocron 0.9.0 or later (`iscc`, from the
+[releases of Isocron](https://github.com/jbillard/isocron/releases)): the
+library is Isocron source, built with the program that imports it. Under
+Linux, a compositor of Wayland or a server of X11; under Windows, Windows 10
+or later.
+
 ## Examples
 
 Each is built by `iscc build examples/NAME.isc -o NAME` (for Windows: with
